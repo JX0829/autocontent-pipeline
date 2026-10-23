@@ -1,0 +1,28 @@
+accounts:
+  - id: "douyin-tech-main"
+    platform: "douyin"
+    name: "程序员科技热点"
+    account_type: "tech"
+    profile_path: "./data/browser_profiles/douyin-tech"
+    proxy_server: ""                 # 留空则直连；生产环境填入 http://user:***@host:port
+    fingerprint_seed: "fp_seed_894102_mac_m3"
+    publish_mode: "private_publish"  # 方案A：发布为仅自己可见（私密作品），双端100%立即可见，绝对不公开扩散
+    schedule_delay_minutes: 120
+    declare_aigc: true
+    max_daily_tasks: 4
+    private_domain_hook: "开源地址与一键部署包已整理在主页置顶粉丝群，进群暗号【{keyword}】自取～"
+    enabled: true
+
+  - id: "douyin-news-fast"
+    platform: "douyin"
+    name: "前沿快讯精选"
+    account_type: "news"
+    profile_path: "./data/browser_profiles/douyin-news"
+    proxy_server: ""
+    fingerprint_seed: "fp_seed_331904_win_rtx"
+    publish_mode: "scheduled_publish"
+    schedule_delay_minutes: 90
+    declare_aigc: true
+    max_daily_tasks: 3
+    private_domain_hook: "完整技术报告与测评链接已放主页置顶群，回复【{keyword}】即可查看～"
+    enabled: true

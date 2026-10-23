@@ -1,0 +1,54 @@
+{
+  "theme": "tech-github",
+  "entity_key": "github:microsoft/markitdown",
+  "title": "微软开源万物皆可转Markdown神器！",
+  "cover_main_text": "万物转MD神器",
+  "cover_sub_text": "GitHub 狂揽 15K Star",
+  "hook_narration": "微软刚刚开源了一个让大模型开发者狂喜的Python工具库！",
+  "fact_summary_150": "微软开源MarkItDown工具库，支持将PDF、Office全家桶、音频、图片等各种非结构化文件一键转换为干净的Markdown文本，便于输入LLM做知识库检索与微调。",
+  "resource_keyword": "MarkItDown",
+  "scenes": [
+    {
+      "scene_index": 0,
+      "segment_narration": "微软刚刚开源了一个让大模型开发者狂喜的Python工具库！",
+      "visual_type": "terminal_code",
+      "code_snippet": "pip install markitdown\n\nfrom markitdown import MarkItDown\nmd = MarkItDown()\nresult = md.convert(\"report.xlsx\")\nprint(result.text_content)",
+      "highlight_text": "微软开源 · MarkItDown",
+      "sfx_cue": "typing"
+    },
+    {
+      "scene_index": 1,
+      "segment_narration": "不管是复杂表格的Excel，还是扫描版PDF，它都能直接提取成干净整洁的Markdown格式。",
+      "visual_type": "ui_card",
+      "stat_items": [
+        {"label": "输入格式", "value": "PDF / Word / Excel / PPT / 音频"},
+        {"label": "输出纯净度", "value": "100% 结构化 MD"},
+        {"label": "LLM适配", "value": "即插即用 RAG 知识库"}
+      ],
+      "highlight_text": "全格式强力兼容",
+      "sfx_cue": "ding"
+    },
+    {
+      "scene_index": 2,
+      "segment_narration": "甚至连音频文件和PPT幻灯片，它都能调用多模态模型把文字与讲稿完美剥离！",
+      "visual_type": "stat_chart",
+      "stat_items": [
+        {"label": "开源 Star 飙升", "value": "+18,400 ⭐"},
+        {"label": "Python 社区热度", "value": "GitHub Trending Top 1"},
+        {"label": "核心优势", "value": "零外部复杂依赖"}
+      ],
+      "highlight_text": "多模态深度提取",
+      "sfx_cue": "whoosh"
+    },
+    {
+      "scene_index": 3,
+      "segment_narration": "一行命令极速安装，做AI知识库和RAG检索必备，赶紧点赞收藏试一试吧！",
+      "visual_type": "terminal_code",
+      "code_snippet": "# 命令行直接使用\nmarkitdown input_document.docx -o output.md",
+      "highlight_text": "开发者生产力利器",
+      "sfx_cue": "glitch"
+    }
+  ],
+  "tags": ["微软开源", "Python", "大模型开发", "RAG", "生产力工具"],
+  "target_account_type": "tech"
+}

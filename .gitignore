@@ -1,0 +1,72 @@
+# Environment & Secrets
+.env
+*.env
+*.env.local
+
+# Accounts & Credentials
+# config/accounts.yaml 可以作为模版提交，但需确保无真实密码/密钥
+# Browser cookies & sessions
+**/browser_profiles/
+**/storage_state.json
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.mp3
+*.wav
+
+# Runtime Data & Logs
+data/*.db
+data/*.sqlite
+data/*.jsonl
+data/draft_*.json
+data/douyin_*.png
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node & Remotion
+renderer/node_modules/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Remotion Output / Cache
+.remotion
+renderer/public/tasks/
+
+# OS / Editor
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/

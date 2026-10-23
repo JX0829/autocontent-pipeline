@@ -1,0 +1,21 @@
+# 违规违法与敏感拦截词库（不包含常见求资源词，如源码/代码/链接，这些由二级E类分类器承接）
+API Key
+API_KEY
+apikey
+sk-
+系统提示
+system prompt
+Prompt
+忽略之前指令
+忽略以上指令
+越狱
+jailbreak
+管理密码
+环境变量
+.env
+私钥
+access_token
+auth_token
+bearer token
+数据库密码
+后台地址
