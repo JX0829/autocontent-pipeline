@@ -1,0 +1,126 @@
+import os
+import json
+import logging
+import subprocess
+from typing import Dict, Any, List, Optional
+from src.providers.base import BaseSocialProvider
+
+logger = logging.getLogger("XiaohongshuProvider")
+
+class XiaohongshuProvider(BaseSocialProvider):
+    """
+    小红书发布与互动 Provider（基于 xiaohongshu-mcp 服务）
+    """
+    def __init__(self, account_config: Dict[str, Any]):
+        super().__init__(account_config)
+        self.mcp_url = account_config.get("mcp_url", "http://localhost:18060/mcp")
+        self.session_id: Optional[str] = None
+
+    def _call_mcp(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        headers = ["-H", "Content-Type: application/json"]
+        if self.session_id:
+            headers.extend(["-H", f"Mcp-Session-Id: {self.session_id}"])
+        data = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        cmd = ["curl", "-s", "-i", "-X", "POST", self.mcp_url] + headers + ["-d", data]
+        res = subprocess.check_output(cmd).decode()
+        header_part, body_part = res.split("\r\n\r\n", 1)
+        for line in header_part.split("\r\n"):
+            if line.lower().startswith("mcp-session-id:"):
+                self.session_id = line.split(":", 1)[1].strip()
+        return json.loads(body_part.strip())
+
+    def _ensure_session(self):
+        if not self.session_id:
+            init_res = self._call_mcp("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "autocontent-pipeline", "version": "1.0"}
+            })
+            if "error" in init_res:
+                logger.error(f"Failed to initialize Xiaohongshu MCP: {init_res['error']}")
+
+    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        self._ensure_session()
+        resp = self._call_mcp("tools/call", {
+            "name": tool_name,
+            "arguments": arguments
+        })
+        if "error" in resp:
+            logger.error(f"MCP Tool call '{tool_name}' failed: {resp['error']}")
+            return {"success": False, "error": resp["error"]}
+        
+        result_content = resp.get("result", {}).get("content", [])
+        text_out = ""
+        for c in result_content:
+            if c.get("type") == "text":
+                text_out += c.get("text", "")
+        return {"success": True, "raw_text": text_out, "result": resp.get("result")}
+
+    def check_login_status(self) -> bool:
+        res = self.call_tool("check_login_status", {})
+        if res.get("success") and "已登录" in res.get("raw_text", ""):
+            return True
+        return False
+
+    def save_draft(
+        self,
+        video_path: str,
+        cover_path: str,
+        title: str,
+        topics: list[str],
+        content_text: str,
+        declare_aigc: bool = True
+    ) -> Dict[str, Any]:
+        """
+        小红书视频发布（支持私密/公开模式，目前默认私密）
+        """
+        clean_title = title.replace("！", "").replace("!", "")[:20]
+        visibility = self.account_config.get("visibility", "仅自己可见")
+        
+        res = self.call_tool("publish_with_video", {
+            "title": clean_title,
+            "content": content_text,
+            "video": video_path,
+            "tags": topics[:5],
+            "visibility": visibility
+        })
+
+        if res.get("success") and "成功" in res.get("raw_text", ""):
+            return {
+                "success": True,
+                "draft_id": f"xhs_{int(os.path.getmtime(video_path))}",
+                "message": res.get("raw_text")
+            }
+        return {
+            "success": False,
+            "draft_id": None,
+            "message": res.get("raw_text") or str(res.get("error"))
+        }
+
+    def get_mentions_and_comments(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        获取收到的评论和@通知
+        """
+        res = self.call_tool("list_notifications", {
+            "tab": "mentions",
+            "limit": limit
+        })
+        if not res.get("success"):
+            return []
+        
+        try:
+            data = json.loads(res.get("raw_text", "{}"))
+            return data.get("items", [])
+        except Exception as e:
+            logger.error(f"Failed to parse mentions: {e}")
+            return []
+
+    def reply_comment(self, comment_id: str, content: str) -> bool:
+        """
+        使用 reply_notification 直接回复收到的评论
+        """
+        res = self.call_tool("reply_notification", {
+            "comment_id": comment_id,
+            "content": content
+        })
+        return res.get("success", False)

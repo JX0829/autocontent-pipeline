@@ -26,3 +26,13 @@ accounts:
     max_daily_tasks: 3
     private_domain_hook: "完整技术报告与测评链接已放主页置顶群，回复【{keyword}】即可查看～"
     enabled: true
+
+  - id: "xhs-tech-main"
+    platform: "xiaohongshu"
+    name: "小红书科技号"
+    account_type: "tech"
+    mcp_url: "http://localhost:18060/mcp"
+    visibility: "仅自己可见"
+    private_domain_hook: "开源项目源码与复现指南已整理，主页私信暗号【{keyword}】自取～"
+    enabled: true
+
