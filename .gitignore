@@ -19,6 +19,7 @@
 data/*.db
 data/*.sqlite
 data/*.jsonl
+data/*.txt
 data/draft_*.json
 data/douyin_*.png
 output/

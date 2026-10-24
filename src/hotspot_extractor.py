@@ -31,7 +31,7 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客创作者�
    - scene_index: 0, 1, 2, 3
    - segment_narration: 该分镜的中文旁白（自然流畅，单句不要过长）
    - visual_type: 必须是 "terminal_code"（终端代码打字机）、"ui_card"（特性卡片）、"stat_chart"（指标数据卡片）、"media_showcase"（媒体展示）之一
-   - code_snippet: 当 visual_type 为 terminal_code 时提供真实的代码/命令行调用（其余类型设为 null）
+   - code_snippet: 当 visual_type 为 terminal_code 时提供真实的代码/命令行调用（其余类型设为 null）。必须注意：严禁在代码中出现任何形如 'api_key'、'apikey'、'sk-'、'token'、'password' 等词汇或其变体（会100%触发本地安全规则报错中断），展示客户端初始化必须写 `client = OpenAI()` 或省略授权参数！
    - stat_items: 当 visual_type 为 ui_card 或 stat_chart 时提供 2~3 个结构化指标 [{"label": "...", "value": "..."}]（其余类型设为 null）
    - highlight_text: 分镜顶部醒目的短标题徽章（不超过16字）
    - sfx_cue: 关键帧音效，必须是 "typing" / "whoosh" / "ding" / "glitch" 之一

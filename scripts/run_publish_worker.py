@@ -25,6 +25,7 @@ load_dotenv(PIPELINE_ROOT / ".env")
 
 from src.db import PipelineDB
 from src.providers.douyin import DouyinProvider
+from src.providers.xiaohongshu import XiaohongshuProvider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,7 +70,10 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
         return False
 
     platform = account_config.get("platform", "douyin")
-    logger.info(f"Dispatching task '{task_id}' to provider: {platform} (Account: {target_account_id})")
+    logger.info(f"Dispatching task '{task_id}' to primary provider: {platform} (Account: {target_account_id})")
+
+    publish_success = False
+    primary_draft_id = None
 
     if platform == "douyin":
         provider = DouyinProvider(account_config)
@@ -82,16 +86,40 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
         )
 
         if res.get("success"):
-            draft_id = res.get("draft_id", f"draft_{task_id}")
-            db.update_task_status(task_id, "DRAFTED", platform_draft_id=draft_id)
-            logger.info(f"✅ Task '{task_id}' successfully saved as draft! draft_id={draft_id}")
-            return True
+            primary_draft_id = res.get("draft_id", f"draft_{task_id}")
+            publish_success = True
+            logger.info(f"✅ Task '{task_id}' successfully saved as draft on Douyin! draft_id={primary_draft_id}")
         else:
-            logger.error(f"❌ Failed to save draft for task '{task_id}': {res.get('message') or res.get('error')}")
-            return False
+            logger.error(f"❌ Failed to save draft on Douyin for task '{task_id}': {res.get('message') or res.get('error')}")
     else:
-        logger.error(f"Unsupported platform: {platform}")
-        return False
+        logger.error(f"Unsupported primary platform: {platform}")
+
+    # 同步发布至小红书（若已配置 xhs-tech-main 且启用）
+    xhs_account = accounts_map.get("xhs-tech-main")
+    if xhs_account and xhs_account.get("enabled", True):
+        logger.info(f"Synchronizing task '{task_id}' to Xiaohongshu...")
+        try:
+            xhs_provider = XiaohongshuProvider(xhs_account)
+            # 小红书正文优先取更具极客感的内容摘要
+            xhs_content = draft_script.get("content_text") or draft_script.get("fact_summary_150") or ""
+            xhs_res = xhs_provider.save_draft(
+                video_path=video_path,
+                cover_path=cover_path,
+                title=title,
+                topics=topics,
+                content_text=xhs_content
+            )
+            if xhs_res.get("success"):
+                logger.info(f"✅ Task '{task_id}' successfully published to Xiaohongshu! {xhs_res.get('draft_id')}")
+            else:
+                logger.warning(f"⚠️ Xiaohongshu sync failed for '{task_id}': {xhs_res.get('message')}")
+        except Exception as e:
+            logger.error(f"Error during Xiaohongshu sync for '{task_id}': {e}")
+
+    if publish_success:
+        db.update_task_status(task_id, "DRAFTED", platform_draft_id=primary_draft_id)
+        return True
+    return False
 
 
 def main():
