@@ -27,7 +27,7 @@ def append_audit_log(record: dict):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def poll_and_reply_live_comments():
-    logger.info("Starting live Douyin comment poll and guard cycle...")
+    logger.info("Starting live Douyin comment poll and guard cycle across all videos...")
     db = PipelineDB(str(PROJECT_ROOT / "data" / "pipeline_state.db"))
     funnel = CommentSafetyFunnel()
 
@@ -44,126 +44,193 @@ def poll_and_reply_live_comments():
 
         try:
             page.goto("https://creator.douyin.com/creator-micro/interactive/comment", wait_until="domcontentloaded", timeout=30000)
-            time.sleep(4)
+            page.wait_for_timeout(4000)
 
-            # 点击刷新拉取最新
             refresh_btn = page.locator("text=点击刷新").first
             if refresh_btn.count() > 0:
                 refresh_btn.click()
-                time.sleep(3)
+                page.wait_for_timeout(2000)
         except Exception as e:
             logger.error(f"Navigation error: {e}")
             browser.close()
             return
 
-        # 查找所有包含评论容器的 class (container-sXKyMs)
-        comment_containers = page.locator('div[class*="container-"]').all()
-        extracted_comments = []
+        # 1. 打开“选择作品”弹窗，扫描全量视频列表
+        select_btn = page.locator("button:has-text('选择作品')").first
+        if not select_btn or select_btn.count() == 0:
+            select_btn = page.locator("span:has-text('选择作品')").first
+        
+        if not select_btn or select_btn.count() == 0:
+            logger.warning("Could not find '选择作品' button on Douyin interactive page.")
+            browser.close()
+            return
 
-        for c_el in comment_containers:
-            try:
-                txt = c_el.inner_text().strip()
-                # 必须包含操作按钮如'回复'且有实质内容
-                if "回复" in txt and ("刚刚" in txt or "前" in txt or "202" in txt):
-                    lines = [l.strip() for l in txt.split("\n") if l.strip()]
-                    # 结构通常为: 0: 昵称, 1: 时间, 2: 评论文本, 3: 点赞数, 4: 回复
-                    if len(lines) >= 3:
-                        user_name = lines[0]
-                        comment_text = lines[2]
-                        # 排除非用户正文
-                        if comment_text not in ["回复", "删除", "举报", "置顶", "全部评论"]:
-                            reply_btn = c_el.locator('text="回复"').first
-                            extracted_comments.append({
-                                "user": user_name,
-                                "text": comment_text,
-                                "reply_btn": reply_btn,
-                                "container": c_el
-                            })
-            except Exception:
-                pass
+        select_btn.scroll_into_view_if_needed()
+        select_btn.click(force=True)
+        page.wait_for_timeout(3000)
 
-        logger.info(f"Detected {len(extracted_comments)} live user comment(s)")
+        dialog = page.locator("div[role='dialog']").first
+        if dialog.count() == 0 or not dialog.is_visible():
+            logger.warning("Modal dialog for works did not appear.")
+            browser.close()
+            return
 
-        # 默认科技类事实与暗号 (后续可从 DB 按 published_video_id 动态关联)
-        fact_summary = "谷歌开源分布式LLM推理引擎llm-d 1.0稳定版，深度整合vLLM与SGLang，针对大规模Kubernetes与GPU集群做极致吞吐与KV Cache优化，高并发下首字延迟(TTFT)降低超80%。"
-        keyword = "llmd"
-        hook = "开源地址与一键部署包已整理在主页粉丝群，进群暗号【{keyword}】自取～"
+        # 分析整段文本结构：每条视频通常由三行组成：[标题, '发布于...', '评论数']
+        lines = [l.strip() for l in dialog.inner_text().split("\n") if l.strip()]
+        target_indices = []
+        video_idx = 0
 
-        processed_count = 0
-        for item in extracted_comments:
-            comment_text = item["text"]
-            user_name = item["user"]
+        for i, l in enumerate(lines):
+            if "发布于" in l and i + 1 < len(lines):
+                cnt_str = lines[i + 1]
+                title = lines[i - 1] if i > 0 else f"视频_{video_idx}"
+                if cnt_str.isdigit() and int(cnt_str) > 0:
+                    target_indices.append({
+                        "idx": video_idx,
+                        "title": title,
+                        "count": int(cnt_str)
+                    })
+                video_idx += 1
 
-            # 查重：避免重复回复
-            with db.get_conn() as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT 1 FROM comment_interactions WHERE raw_comment = ?", (comment_text,))
-                if cur.fetchone():
-                    logger.info(f"Comment already processed in DB: '{comment_text}' by {user_name}")
-                    continue
+        logger.info(f"Identified {len(target_indices)} video(s) with active comments: {[t['title'][:20] for t in target_indices]}")
 
-            logger.info(f"Processing new live comment: '{comment_text}' by {user_name}")
-            res = funnel.process_comment(comment_text, fact_summary, keyword, hook)
-            logger.info(f"Funnel verdict: Classification={res['classification']}, Reply='{res['reply']}'")
+        # 关闭弹窗
+        close_btn = dialog.locator("button[aria-label='Close'], [class*='close']").first
+        if close_btn.count() > 0:
+            close_btn.click(force=True)
+            page.wait_for_timeout(1000)
+        else:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(1000)
 
-            reply_content = res.get("reply")
-            reply_success = False
+        total_processed = 0
 
-            if reply_content:
+        # 2. 遍历有评论的视频，通过精确索引切入
+        for target in target_indices:
+            idx = target["idx"]
+            v_title = target["title"]
+            logger.info(f"--- Switching to video [{idx}]: '{v_title[:25]}' (expected {target['count']} comments) ---")
+
+            select_btn.scroll_into_view_if_needed()
+            select_btn.click(force=True)
+            page.wait_for_timeout(2000)
+
+            # 获取弹窗中的对应卡片并点击
+            pub_elements = page.locator("div[role='dialog'] >> text=发布于").all()
+            if idx >= len(pub_elements):
+                logger.warning(f"Index {idx} out of range in dialog, skipping.")
+                page.keyboard.press("Escape")
+                continue
+
+            target_pub = pub_elements[idx]
+            target_card = target_pub.locator("xpath=../..")
+            target_card.scroll_into_view_if_needed()
+            target_card.click(force=True)
+            page.wait_for_timeout(3500)
+
+            # 抓取当前视频下的评论容器
+            comment_containers = page.locator('div[class*="container-"]').all()
+            extracted_comments = []
+
+            for c_el in comment_containers:
                 try:
-                    r_btn = item["reply_btn"]
-                    r_btn.click()
-                    time.sleep(1)
+                    txt = c_el.inner_text().strip()
+                    if "回复" in txt and ("刚刚" in txt or "前" in txt or "202" in txt):
+                        c_lines = [cl.strip() for cl in txt.split("\n") if cl.strip()]
+                        if len(c_lines) >= 3:
+                            user_name = c_lines[0]
+                            comment_text = c_lines[2]
+                            if comment_text not in ["回复", "删除", "举报", "置顶", "全部评论", "选择作品"]:
+                                reply_btn = c_el.locator('text="回复"').first
+                                extracted_comments.append({
+                                    "user": user_name,
+                                    "text": comment_text,
+                                    "reply_btn": reply_btn,
+                                    "container": c_el
+                                })
+                except Exception:
+                    pass
 
-                    active_input = page.locator("div[contenteditable='true']").last
-                    active_input.click()
-                    active_input.press_sequentially(reply_content, delay=40)
-                    time.sleep(1)
+            logger.info(f"Found {len(extracted_comments)} comment element(s) under '{v_title[:20]}'")
 
-                    # 精确点击当前输入框下的发送按钮
-                    send_candidates = page.locator("span:has-text('发送'), button:has-text('发送')").all()
-                    for b in reversed(send_candidates):
-                        if b.is_visible() and b.inner_text().strip() == "发送":
-                            b.click()
-                            time.sleep(3)
-                            reply_success = True
-                            break
-                    logger.info(f"Replied to {user_name} on Douyin live platform: '{reply_content}'")
-                except Exception as e:
-                    logger.error(f"Failed to submit reply on DOM: {e}")
+            fact_summary = v_title
+            keyword = "AI"
+            hook = "开源项目源码与复现指南已整理在粉丝群，回复【AI】即可自取～"
 
-            # 状态持久化
-            with db.get_conn() as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                INSERT OR REPLACE INTO comment_interactions
-                (comment_id, task_id, published_video_id, raw_comment, sanitized_comment, classification, reply_content, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    f"c_{int(time.time())}_{processed_count}",
-                    "task_google_llmd_001",
-                    "7699504223221845284",
-                    comment_text,
-                    res["sanitized_comment"],
-                    res["classification"],
-                    reply_content,
-                    "REPLIED" if reply_success else ("IGNORED" if not reply_content else "FAILED")
-                ))
-                conn.commit()
+            for item in extracted_comments:
+                comment_text = item["text"]
+                user_name = item["user"]
 
-            append_audit_log({
-                "timestamp": datetime.now().isoformat(),
-                "user": user_name,
-                "raw_comment": comment_text,
-                "classification": res["classification"],
-                "reply": reply_content,
-                "status": "REPLIED" if reply_success else "SKIPPED_OR_IGNORED"
-            })
-            processed_count += 1
-            time.sleep(2)
+                # 查重
+                with db.get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1 FROM comment_interactions WHERE raw_comment = ?", (comment_text,))
+                    if cur.fetchone():
+                        logger.info(f"Comment already processed in DB: '{comment_text}' by {user_name}")
+                        continue
+
+                logger.info(f"Processing new live comment: '{comment_text}' by {user_name} on '{v_title[:20]}'")
+                res = funnel.process_comment(comment_text, fact_summary, keyword, hook)
+                reply_content = res.get("reply")
+                logger.info(f"Funnel verdict: Classification={res['classification']}, Reply='{reply_content}'")
+
+                reply_success = False
+                if reply_content:
+                    try:
+                        r_btn = item["reply_btn"]
+                        r_btn.click()
+                        page.wait_for_timeout(1000)
+
+                        active_input = page.locator("div[contenteditable='true']").last
+                        active_input.click()
+                        active_input.press_sequentially(reply_content, delay=35)
+                        page.wait_for_timeout(1000)
+
+                        send_candidates = page.locator("span:has-text('发送'), button:has-text('发送')").all()
+                        for b in reversed(send_candidates):
+                            if b.is_visible() and b.inner_text().strip() == "发送":
+                                b.click()
+                                page.wait_for_timeout(2500)
+                                reply_success = True
+                                break
+                        logger.info(f"✅ Replied to {user_name} on Douyin: '{reply_content}'")
+                    except Exception as e:
+                        logger.error(f"Failed to submit reply on DOM: {e}")
+
+                # 状态持久化
+                with db.get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                    INSERT OR REPLACE INTO comment_interactions
+                    (comment_id, task_id, published_video_id, raw_comment, sanitized_comment, classification, reply_content, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        f"dy_{int(time.time())}_{total_processed}",
+                        v_title[:30],
+                        "douyin_video",
+                        comment_text,
+                        res["sanitized_comment"],
+                        res["classification"],
+                        reply_content,
+                        "REPLIED" if reply_success else ("IGNORED" if not reply_content else "FAILED")
+                    ))
+                    conn.commit()
+
+                append_audit_log({
+                    "timestamp": datetime.now().isoformat(),
+                    "platform": "douyin",
+                    "video": v_title,
+                    "user": user_name,
+                    "raw_comment": comment_text,
+                    "classification": res["classification"],
+                    "reply": reply_content,
+                    "status": "REPLIED" if reply_success else "SKIPPED_OR_IGNORED"
+                })
+                total_processed += 1
+                page.wait_for_timeout(2000)
 
         browser.close()
-        logger.info(f"Comment cycle finished. Handled {processed_count} new comment(s).")
+        logger.info(f"Douyin comment cycle completed. Handled {total_processed} live comment(s).")
 
 if __name__ == "__main__":
     poll_and_reply_live_comments()
