@@ -336,7 +336,7 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
         </div>
       </div>
 
-      {/* 底部私域导流暗号栏 */}
+      {/* 底部互动栏：纯技术交流 */}
       <div
         style={{
           display: 'flex',
@@ -349,7 +349,7 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
         }}
       >
         <span style={{ fontSize: 24, color: '#38bdf8', fontWeight: 800 }}>
-          暗号【{props.resource_keyword}】获取项目包
+          💡 欢迎在评论区一起交流探讨
         </span>
         <span style={{ fontSize: 20, color: '#94a3b8' }}>科技极客速递</span>
       </div>

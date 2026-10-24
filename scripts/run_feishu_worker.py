@@ -96,7 +96,7 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         if action_type == "APPROVE_TASK":
             db.update_task_status(task_id, "APPROVED")
             logger.info(f"Task {task_id} status updated to APPROVED")
-            resp.toast = {"type": "success", "content": "✅ 已批准！正在自动同步发布至抖音与小红书..."}
+            resp.toast = {"type": "success", "content": "✅ 已批准！正在自动同步发布至小红书..."}
 
             # 原位更新卡片为已批准状态
             new_card = FeishuCardBuilder.build_approval_card(

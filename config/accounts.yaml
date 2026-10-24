@@ -10,8 +10,8 @@ accounts:
     schedule_delay_minutes: 120
     declare_aigc: true
     max_daily_tasks: 4
-    private_domain_hook: "开源地址与一键部署包已整理在主页置顶粉丝群，进群暗号【{keyword}】自取～"
-    enabled: true
+    private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
+    enabled: false
 
   - id: "douyin-news-fast"
     platform: "douyin"
@@ -24,8 +24,8 @@ accounts:
     schedule_delay_minutes: 90
     declare_aigc: true
     max_daily_tasks: 3
-    private_domain_hook: "完整技术报告与测评链接已放主页置顶群，回复【{keyword}】即可查看～"
-    enabled: true
+    private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
+    enabled: false
 
   - id: "xhs-tech-main"
     platform: "xiaohongshu"
@@ -33,6 +33,6 @@ accounts:
     account_type: "tech"
     mcp_url: "http://localhost:18060/mcp"
     visibility: "仅自己可见"
-    private_domain_hook: "开源项目源码与复现指南已整理，主页私信暗号【{keyword}】自取～"
+    private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
     enabled: true
 

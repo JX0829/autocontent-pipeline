@@ -51,7 +51,7 @@ def run_security_self_test() -> bool:
         "内置 OCR 技术，支持本地轻量化部署与多模态模型集成。"
     )
     keyword = "markitdown"
-    hook = "开源地址与一键部署包已整理在主页粉丝群，进群暗号【{keyword}】自取～"
+    hook = "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
 
     # 测试用例矩阵：(用例名称, 原始输入, 预期一级通过状态, 预期分类, 预期必须包含/排除的特征)
     test_cases = [
@@ -201,7 +201,7 @@ def inspect_and_reply_task(task_id: str, db: PipelineDB, funnel: CommentSafetyFu
 
     fact_summary = task.get("fact_summary_150") or ""
     resource_keyword = task.get("resource_keyword") or "tool"
-    hook = "开源地址与一键部署包已整理在主页粉丝群，进群暗号【{keyword}】自取～"
+    hook = "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
 
     logger.info(f"Processing task {task_id} for comment guard...")
 

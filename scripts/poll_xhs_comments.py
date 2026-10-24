@@ -72,7 +72,7 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
         # 动态事实上下文，可根据 feed_title 调整
         fact_summary = feed_title or "前沿开源项目与AI技术快讯，源码与技术复现指南。"
         keyword = "AI"
-        hook = xhs_acc.get("private_domain_hook", "项目源码与复现指南已整理，主页私信暗号【{keyword}】自取～")
+        hook = xhs_acc.get("private_domain_hook", "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～")
 
         res = funnel.process_comment(comment_text, fact_summary, keyword, hook)
         classification = res.get("classification")

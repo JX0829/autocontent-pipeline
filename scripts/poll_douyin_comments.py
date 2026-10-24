@@ -155,7 +155,7 @@ def poll_and_reply_live_comments():
 
             fact_summary = v_title
             keyword = "AI"
-            hook = "开源项目源码与复现指南已整理在粉丝群，回复【AI】即可自取～"
+            hook = "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
 
             for item in extracted_comments:
                 comment_text = item["text"]

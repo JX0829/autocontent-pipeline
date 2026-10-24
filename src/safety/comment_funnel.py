@@ -191,10 +191,12 @@ class CommentSafetyFunnel:
         if classification == "C":
             return self.IRRELEVANT_TEMPLATE
 
-        # E 类：求资源，注入私域暗号
+        # E 类：求资源/求源码，纯评论区技术交流探讨
         if classification == "E":
-            hook = private_domain_hook.format(keyword=resource_keyword) if "{keyword}" in private_domain_hook else f"项目源码与一键部署包已整理在主页粉丝群，进群暗号【{resource_keyword}】自取～"
-            return hook
+            if private_domain_hook:
+                hook = private_domain_hook.format(keyword=resource_keyword) if "{keyword}" in private_domain_hook else private_domain_hook
+                return hook
+            return "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
 
         # A 类：核心技术答疑，受限生成
         if classification == "A":

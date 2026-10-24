@@ -69,30 +69,34 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
         logger.error(f"Video file not found: {video_path}")
         return False
 
-    platform = account_config.get("platform", "douyin")
-    logger.info(f"Dispatching task '{task_id}' to primary provider: {platform} (Account: {target_account_id})")
-
+    # 检查抖音账号是否启用（解封前可置为 enabled: false）
     publish_success = False
     primary_draft_id = None
 
-    if platform == "douyin":
-        provider = DouyinProvider(account_config)
-        res = provider.save_draft(
-            video_path=video_path,
-            cover_path=cover_path,
-            title=title,
-            topics=topics,
-            content_text=content_text
-        )
+    if account_config.get("enabled", False):
+        platform = account_config.get("platform", "douyin")
+        logger.info(f"Dispatching task '{task_id}' to primary provider: {platform} (Account: {target_account_id})")
 
-        if res.get("success"):
-            primary_draft_id = res.get("draft_id", f"draft_{task_id}")
-            publish_success = True
-            logger.info(f"✅ Task '{task_id}' successfully saved as draft on Douyin! draft_id={primary_draft_id}")
+        if platform == "douyin":
+            provider = DouyinProvider(account_config)
+            res = provider.save_draft(
+                video_path=video_path,
+                cover_path=cover_path,
+                title=title,
+                topics=topics,
+                content_text=content_text
+            )
+
+            if res.get("success"):
+                primary_draft_id = res.get("draft_id", f"draft_{task_id}")
+                publish_success = True
+                logger.info(f"✅ Task '{task_id}' successfully saved as draft on Douyin! draft_id={primary_draft_id}")
+            else:
+                logger.error(f"❌ Failed to save draft on Douyin for task '{task_id}': {res.get('message') or res.get('error')}")
         else:
-            logger.error(f"❌ Failed to save draft on Douyin for task '{task_id}': {res.get('message') or res.get('error')}")
+            logger.error(f"Unsupported primary platform: {platform}")
     else:
-        logger.error(f"Unsupported primary platform: {platform}")
+        logger.info(f"Primary account '{target_account_id}' is currently DISABLED (e.g. cooldown/standby). Skipping Douyin.")
 
     # 同步发布至小红书（若已配置 xhs-tech-main 且启用）
     xhs_account = accounts_map.get("xhs-tech-main")
@@ -110,7 +114,11 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
                 content_text=xhs_content
             )
             if xhs_res.get("success"):
-                logger.info(f"✅ Task '{task_id}' successfully published to Xiaohongshu! {xhs_res.get('draft_id')}")
+                xhs_draft_id = xhs_res.get("draft_id")
+                logger.info(f"✅ Task '{task_id}' successfully published to Xiaohongshu! {xhs_draft_id}")
+                if not primary_draft_id:
+                    primary_draft_id = xhs_draft_id
+                publish_success = True
             else:
                 logger.warning(f"⚠️ Xiaohongshu sync failed for '{task_id}': {xhs_res.get('message')}")
         except Exception as e:
