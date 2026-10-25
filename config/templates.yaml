@@ -1,11 +1,19 @@
 # ============================================================================
 # AutoContent Pipeline · 可扩展多模板注册与路由配置
-# 支持通过 CLI (--template)、Payload 字段 (template_id)、账号配置或按 theme 自动路由
+# 支持通过 CLI (--template)、Payload 字段 (template_id)、账号配置或按 round_robin 轮换
 # ============================================================================
 
-default_template: "auto"
+default_template: "round_robin"
 
-# 当 template_id 为 "auto" 或未指定时，根据 DraftScriptPayload.theme 自动匹配最贴合的模板
+# 轮换执行队列顺序（T1 -> T2 -> T3 -> T4 -> T5 -> T1 ...）
+round_robin_sequence:
+  - "editorial_news"   # T1 · 瑞士先锋报刊风
+  - "cupertino_glass"  # T2 · Apple 毛玻璃流光风
+  - "neo_brutalism"    # T3 · 多巴胺波普粗野风
+  - "notion_craft"     # T4 · Notion 暖调手账风
+  - "linear_obsidian"  # T5 · Linear 钛黑流光风
+
+# 当 template_id 为 "auto" 且未开启轮换时，根据 DraftScriptPayload.theme 自动匹配最贴合的模板
 theme_mapping:
   breaking-news: "editorial_news"
   ai-product: "cupertino_glass"

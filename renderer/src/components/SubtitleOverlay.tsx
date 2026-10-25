@@ -30,12 +30,15 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({ subtitles }) =
     <div
       style={{
         position: 'absolute',
-        left: 96,
-        width: 888,
-        top: 1375,
+        left: 0,
+        width: '100%',
+        bottom: 40,
         zIndex: 25,
         display: 'flex',
         justifyContent: 'center',
+        alignItems: 'center',
+        boxSizing: 'border-box',
+        padding: '0 20px',
         pointerEvents: 'none',
       }}
     >
@@ -46,12 +49,13 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({ subtitles }) =
           border: tokens.subBorder,
           boxShadow: tokens.subShadow,
           borderRadius: tokens.subRadius,
-          padding: '22px 38px',
-          fontSize: 40,
+          padding: '20px 36px',
+          fontSize: 38,
           fontWeight: 900,
           lineHeight: 1.35,
           textAlign: 'center',
-          maxWidth: 860,
+          maxWidth: '100%',
+          boxSizing: 'border-box',
         }}
       >
         <span style={{ color: tokens.subHighlight, marginRight: 10 }}>▸</span>
