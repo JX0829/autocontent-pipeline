@@ -17,7 +17,7 @@ from src.tts.aligner import TTSAligner
 
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
-async def render_hotspot_video(script_path: str, task_id: str):
+async def render_hotspot_video(script_path: str, task_id: str, template: str = "auto"):
     print("=" * 60)
     print(f"🚀 启动热点短视频全流程合成: {task_id}")
     print("=" * 60)
@@ -58,7 +58,12 @@ async def render_hotspot_video(script_path: str, task_id: str):
 
     print("\n[2/4] 执行 Edge-TTS 音频合成与字幕毫秒对齐...")
     aligner = TTSAligner(voice="zh-CN-YunxiNeural", rate="+10%")
-    aligned_payload = await aligner.align_draft(draft_payload, task_id, renderer_public_dir)
+    aligned_payload = await aligner.align_draft(
+        draft=draft_payload,
+        task_id=task_id,
+        output_base_dir=renderer_public_dir,
+        template_override=template if template != "auto" else None
+    )
 
     task_json_path = os.path.join(renderer_public_dir, "tasks", task_id, "aligned_render.json")
     with open(task_json_path, "w", encoding="utf-8") as f:

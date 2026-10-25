@@ -1,93 +1,119 @@
 import React from 'react';
-import { useCurrentFrame, interpolate } from 'remotion';
+import { interpolate, useCurrentFrame } from 'remotion';
+import { useTemplate } from '../templates/context';
+import { SceneHeaderBanner } from './SceneHeaderBanner';
 
-interface UiCardViewProps {
+export interface StatItem {
+  label: string;
+  value: string;
+}
+
+export interface UiCardViewProps {
+  sceneIndex: number;
+  totalScenes: number;
+  entityKey?: string;
   highlightText: string;
-  statItems?: Array<{ label: string; value: string }>;
+  statItems: StatItem[];
 }
 
 export const UiCardView: React.FC<UiCardViewProps> = ({
+  sceneIndex,
+  totalScenes,
+  entityKey,
   highlightText,
-  statItems = [],
+  statItems,
 }) => {
   const frame = useCurrentFrame();
-  const opacity = interpolate(frame, [0, 10], [0, 1], {
-    extrapolateRight: 'clamp',
-  });
+  const { tokens, layout } = useTemplate();
 
   return (
-    <div
-      style={{
-        width: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 30,
-        opacity,
-      }}
-    >
-      {/* 顶部高亮大字 */}
-      <div
-        style={{
-          padding: '12px 30px',
-          background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(56, 189, 248, 0.3))',
-          border: '2px solid rgba(16, 185, 129, 0.7)',
-          borderRadius: 40,
-          color: '#34d399',
-          fontSize: 32,
-          fontWeight: 800,
-          letterSpacing: 2,
-          boxShadow: '0 0 30px rgba(16, 185, 129, 0.3)',
-          textTransform: 'uppercase',
-        }}
-      >
-        {highlightText}
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+      <SceneHeaderBanner
+        entityKey={entityKey}
+        sceneIndex={sceneIndex}
+        totalScenes={totalScenes}
+        highlightText={highlightText}
+      />
 
-      {/* 科技感毛玻璃特性列表卡片 */}
-      <div
-        style={{
-          width: '100%',
-          borderRadius: 24,
-          background: 'rgba(15, 23, 42, 0.85)',
-          border: '2px solid rgba(16, 185, 129, 0.35)',
-          boxShadow: '0 25px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(16, 185, 129, 0.15)',
-          backdropFilter: 'blur(25px)',
-          padding: '36px 30px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 24,
-          boxSizing: 'border-box',
-        }}
-      >
-        {statItems.map((item, idx) => (
-          <div
-            key={idx}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              padding: '16px 20px',
-              background: 'rgba(30, 41, 59, 0.65)',
-              borderRadius: 16,
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-            }}
-          >
-            <span style={{ fontSize: 18, color: '#94a3b8', fontWeight: 600 }}>
-              {item.label}
-            </span>
-            <span
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 30 }}>
+        {statItems.map((item, idx) => {
+          const delay = idx * 8;
+          const cardY = interpolate(frame, [delay, delay + 20], [48, 0], {
+            extrapolateLeft: 'clamp',
+            extrapolateRight: 'clamp',
+          });
+          const opacity = interpolate(frame, [delay, delay + 14], [0, 1], {
+            extrapolateLeft: 'clamp',
+            extrapolateRight: 'clamp',
+          });
+          const bg =
+            tokens.cardAltBgs && tokens.cardAltBgs.length > 0
+              ? tokens.cardAltBgs[idx % tokens.cardAltBgs.length]
+              : tokens.cardBg;
+          const tilt =
+            layout.cardTiltDegrees > 0
+              ? `rotate(${idx % 2 === 0 ? -layout.cardTiltDegrees : layout.cardTiltDegrees}deg)`
+              : '';
+
+          return (
+            <div
+              key={idx}
               style={{
-                fontSize: 26,
-                color: '#f8fafc',
-                fontWeight: 750,
-                letterSpacing: 0.5,
+                transform: `translateY(${cardY}px) ${tilt}`,
+                opacity,
+                background: bg,
+                border: tokens.cardBorder,
+                borderRadius: tokens.cardRadius,
+                boxShadow: tokens.cardShadow,
+                padding: '40px 42px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 32,
               }}
             >
-              {item.value}
-            </span>
-          </div>
-        ))}
+              <div
+                style={{
+                  width: 92,
+                  height: 92,
+                  borderRadius: layout.useSerifHeadline ? 8 : 24,
+                  background: tokens.accentPrimary,
+                  color: '#FFFFFF',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 44,
+                  fontWeight: 900,
+                  flexShrink: 0,
+                  border: layout.cardVariant === 'pop_sticker' ? '4px solid #111111' : 'none',
+                }}
+              >
+                0{idx + 1}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: 30,
+                    fontWeight: 700,
+                    color: tokens.textSecondary,
+                    marginBottom: 8,
+                  }}
+                >
+                  {item.label}
+                </div>
+                <div
+                  style={{
+                    fontSize: 42,
+                    fontWeight: 900,
+                    color: tokens.textPrimary,
+                    lineHeight: 1.25,
+                  }}
+                >
+                  {item.value}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

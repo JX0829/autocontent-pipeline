@@ -22,8 +22,9 @@ export interface AlignedSceneItem {
   subtitles: SubtitleItem[];
 }
 
-export interface AlignedRenderPayload {
+export interface AlignedRenderPayload extends Record<string, unknown> {
   task_id: string;
+  template_id?: string;
   fps: number;
   width: number;
   height: number;

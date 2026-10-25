@@ -1,0 +1,44 @@
+# ============================================================================
+# AutoContent Pipeline · 可扩展多模板注册与路由配置
+# 支持通过 CLI (--template)、Payload 字段 (template_id)、账号配置或按 theme 自动路由
+# ============================================================================
+
+default_template: "auto"
+
+# 当 template_id 为 "auto" 或未指定时，根据 DraftScriptPayload.theme 自动匹配最贴合的模板
+theme_mapping:
+  breaking-news: "editorial_news"
+  ai-product: "cupertino_glass"
+  tech-github: "notion_craft"
+
+# 内置 5 套默认视觉模板元数据（供 CLI、飞书审批卡片下拉菜单及校验器读取）
+templates:
+  editorial_news:
+    name: "T1 · 瑞士先锋报刊风 (Editorial Paper)"
+    description: "暖米白羊皮纸底色 + 国际朱砂红重点色 + 粗黑社论衬线标题 + 3px 严谨网格线"
+    recommended_themes: ["breaking-news", "tech-github"]
+    enabled: true
+
+  cupertino_glass:
+    name: "T2 · Apple 毛玻璃流光风 (Cupertino Glass)"
+    description: "深空午夜蓝极光流体渐变 + VisionOS 高透磨砂玻璃 + Bento 便当盒 36px 大圆角"
+    recommended_themes: ["ai-product"]
+    enabled: true
+
+  neo_brutalism:
+    name: "T3 · 多巴胺波普粗野风 (Neo-Brutalism Pop)"
+    description: "高明度柠檬黄底色 + 电光紫/糖果粉/薄荷绿撞色 + 4px 纯黑描边与 12px 硬朗错位阴影"
+    recommended_themes: ["ai-product", "breaking-news", "tech-github"]
+    enabled: true
+
+  notion_craft:
+    name: "T4 · Notion 暖调手账风 (Notion Warm Craft)"
+    description: "护眼燕麦奶白点阵纸 + 森林鼠尾草绿 + 暖黄荧光笔半透明涂抹高亮 + Callout 笔记块"
+    recommended_themes: ["tech-github", "ai-product"]
+    enabled: true
+
+  linear_obsidian:
+    name: "T5 · Linear 钛黑流光风 (Linear Obsidian)"
+    description: "深曜石黑底色 + 顶部星云聚光灯 + 1px 钛金属微光渐变切线 + 冰蓝与极光紫双色"
+    recommended_themes: ["tech-github"]
+    enabled: true

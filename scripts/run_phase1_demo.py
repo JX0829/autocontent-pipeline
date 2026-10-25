@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import sys
@@ -14,10 +15,11 @@ from src.db import PipelineDB
 from src.schemas import DraftScriptPayload
 from src.safety.dfa_filter import DFAFilter
 from src.tts.aligner import TTSAligner
+from src.templates_manager import TemplateManager
 
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
-async def run_phase1_demo():
+async def run_phase1_demo(template: str = "auto"):
     print("=" * 60)
     print("🚀 启动 Phase 1 端到端合成演示: 音画两阶段同步与极客短视频渲染")
     print("=" * 60)
@@ -66,7 +68,12 @@ async def run_phase1_demo():
     # 3. 两阶段音画同步与精确时间轴生成 (TTS Aligner)
     print("\n[Step 3/5] 执行 Edge-TTS 音频合成与句级字幕对齐...")
     aligner = TTSAligner(voice="zh-CN-YunxiNeural", rate="+10%")
-    aligned_payload = await aligner.align_draft(draft_payload, task_id, renderer_public_dir)
+    aligned_payload = await aligner.align_draft(
+        draft=draft_payload,
+        task_id=task_id,
+        output_base_dir=renderer_public_dir,
+        template_override=template if template != "auto" else None
+    )
 
     task_json_path = os.path.join(renderer_public_dir, "tasks", task_id, "aligned_render.json")
     with open(task_json_path, "w", encoding="utf-8") as f:
@@ -127,4 +134,27 @@ async def run_phase1_demo():
     print("=" * 60)
 
 if __name__ == "__main__":
-    asyncio.run(run_phase1_demo())
+    parser = argparse.ArgumentParser(description="Phase 1 端到端合成演示")
+    parser.add_argument(
+        "--template",
+        type=str,
+        default="auto",
+        help="指定渲染模板 ID (auto | editorial_news | cupertino_glass | neo_brutalism | notion_craft | linear_obsidian)",
+    )
+    parser.add_argument(
+        "--list-templates",
+        action="store_true",
+        help="打印当前所有可用视觉模板并退出",
+    )
+    args = parser.parse_args()
+
+    if args.list_templates:
+        mgr = TemplateManager()
+        enabled = mgr.list_enabled_templates()
+        print("当前已启用的视觉模板列表：")
+        for tid in enabled:
+            meta = mgr.get_template_meta(tid)
+            print(f"  - {tid}: {meta.get('name', tid)} ({meta.get('description', '')})")
+        sys.exit(0)
+
+    asyncio.run(run_phase1_demo(template=args.template))

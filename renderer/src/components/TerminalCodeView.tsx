@@ -1,112 +1,185 @@
 import React from 'react';
-import { useCurrentFrame, interpolate } from 'remotion';
+import { interpolate, useCurrentFrame } from 'remotion';
+import { useTemplate } from '../templates/context';
+import { SceneHeaderBanner } from './SceneHeaderBanner';
 
-interface TerminalCodeViewProps {
-  codeSnippet?: string;
+export interface TerminalCodeViewProps {
+  sceneIndex: number;
+  totalScenes: number;
+  entityKey?: string;
+  resourceKeyword?: string;
   highlightText: string;
+  codeSnippet: string;
 }
 
 export const TerminalCodeView: React.FC<TerminalCodeViewProps> = ({
-  codeSnippet = '',
+  sceneIndex,
+  totalScenes,
+  entityKey,
+  resourceKeyword,
   highlightText,
+  codeSnippet,
 }) => {
   const frame = useCurrentFrame();
-  const charsShown = Math.floor(interpolate(frame, [0, 45], [0, codeSnippet.length], {
-    extrapolateRight: 'clamp',
-  }));
-  const displayedCode = codeSnippet.slice(0, charsShown);
+  const { tokens, layout } = useTemplate();
+
+  const entryY = interpolate(frame, [0, 18], [45, 0], { extrapolateRight: 'clamp' });
+  const opacity = interpolate(frame, [0, 14], [0, 1], { extrapolateRight: 'clamp' });
+  const visibleChars = Math.floor(
+    interpolate(frame, [6, 85], [10, codeSnippet.length], { extrapolateRight: 'clamp' })
+  );
+
+  const renderWindowHeader = () => {
+    if (layout.terminalVariant === 'telegraph_dispatch') {
+      return (
+        <div
+          style={{
+            background: tokens.codeHeaderBg,
+            color: tokens.codeHeaderText,
+            padding: '18px 32px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            fontSize: 26,
+            fontWeight: 800,
+            letterSpacing: 2,
+          }}
+        >
+          <span>TELEGRAPH CODE DISPATCH</span>
+          <span>VERIFIED SOURCE</span>
+        </div>
+      );
+    }
+
+    if (layout.terminalVariant === 'notion_callout') {
+      return (
+        <div
+          style={{
+            background: tokens.codeHeaderBg,
+            color: tokens.codeHeaderText,
+            padding: '20px 32px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            fontSize: 26,
+            fontWeight: 700,
+          }}
+        >
+          <span>💡 核心命令与代码笔记</span>
+          <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>COPY SNIPPET</span>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        style={{
+          background: tokens.codeHeaderBg,
+          color: tokens.codeHeaderText,
+          padding: '22px 32px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderBottom:
+            layout.terminalVariant === 'brutalist_window'
+              ? '4px solid #111111'
+              : '1px solid rgba(255,255,255,0.1)',
+        }}
+      >
+        <div style={{ display: 'flex', gap: 14 }}>
+          <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#FF5F56' }} />
+          <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#FFBD2E' }} />
+          <span style={{ width: 22, height: 22, borderRadius: '50%', background: '#27C93F' }} />
+        </div>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 26, fontWeight: 700 }}>
+          quickstart.py
+        </span>
+      </div>
+    );
+  };
 
   return (
-    <div
-      style={{
-        width: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 30,
-      }}
-    >
-      {/* 顶部醒目大标题徽章 */}
-      <div
-        style={{
-          padding: '12px 28px',
-          background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.25), rgba(99, 102, 241, 0.3))',
-          border: '2px solid rgba(56, 189, 248, 0.7)',
-          borderRadius: 40,
-          color: '#38bdf8',
-          fontSize: 32,
-          fontWeight: 800,
-          letterSpacing: 2,
-          boxShadow: '0 0 30px rgba(56, 189, 248, 0.3)',
-          textTransform: 'uppercase',
-        }}
-      >
-        {highlightText}
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+      <SceneHeaderBanner
+        entityKey={entityKey}
+        sceneIndex={sceneIndex}
+        totalScenes={totalScenes}
+        highlightText={highlightText}
+      />
 
-      {/* 极客终端黑客风代码卡片 */}
       <div
         style={{
-          width: '100%',
-          borderRadius: 24,
-          background: 'rgba(15, 23, 42, 0.88)',
-          border: '2px solid rgba(56, 189, 248, 0.35)',
-          boxShadow: '0 25px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(56, 189, 248, 0.15)',
-          backdropFilter: 'blur(20px)',
+          transform: `translateY(${entryY}px)`,
+          opacity,
+          background: tokens.codeBg,
+          color: tokens.codeText,
+          border: tokens.cardBorder,
+          borderRadius: tokens.cardRadius,
+          boxShadow: tokens.cardShadow,
           overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
         }}
       >
-        {/* 终端红黄绿按钮栏 */}
+        {renderWindowHeader()}
         <div
           style={{
-            height: 48,
-            background: 'rgba(30, 41, 59, 0.95)',
-            display: 'flex',
-            alignItems: 'center',
-            padding: '0 20px',
-            gap: 12,
-            borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-          }}
-        >
-          <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#ef4444' }} />
-          <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#f59e0b' }} />
-          <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#10b981' }} />
-          <span style={{ marginLeft: 'auto', color: '#94a3b8', fontSize: 16, fontFamily: 'monospace' }}>
-            bash - python3
-          </span>
-        </div>
-
-        {/* 终端代码正文 */}
-        <div
-          style={{
-            padding: 30,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-            fontSize: 26,
-            lineHeight: 1.6,
-            color: '#f8fafc',
+            fontFamily: "'JetBrains Mono', monospace",
+            padding: '44px 40px',
+            fontSize: 33,
+            lineHeight: 1.65,
             whiteSpace: 'pre-wrap',
-            minHeight: 280,
-            maxHeight: 520,
-            overflow: 'hidden',
-            textShadow: '0 0 10px rgba(255,255,255,0.2)',
+            minHeight: 480,
           }}
         >
-          {displayedCode}
+          {codeSnippet.slice(0, visibleChars)}
           <span
             style={{
               display: 'inline-block',
-              width: 14,
-              height: 28,
-              background: '#38bdf8',
-              marginLeft: 4,
+              width: 18,
+              height: 36,
+              background: tokens.accentPrimary,
               verticalAlign: 'middle',
-              opacity: Math.sin(frame / 4) > 0 ? 1 : 0,
+              marginLeft: 6,
             }}
           />
         </div>
       </div>
+
+      {resourceKeyword && (
+        <div
+          style={{
+            marginTop: 36,
+            background: tokens.cardBg,
+            border: tokens.cardBorder,
+            borderRadius: tokens.cardRadius,
+            boxShadow: tokens.cardShadow,
+            padding: '30px 38px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: tokens.textSecondary }}>
+              开源检索标识 / ENTITY
+            </div>
+            <div style={{ fontSize: 32, fontWeight: 900, color: tokens.textPrimary, marginTop: 4 }}>
+              {entityKey || 'GitHub Trending'}
+            </div>
+          </div>
+          <div
+            style={{
+              background: tokens.accentPrimary,
+              color: '#FFFFFF',
+              padding: '16px 32px',
+              borderRadius: 16,
+              fontSize: 26,
+              fontWeight: 800,
+            }}
+          >
+            💡 评论区交流
+          </div>
+        </div>
+      )}
     </div>
   );
 };

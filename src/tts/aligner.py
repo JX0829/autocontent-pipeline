@@ -4,13 +4,20 @@ import re
 import edge_tts
 from mutagen.mp3 import MP3
 from ..schemas import DraftScriptPayload, AlignedRenderPayload, AlignedSceneItem, SubtitleItem
+from ..templates_manager import TemplateManager
 
 class TTSAligner:
     def __init__(self, voice="zh-CN-YunxiNeural", rate="+10%"):
         self.voice = voice
         self.rate = rate
 
-    async def align_draft(self, draft: DraftScriptPayload, task_id: str, output_base_dir: str) -> AlignedRenderPayload:
+    async def align_draft(
+        self,
+        draft: DraftScriptPayload,
+        task_id: str,
+        output_base_dir: str,
+        template_override: str | None = None
+    ) -> AlignedRenderPayload:
         task_audio_dir = os.path.join(output_base_dir, "tasks", task_id)
         os.makedirs(task_audio_dir, exist_ok=True)
 
@@ -62,8 +69,16 @@ class TTSAligner:
             current_time_sec += total_scene_sec
             current_frame += scene_duration_frames
 
+        template_mgr = TemplateManager()
+        resolved_template = template_mgr.resolve_template_id(
+            theme=draft.theme,
+            cli_template=template_override,
+            payload_template=draft.template_id
+        )
+
         return AlignedRenderPayload(
             task_id=task_id,
+            template_id=resolved_template,
             fps=fps,
             width=1080,
             height=1920,

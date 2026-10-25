@@ -8,6 +8,7 @@ import {
   CalculateMetadataFunction,
 } from 'remotion';
 import { AlignedRenderPayload, AlignedSceneItem } from './types';
+import { TemplateProvider, useTemplate } from './templates/context';
 import { SafeAreaContainer } from './components/SafeAreaContainer';
 import { TerminalCodeView } from './components/TerminalCodeView';
 import { UiCardView } from './components/UiCardView';
@@ -26,135 +27,133 @@ const calculateVideoMetadata: CalculateMetadataFunction<AlignedRenderPayload> = 
   };
 };
 
-const VideoScene: React.FC<{ scene: AlignedSceneItem; fps: number }> = ({
-  scene,
-  fps,
-}) => {
+const VideoSceneContent: React.FC<{
+  scene: AlignedSceneItem;
+  totalScenes: number;
+  entityKey?: string;
+  resourceKeyword?: string;
+  fps: number;
+}> = ({ scene, totalScenes, entityKey, resourceKeyword, fps }) => {
   return (
-    <div
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        width: '100%',
-        height: '100%',
-        background: 'radial-gradient(ellipse at 50% 25%, #0f172a 0%, #020617 100%)',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      {/* 科技背景动态网格光效 */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundImage:
-            'linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px)',
-          backgroundSize: '40px 40px',
-          opacity: 0.6,
-        }}
-      />
+    <SafeAreaContainer showDebugBorder={false}>
+      {/* 上方核心视觉容器 */}
+      <div style={{ width: '100%', marginTop: 20 }}>
+        {scene.visual_type === 'terminal_code' && (
+          <TerminalCodeView
+            sceneIndex={scene.scene_index}
+            totalScenes={totalScenes}
+            entityKey={entityKey}
+            resourceKeyword={resourceKeyword}
+            codeSnippet={scene.code_snippet || ''}
+            highlightText={scene.highlight_text}
+          />
+        )}
+        {scene.visual_type === 'ui_card' && (
+          <UiCardView
+            sceneIndex={scene.scene_index}
+            totalScenes={totalScenes}
+            entityKey={entityKey}
+            highlightText={scene.highlight_text}
+            statItems={scene.stat_items || []}
+          />
+        )}
+        {scene.visual_type === 'stat_chart' && (
+          <StatChartView
+            sceneIndex={scene.scene_index}
+            totalScenes={totalScenes}
+            entityKey={entityKey}
+            highlightText={scene.highlight_text}
+            statItems={scene.stat_items || []}
+          />
+        )}
+        {scene.visual_type === 'media_showcase' && (
+          <MediaShowcaseView
+            sceneIndex={scene.scene_index}
+            totalScenes={totalScenes}
+            entityKey={entityKey}
+            resourceKeyword={resourceKeyword}
+            highlightText={scene.highlight_text}
+            mediaAssetUrl={
+              scene.media_asset_url ? staticFile(scene.media_asset_url) : undefined
+            }
+          />
+        )}
+      </div>
 
-      <SafeAreaContainer showDebugBorder={false}>
-        {/* 上方核心视觉容器 */}
-        <div style={{ width: '100%', marginTop: 20 }}>
-          {scene.visual_type === 'terminal_code' && (
-            <TerminalCodeView
-              codeSnippet={scene.code_snippet}
-              highlightText={scene.highlight_text}
-            />
-          )}
-          {scene.visual_type === 'ui_card' && (
-            <UiCardView
-              highlightText={scene.highlight_text}
-              statItems={scene.stat_items}
-            />
-          )}
-          {scene.visual_type === 'stat_chart' && (
-            <StatChartView
-              highlightText={scene.highlight_text}
-              statItems={scene.stat_items}
-            />
-          )}
-          {scene.visual_type === 'media_showcase' && (
-            <MediaShowcaseView
-              highlightText={scene.highlight_text}
-              mediaAssetUrl={
-                scene.media_asset_url ? staticFile(scene.media_asset_url) : undefined
-              }
-            />
-          )}
-        </div>
-
-        {/* 下方安全区动态字幕 */}
-        <div style={{ width: '100%', marginBottom: 30 }}>
-          <SubtitleOverlay subtitles={scene.subtitles} fps={fps} />
-        </div>
-      </SafeAreaContainer>
+      {/* 下方安全区动态字幕 */}
+      <SubtitleOverlay subtitles={scene.subtitles} />
 
       {/* 音频与音效轨道 */}
       {scene.audio_src && <Audio src={staticFile(scene.audio_src)} />}
       {scene.sfx_src && <Audio src={staticFile(scene.sfx_src)} volume={0.6} />}
-    </div>
+    </SafeAreaContainer>
   );
 };
 
 export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
   return (
-    <div style={{ flex: 1, backgroundColor: '#020617', position: 'relative' }}>
-      {/* 背景循环音乐 (-24dB 极客环境底噪) */}
-      {props.bgm_src && (
-        <Audio src={staticFile(props.bgm_src)} volume={0.06} loop />
-      )}
+    <TemplateProvider templateId={props.template_id} theme={props.theme}>
+      <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
+        {/* 背景循环音乐 (-24dB 极客环境底噪) */}
+        {props.bgm_src && (
+          <Audio src={staticFile(props.bgm_src)} volume={0.06} loop />
+        )}
 
-      {/* 视频正文各分镜 */}
-      {props.scenes.map((scene) => (
-        <Sequence
-          key={scene.scene_index}
-          from={scene.start_frame}
-          durationInFrames={scene.duration_frames}
-        >
-          <VideoScene scene={scene} fps={props.fps} />
+        {/* 视频正文各分镜 */}
+        {props.scenes.map((scene) => (
+          <Sequence
+            key={scene.scene_index}
+            from={scene.start_frame}
+            durationInFrames={scene.duration_frames}
+          >
+            <VideoSceneContent
+              scene={scene}
+              totalScenes={props.scenes.length}
+              entityKey={props.task_id}
+              resourceKeyword={props.resource_keyword}
+              fps={props.fps}
+            />
+          </Sequence>
+        ))}
+
+        {/* 关键帧作为封面：第 0 帧渲染高清封面海报（定格 1 帧），确保抖音和本地相册默认直接提取该图作为封面 */}
+        <Sequence from={0} durationInFrames={1}>
+          <CoverStillInner {...props} />
         </Sequence>
-      ))}
 
-      {/* 关键帧作为封面：第 0 帧渲染高清封面海报（定格 1 帧），确保抖音和本地相册默认直接提取该图作为封面 */}
-      <Sequence from={0} durationInFrames={1}>
-        <CoverStill {...props} />
-      </Sequence>
-
-      {/* 左下角合规 AIGC 声明水印 */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 40,
-          left: 96,
-          padding: '6px 14px',
-          background: 'rgba(0, 0, 0, 0.45)',
-          borderRadius: 12,
-          color: '#64748b',
-          fontSize: 16,
-          fontWeight: 600,
-          border: '1px solid rgba(255, 255, 255, 0.08)',
-          zIndex: 100,
-        }}
-      >
-        AI辅助生成
+        {/* 左下角合规 AIGC 声明水印 */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 40,
+            left: 96,
+            padding: '6px 14px',
+            background: 'rgba(0, 0, 0, 0.45)',
+            borderRadius: 12,
+            color: '#64748b',
+            fontSize: 16,
+            fontWeight: 600,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            zIndex: 100,
+          }}
+        >
+          AI辅助生成
+        </div>
       </div>
-    </div>
+    </TemplateProvider>
   );
 };
 
-export const CoverStill: React.FC<AlignedRenderPayload> = (props) => {
+const CoverStillInner: React.FC<AlignedRenderPayload> = (props) => {
+  const { id, tokens, layout } = useTemplate();
+
   return (
     <div
       style={{
         width: 1080,
         height: 1920,
-        background: 'radial-gradient(circle at 50% 35%, #0f172a 0%, #020617 100%)',
+        background: tokens.canvasBg,
+        color: tokens.textPrimary,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
@@ -162,34 +161,38 @@ export const CoverStill: React.FC<AlignedRenderPayload> = (props) => {
         position: 'relative',
         boxSizing: 'border-box',
         padding: '0 80px',
+        overflow: 'hidden',
       }}
     >
-      {/* 科技背景光 */}
-      <div
-        style={{
-          position: 'absolute',
-          width: 600,
-          height: 600,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(56, 189, 248, 0.25) 0%, transparent 70%)',
-          filter: 'blur(60px)',
-        }}
-      />
+      {/* 环境光晕 */}
+      {tokens.ambientGlowPrimary && (
+        <div
+          style={{
+            position: 'absolute',
+            width: 700,
+            height: 700,
+            borderRadius: '50%',
+            background: `radial-gradient(circle, ${tokens.ambientGlowPrimary} 0%, transparent 70%)`,
+            filter: 'blur(70px)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
 
       {/* 顶部标签 */}
       <div
         style={{
           padding: '14px 36px',
-          background: 'rgba(56, 189, 248, 0.15)',
-          border: '2px solid rgba(56, 189, 248, 0.7)',
-          borderRadius: 50,
-          color: '#38bdf8',
+          background: tokens.badgeBg,
+          color: tokens.badgeText,
+          border: tokens.badgeBorder || 'none',
+          borderRadius: layout.useSerifHeadline ? 8 : 50,
           fontSize: 34,
           fontWeight: 800,
           letterSpacing: 2,
           marginBottom: 40,
           textTransform: 'uppercase',
-          boxShadow: '0 0 40px rgba(56, 189, 248, 0.3)',
+          boxShadow: tokens.cardShadow,
         }}
       >
         {props.cover_sub_text || 'GitHub 趋势'}
@@ -200,66 +203,74 @@ export const CoverStill: React.FC<AlignedRenderPayload> = (props) => {
         style={{
           fontSize: 82,
           fontWeight: 900,
-          color: '#ffffff',
+          color: tokens.textPrimary,
           textAlign: 'center',
           lineHeight: 1.25,
           letterSpacing: 2,
-          textShadow: '0 6px 30px rgba(0, 0, 0, 0.9), 0 0 50px rgba(56, 189, 248, 0.5)',
+          textShadow: tokens.cardShadow,
           maxWidth: 920,
           marginBottom: 36,
+          fontFamily: layout.useSerifHeadline ? 'Georgia, serif' : 'inherit',
         }}
       >
         {props.cover_main_text || props.title}
       </div>
 
-      {/* 封面正中央 AI 互动引导提示徽章 */}
+      {/* 封面正中央技术交流提示徽章 */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          padding: '12px 28px',
-          background: 'rgba(16, 185, 129, 0.15)',
-          border: '1.5px solid rgba(52, 211, 153, 0.6)',
+          padding: '14px 32px',
+          background: tokens.cardBg,
+          border: tokens.cardBorder,
           borderRadius: 30,
           marginBottom: 44,
-          boxShadow: '0 0 25px rgba(16, 185, 129, 0.25)',
-          backdropFilter: 'blur(10px)',
+          boxShadow: tokens.cardShadow,
         }}
       >
         <span style={{ fontSize: 24 }}>💡</span>
         <span
           style={{
-            color: '#34d399',
+            color: tokens.accentPrimary,
             fontSize: 24,
             fontWeight: 800,
             letterSpacing: 1.5,
           }}
         >
-          此视频评论区已接入智能回复，欢迎体验
+          欢迎在评论区一起交流探讨
         </span>
       </div>
 
-      {/* 底部极客终端卡片缩略装饰 */}
+      {/* 底部代码卡片缩略装饰 */}
       <div
         style={{
           width: '100%',
-          borderRadius: 20,
-          background: 'rgba(15, 23, 42, 0.85)',
-          border: '1.5px solid rgba(255, 255, 255, 0.15)',
+          borderRadius: tokens.cardRadius,
+          background: tokens.cardBg,
+          border: tokens.cardBorder,
           padding: '24px 30px',
-          boxShadow: '0 20px 50px rgba(0,0,0,0.8)',
+          boxShadow: tokens.cardShadow,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
         }}
       >
-        <span style={{ color: '#38bdf8', fontSize: 26, fontFamily: 'monospace', fontWeight: 700 }}>
-          $ pip install {props.resource_keyword.toLowerCase()}
+        <span style={{ color: tokens.accentPrimary, fontSize: 26, fontFamily: 'monospace', fontWeight: 700 }}>
+          $ pip install {props.resource_keyword ? props.resource_keyword.toLowerCase() : 'tool'}
         </span>
-        <span style={{ color: '#94a3b8', fontSize: 20 }}>开源技术速递</span>
+        <span style={{ color: tokens.textSecondary, fontSize: 20 }}>开源技术速递</span>
       </div>
     </div>
+  );
+};
+
+export const CoverStill: React.FC<AlignedRenderPayload> = (props) => {
+  return (
+    <TemplateProvider templateId={props.template_id} theme={props.theme}>
+      <CoverStillInner {...props} />
+    </TemplateProvider>
   );
 };
 
@@ -267,17 +278,31 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
   props
 ) => {
   return (
+    <TemplateProvider templateId={props.template_id} theme={props.theme}>
+      <XhsCardStillInner {...props} />
+    </TemplateProvider>
+  );
+};
+
+const XhsCardStillInner: React.FC<AlignedRenderPayload & { frameIndex?: number }> = (
+  props
+) => {
+  const { tokens, layout } = useTemplate();
+
+  return (
     <div
       style={{
         width: 1242,
         height: 1660,
-        background: 'radial-gradient(circle at 50% 30%, #0f172a 0%, #020617 100%)',
+        background: tokens.canvasBg,
+        color: tokens.textPrimary,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
         padding: '80px 70px',
         boxSizing: 'border-box',
         position: 'relative',
+        overflow: 'hidden',
       }}
     >
       {/* 顶部标题栏 */}
@@ -286,10 +311,10 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
           style={{
             display: 'inline-block',
             padding: '10px 24px',
-            background: 'rgba(56, 189, 248, 0.15)',
-            border: '1.5px solid rgba(56, 189, 248, 0.6)',
+            background: tokens.badgeBg,
+            border: tokens.badgeBorder || 'none',
             borderRadius: 30,
-            color: '#38bdf8',
+            color: tokens.badgeText,
             fontSize: 24,
             fontWeight: 800,
             marginBottom: 24,
@@ -301,10 +326,11 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
           style={{
             fontSize: 54,
             fontWeight: 900,
-            color: '#ffffff',
+            color: tokens.textPrimary,
             lineHeight: 1.3,
             letterSpacing: 1,
-            textShadow: '0 4px 20px rgba(0,0,0,0.8)',
+            textShadow: tokens.cardShadow,
+            fontFamily: layout.useSerifHeadline ? 'Georgia, serif' : 'inherit',
           }}
         >
           {props.title}
@@ -315,17 +341,17 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
       <div
         style={{
           width: '100%',
-          borderRadius: 24,
-          background: 'rgba(15, 23, 42, 0.9)',
-          border: '2px solid rgba(56, 189, 248, 0.3)',
+          borderRadius: tokens.cardRadius,
+          background: tokens.cardBg,
+          border: tokens.cardBorder,
           padding: 40,
-          boxShadow: '0 25px 60px rgba(0,0,0,0.8)',
+          boxShadow: tokens.cardShadow,
         }}
       >
         <div
           style={{
             fontSize: 28,
-            color: '#f8fafc',
+            color: tokens.codeText,
             fontFamily: 'monospace',
             lineHeight: 1.6,
             whiteSpace: 'pre-wrap',
@@ -343,15 +369,15 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
           justifyContent: 'space-between',
           alignItems: 'center',
           padding: '20px 30px',
-          background: 'rgba(30, 41, 59, 0.7)',
+          background: tokens.cardBg,
           borderRadius: 20,
-          border: '1px solid rgba(255, 255, 255, 0.1)',
+          border: tokens.cardBorder,
         }}
       >
-        <span style={{ fontSize: 24, color: '#38bdf8', fontWeight: 800 }}>
+        <span style={{ fontSize: 24, color: tokens.accentPrimary, fontWeight: 800 }}>
           💡 欢迎在评论区一起交流探讨
         </span>
-        <span style={{ fontSize: 20, color: '#94a3b8' }}>科技极客速递</span>
+        <span style={{ fontSize: 20, color: tokens.textSecondary }}>科技极客速递</span>
       </div>
     </div>
   );
@@ -359,6 +385,7 @@ export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number
 
 const defaultMockProps: AlignedRenderPayload = {
   task_id: 'default_demo',
+  template_id: 'linear_obsidian',
   fps: 30,
   width: 1080,
   height: 1920,
@@ -378,12 +405,12 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="GeekShortVideo"
         component={GeekShortVideo}
-        durationInFrames={900}
+        durationInFrames={300}
         fps={30}
         width={1080}
         height={1920}
-        defaultProps={defaultMockProps}
         calculateMetadata={calculateVideoMetadata}
+        defaultProps={defaultMockProps}
       />
       <Still
         id="CoverStill"
