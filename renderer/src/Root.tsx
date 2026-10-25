@@ -109,7 +109,7 @@ export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
             <VideoSceneContent
               scene={scene}
               totalScenes={props.scenes.length}
-              entityKey={props.task_id}
+              entityKey={props.resource_keyword || 'OpenSource'}
               resourceKeyword={props.resource_keyword}
               fps={props.fps}
             />
