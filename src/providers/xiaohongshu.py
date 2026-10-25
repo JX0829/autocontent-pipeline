@@ -48,13 +48,21 @@ class XiaohongshuProvider(BaseSocialProvider):
         if "error" in resp:
             logger.error(f"MCP Tool call '{tool_name}' failed: {resp['error']}")
             return {"success": False, "error": resp["error"]}
-        
-        result_content = resp.get("result", {}).get("content", [])
+
+        res_payload = resp.get("result", {})
+        is_error = res_payload.get("isError", False)
+        result_content = res_payload.get("content", [])
         text_out = ""
         for c in result_content:
             if c.get("type") == "text":
                 text_out += c.get("text", "")
-        return {"success": True, "raw_text": text_out, "result": resp.get("result")}
+
+        # 严格防御：若返回包含 isError 或显式失败提示，判定为调用失败
+        if is_error or "失败" in text_out or "未找到评论" in text_out:
+            logger.warning(f"MCP Tool call '{tool_name}' returned error: {text_out}")
+            return {"success": False, "raw_text": text_out, "result": res_payload, "error": text_out}
+
+        return {"success": True, "raw_text": text_out, "result": res_payload}
 
     def check_login_status(self) -> bool:
         res = self.call_tool("check_login_status", {})
