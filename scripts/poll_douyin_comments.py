@@ -104,6 +104,7 @@ def poll_and_reply_live_comments():
             page.wait_for_timeout(1000)
 
         total_processed = 0
+        replied_records = []
 
         # 2. 遍历有评论的视频，通过精确索引切入
         for target in target_indices:
@@ -194,6 +195,13 @@ def poll_and_reply_live_comments():
                                 reply_success = True
                                 break
                         logger.info(f"✅ Replied to {user_name} on Douyin: '{reply_content}'")
+                        replied_records.append({
+                            "platform": "抖音",
+                            "feed_title": v_title,
+                            "user": user_name,
+                            "comment": comment_text,
+                            "reply": reply_content
+                        })
                     except Exception as e:
                         logger.error(f"Failed to submit reply on DOM: {e}")
 
@@ -231,6 +239,7 @@ def poll_and_reply_live_comments():
 
         browser.close()
         logger.info(f"Douyin comment cycle completed. Handled {total_processed} live comment(s).")
+        return replied_records
 
 if __name__ == "__main__":
     poll_and_reply_live_comments()

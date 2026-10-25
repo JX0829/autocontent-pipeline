@@ -48,6 +48,7 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
     logger.info(f"Fetched {len(notifications)} notification(s) from Xiaohongshu.")
 
     processed_count = 0
+    replied_records = []
     for item in notifications:
         comment_id = item.get("comment_id")
         comment_text = (item.get("comment_text") or "").strip()
@@ -85,6 +86,13 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
                 reply_success = provider.reply_comment(comment_id=comment_id, content=reply_content)
                 if reply_success:
                     logger.info(f"✅ Successfully replied to {user_name} on Xiaohongshu: '{reply_content}'")
+                    replied_records.append({
+                        "platform": "小红书",
+                        "feed_title": feed_title,
+                        "user": user_name,
+                        "comment": comment_text,
+                        "reply": reply_content
+                    })
                 else:
                     logger.warning(f"❌ Failed to reply to {user_name} on Xiaohongshu via MCP.")
             except Exception as e:
@@ -126,6 +134,7 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
         time.sleep(2)
 
     logger.info(f"Xiaohongshu comment cycle finished. Handled {processed_count} comment(s).")
+    return replied_records
 
 if __name__ == "__main__":
     is_dry = "--dry-run" in sys.argv
