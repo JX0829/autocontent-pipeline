@@ -45,7 +45,7 @@ class FeishuCardBuilder:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"📌 **视频标题**:\n**{title}**\n\n🏷️ **话题标签**: {topic_str}\n\n🔑 **私域引流暗号**: `{resource_keyword}`"
+                    "content": f"📌 **视频标题**:\n**{title}**\n\n🏷️ **话题标签**: {topic_str}"
                 }
             },
             {

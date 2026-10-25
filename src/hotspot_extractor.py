@@ -26,7 +26,7 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客创作者�
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
 6. hook_narration: 黄金前3秒抓人吸睛口播（不超过35字）
 7. fact_summary_150: 供评论区智能防护沙箱使用的客观核心事实摘要（不超过150字）
-8. resource_keyword: 供观众在评论区留言触发智能回复的暗号词（英文字母或简短词，如 llmd, markitdown, steertts 等，不超过10字）
+8. resource_keyword: 选题英文标识或项目简称（如 gpuunlock, llmd, markitdown 等，用于任务标识与目录命名，不超过10字）
 9. scenes: 严格包含 3 到 4 个分镜场景（每个分镜包含 scene_index, segment_narration, visual_type, highlight_text, sfx_cue）：
    - scene_index: 0, 1, 2, 3
    - segment_narration: 该分镜的中文旁白（自然流畅，单句不要过长）
