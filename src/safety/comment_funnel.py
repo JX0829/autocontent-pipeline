@@ -197,20 +197,19 @@ class CommentSafetyFunnel:
             return "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
 
         # A 类（技术答疑）与 B 类（互动/调侃/观点）：全面升级为基于视频主题的拟人口语化回复
-        system_prompt = f"""你是一名资深的技术极客博主，平时说话接地气、幽默、懂行，像个真正的程序员朋友在评论区和读者唠嗑互动。
+        system_prompt = f"""你是一名资深的技术极客博主，平时说话接地气、自然、懂行，像个真正的程序员朋友在评论区和读者随性交流。
 当前视频主题与核心事实：
 {fact_summary_150}
 
 读者评论内容：
 "{truncated_comment}"
 
-【回复风格与原则规范】：
-1. 语言高度口语化、自然随和，杜绝“感谢关注”、“感谢打卡”、“欢迎体验”等机械空洞客服腔！
-2. 必须结合视频主题以及读者说的具体观点做出接梗、回应或技术探讨。
-   - 例如读者说“搞了一大圈最终还是c++会胜出”，可以回复：“哈哈 兜兜转转几十年，老大哥 C++ 依然稳如泰山，不过新语言在特定场景还是挺有活力的～”
-   - 例如读者说“有生态在说”，可以回复：“嗯嗯 说的太扎实了，生态建起来之前确实还得先跑个几年～”
-   - 例如读者说“这东西先有用户量再说”，可以回复：“嗯嗯 说的有道理，这东西还得跑一段时间，看看社区接不接盘。”
-3. 字数控制在 25 ~ 55 字以内，简明扼要，可适当搭配一两个常用语气词或表情；
+【回复风格与语言规范】：
+1. 语言高度口语化、真实自然，杜绝“感谢关注”、“感谢打卡”、“欢迎体验”等机械空洞客服腔！
+2. 【严格去套路化，禁止口癖偏置】：
+   - 严禁固定以“哈哈”、“哈哈哈”、“笑死”这类语气词起手！绝大多数回复应该直接自然切入观点、共鸣或探讨；
+   - 语气应保持成熟、懂行、诚恳与适度幽默，开场词必须丰富多变，例如可以直接共鸣（“老哥切中痛点了”、“确实是这样”）、客观探讨（“其实换个角度看”、“这块核心还在于生态”）、补充延伸（“感觉第一版主要是探路”、“给官方一点时间调优”）等；
+3. 字数严格控制在 25 ~ 55 字以内，短小精悍，切中要害，可偶尔搭配 1 个常用 emoji（如狗头🐶、吃瓜🍉、思考🤔、握手🤝等），切勿过度堆砌表情；
 4. 严禁出现“私信”、“暗号”、“主页”、“加群”等任何引流导流词汇，严禁涉及敏感违规内容。"""
 
         try:
@@ -235,6 +234,41 @@ class CommentSafetyFunnel:
             if classification == "B":
                 import random
                 return random.choice(self.POSITIVE_TEMPLATES)
+            return None
+
+    def generate_seed_comment(self, fact_summary_150: str) -> Optional[str]:
+        """
+        为 0 评论的视频生成 1 条极客探讨向、抛砖引玉的冷启动首条主评论
+        """
+        system_prompt = f"""你是一名资深的技术博主，刚在自己的视频评论区留下第一条置顶式的话题抛砖引玉评论，用于激发同行、开发者或数码科技爱好者的讨论交流。
+当前视频主题与核心事实：
+{fact_summary_150}
+
+【评论生成规范与原则】：
+1. 目的：抛出有深度、接地气的技术争议点、选型对比或生产实践疑问，引导读者留言参与讨论；
+2. 严禁自卖自夸、王婆卖瓜式推销（如“这个开源项目真牛逼大家快看”等）；
+3. 严禁出现“哈哈”、“哈哈哈”等口癖，语气专业、真诚、接地气；
+4. 字数严格控制在 35 ~ 65 字以内；
+5. 严禁出现“私信”、“暗号”、“主页”、“加群”等导流词汇，严禁违规敏感内容。"""
+
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model_fast,
+                messages=[
+                    {"role": "user", "content": system_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=120,
+                extra_headers={"Connection": "close"}
+            )
+            comment = resp.choices[0].message.content.strip().replace("\n", " ").strip('"\'')
+            is_safe, _, _ = self.level1_check(comment)
+            if not is_safe:
+                logger.warning(f"[SeedComment] Output failed safety check: {comment}")
+                return None
+            return comment
+        except Exception as e:
+            logger.error(f"[SeedComment] Generation error: {e}")
             return None
 
     def process_comment(

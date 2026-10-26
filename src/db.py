@@ -32,10 +32,22 @@ class PipelineDB:
                 published_video_id TEXT,
                 fact_summary_150 TEXT,
                 resource_keyword TEXT,
+                has_seed_comment INTEGER DEFAULT 0,
+                seed_comment_text TEXT,
+                seed_comment_at DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             """)
+            # 兼容性迁移：检查字段是否存在，若无则动态补充
+            cur.execute("PRAGMA table_info(content_tasks);")
+            columns = [col[1] for col in cur.fetchall()]
+            if "has_seed_comment" not in columns:
+                cur.execute("ALTER TABLE content_tasks ADD COLUMN has_seed_comment INTEGER DEFAULT 0;")
+            if "seed_comment_text" not in columns:
+                cur.execute("ALTER TABLE content_tasks ADD COLUMN seed_comment_text TEXT;")
+            if "seed_comment_at" not in columns:
+                cur.execute("ALTER TABLE content_tasks ADD COLUMN seed_comment_at DATETIME;")
             cur.execute("""
             CREATE TABLE IF NOT EXISTS blacklisted_entities (
                 entity_key TEXT PRIMARY KEY,

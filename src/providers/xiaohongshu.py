@@ -132,3 +132,14 @@ class XiaohongshuProvider(BaseSocialProvider):
             "content": content
         })
         return res.get("success", False)
+
+    def post_seed_comment(self, feed_id: str, xsec_token: str, content: str) -> bool:
+        """
+        在指定小红书笔记下发表冷启动第一条主评论（抛砖引玉）
+        """
+        res = self.call_tool("post_comment_to_feed", {
+            "feed_id": feed_id,
+            "xsec_token": xsec_token,
+            "content": content
+        })
+        return res.get("success", False)
