@@ -5,7 +5,8 @@ apikey
 sk-
 系统提示
 system prompt
-Prompt
+prompt injection
+Prompt注入
 忽略之前指令
 忽略以上指令
 越狱
