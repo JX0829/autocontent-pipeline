@@ -53,8 +53,8 @@ async def trigger_video_from_digest(news_content: str = None, digest_file: str =
         json.dump(draft_dict, f, ensure_ascii=False, indent=2)
 
     logger.info(f"Rendering short video for task: {task_id}...")
-    video_path, cover_path, output_dir, duration = await render_hotspot_video(str(draft_path), task_id)
-    logger.info(f"Video rendered successfully! Path: {video_path}")
+    video_path, cover_path, output_dir, duration, resolved_tpl = await render_hotspot_video(str(draft_path), task_id)
+    logger.info(f"Video rendered successfully! Path: {video_path}, Template: {resolved_tpl}")
 
     # 渲染完成后自动向飞书推送待审交互卡片
     try:
@@ -71,6 +71,7 @@ async def trigger_video_from_digest(news_content: str = None, digest_file: str =
             fact_summary=draft_dict.get("fact_summary_150", ""),
             duration_sec=duration,
             video_size_mb=video_size_mb,
+            template_id=resolved_tpl,
             status="PENDING_APPROVAL"
         )
         target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_47ff8c422d053a35c5eea55d3d75c209")

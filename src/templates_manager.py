@@ -29,11 +29,16 @@ DEFAULT_THEME_MAPPING: Dict[str, str] = {
 }
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "templates.yaml"
+DEFAULT_STATE_FILE = PROJECT_ROOT / "data" / "round_robin_state.json"
+
+
 class TemplateManager:
     """负责加载 config/templates.yaml 并按优先级决策最终注入 Remotion 的 template_id."""
 
-    def __init__(self, config_path: str | Path = "config/templates.yaml") -> None:
-        self.config_path = Path(config_path)
+    def __init__(self, config_path: str | Path | None = None) -> None:
+        self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._config = self._load_config()
 
     def _load_config(self) -> dict:
@@ -58,7 +63,7 @@ class TemplateManager:
             return True
         return template_id in self.list_enabled_templates()
 
-    def get_next_round_robin_template(self, state_file: str | Path = "data/round_robin_state.json") -> str:
+    def get_next_round_robin_template(self, state_file: str | Path | None = None) -> str:
         """从持久化状态中按顺序获取下一个轮换模板 (T1 -> T2 -> T3 -> T4 -> T5 -> T1 ...)"""
         seq = self._config.get("round_robin_sequence") or BUILTIN_TEMPLATE_IDS
         enabled = self.list_enabled_templates()
@@ -66,7 +71,7 @@ class TemplateManager:
         if not active_seq:
             return "linear_obsidian"
 
-        state_p = Path(state_file)
+        state_p = Path(state_file) if state_file else DEFAULT_STATE_FILE
         state_data = {}
         if state_p.exists():
             try:

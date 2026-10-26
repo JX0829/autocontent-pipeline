@@ -17,6 +17,7 @@ class FeishuCardBuilder:
         fact_summary: str,
         duration_sec: float,
         video_size_mb: float,
+        template_id: Optional[str] = None,
         status: str = "PENDING_APPROVAL",
         rejection_reason: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -32,12 +33,21 @@ class FeishuCardBuilder:
         }
         badge_text, badge_color = status_badges.get(status, ("⚪ 未知状态", "grey"))
 
+        template_display_map = {
+            "editorial_news": "T1 · 瑞士先锋报刊风 (Editorial Paper)",
+            "cupertino_glass": "T2 · Apple 毛玻璃流光风 (Cupertino Glass)",
+            "neo_brutalism": "T3 · 多巴胺波普粗野风 (Neo-Brutalism Pop)",
+            "notion_craft": "T4 · Notion 暖调手账风 (Notion Warm Craft)",
+            "linear_obsidian": "T5 · Linear 钛黑流光风 (Linear Obsidian)",
+        }
+        tpl_name = template_display_map.get(template_id or "", template_id or "未指定")
+
         elements = [
             {
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**状态**: {badge_text}  |  **时长**: `{duration_sec:.1f}s`  |  **视频大小**: `{video_size_mb:.2f} MB`\n**任务 ID**: `{task_id}`"
+                    "content": f"**状态**: {badge_text}  |  **时长**: `{duration_sec:.1f}s`  |  **视频大小**: `{video_size_mb:.2f} MB`\n🎨 **套用模板**: **`{tpl_name}`**\n**任务 ID**: `{task_id}`"
                 }
             },
             {"tag": "hr"},

@@ -93,6 +93,14 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         if video_path and os.path.exists(video_path):
             video_size_mb = os.path.getsize(video_path) / (1024 * 1024)
 
+        # 读取任务实际套用的模板 template_id
+        task_record = db.get_task(task_id) or {}
+        aligned_json_str = task_record.get("aligned_render_json") or "{}"
+        try:
+            task_template_id = json.loads(aligned_json_str).get("template_id")
+        except Exception:
+            task_template_id = None
+
         if action_type == "APPROVE_TASK":
             db.update_task_status(task_id, "APPROVED")
             logger.info(f"Task {task_id} status updated to APPROVED")
@@ -108,6 +116,7 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
                 fact_summary=fact_summary,
                 duration_sec=duration_sec,
                 video_size_mb=video_size_mb,
+                template_id=task_template_id,
                 status="APPROVED"
             )
             resp.card = {"type": "raw", "data": new_card}
@@ -132,6 +141,7 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
                 fact_summary=fact_summary,
                 duration_sec=duration_sec,
                 video_size_mb=video_size_mb,
+                template_id=task_template_id,
                 status="REJECTED",
                 rejection_reason="审核人人工驳回"
             )

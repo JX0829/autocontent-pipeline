@@ -108,7 +108,7 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
         xhs_cards_dir=os.path.join(output_dir, "xhs_cards")
     )
     print(f"\n[4/4] 渲染完成！成片路径: {video_out_path}")
-    return video_out_path, cover_out_path, output_dir, total_sec
+    return video_out_path, cover_out_path, output_dir, total_sec, aligned_payload.template_id
 
 if __name__ == "__main__":
     import argparse
