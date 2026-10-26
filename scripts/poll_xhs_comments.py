@@ -60,12 +60,15 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
         if not comment_id or not comment_text:
             continue
 
-        # 查重检查（根据 comment_id 或 文本）
+        # 查重检查：仅当已成功回复（status = 'REPLIED'）时才跳过，避免偶发超时失败后被永久锁死
         with db.get_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT 1 FROM comment_interactions WHERE comment_id = ? OR raw_comment = ?", (comment_id, comment_text))
+            cur.execute("""
+            SELECT status FROM comment_interactions
+            WHERE (comment_id = ? OR raw_comment = ?) AND status = 'REPLIED'
+            """, (comment_id, comment_text))
             if cur.fetchone():
-                logger.info(f"Comment already processed in DB: [{comment_id}] '{comment_text}' by {user_name}")
+                logger.info(f"Comment already replied successfully in DB: [{comment_id}] '{comment_text}' by {user_name}")
                 continue
 
         logger.info(f"Processing new Xiaohongshu comment: [{comment_id}] '{comment_text}' by {user_name} on '{feed_title}'")
