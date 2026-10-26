@@ -207,7 +207,6 @@ const CoverStillInner: React.FC<AlignedRenderPayload> = (props) => {
           textAlign: 'center',
           lineHeight: 1.25,
           letterSpacing: 2,
-          textShadow: tokens.cardShadow,
           maxWidth: 920,
           marginBottom: 36,
           fontFamily: layout.useSerifHeadline ? 'Georgia, serif' : 'inherit',
