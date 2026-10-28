@@ -65,9 +65,18 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     topics = draft_script.get("topics") or draft_script.get("tags") or []
     content_text = draft_script.get("content_text") or draft_script.get("fact_summary_150") or ""
 
-    if not video_path or not os.path.exists(video_path):
-        logger.error(f"Video file not found: {video_path}")
-        return False
+    # 过滤与合规化：去除完整 URL 及外链，替换为关键词搜索引导
+    import re
+    def sanitize_text(text: str) -> str:
+        if not text:
+            return ""
+        # 移除完整 http/https 链接或 github.com 路径
+        text = re.sub(r'https?://[^\s]+', '', text)
+        text = re.sub(r'github\.com/[^\s]+', '', text)
+        return text.strip()
+
+    title = sanitize_text(title)
+    content_text = sanitize_text(content_text)
 
     # 检查抖音账号是否启用（解封前可置为 enabled: false）
     publish_success = False

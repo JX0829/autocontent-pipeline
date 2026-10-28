@@ -176,7 +176,7 @@ export const TerminalCodeView: React.FC<TerminalCodeViewProps> = ({
               fontWeight: 800,
             }}
           >
-            💡 评论区交流
+            💡 评论区AI回复，欢迎交流
           </div>
         </div>
       )}

@@ -238,7 +238,7 @@ const CoverStillInner: React.FC<AlignedRenderPayload> = (props) => {
             letterSpacing: 1.5,
           }}
         >
-          欢迎在评论区一起交流探讨
+          💡 评论区AI回复，欢迎交流
         </span>
       </div>
 
@@ -374,7 +374,7 @@ const XhsCardStillInner: React.FC<AlignedRenderPayload & { frameIndex?: number }
         }}
       >
         <span style={{ fontSize: 24, color: tokens.accentPrimary, fontWeight: 800 }}>
-          💡 欢迎在评论区一起交流探讨
+          💡 评论区AI回复，欢迎交流
         </span>
         <span style={{ fontSize: 20, color: tokens.textSecondary }}>科技极客速递</span>
       </div>

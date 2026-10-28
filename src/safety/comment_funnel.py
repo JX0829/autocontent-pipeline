@@ -189,12 +189,10 @@ class CommentSafetyFunnel:
         if classification == "C":
             return self.IRRELEVANT_TEMPLATE
 
-        # E 类：求资源/求源码，纯评论区技术交流探讨
+        # E 类：求资源/求源码，合规指引（禁止暗号/私信/主页等违规导流词）
         if classification == "E":
-            if private_domain_hook:
-                hook = private_domain_hook.format(keyword=resource_keyword) if "{keyword}" in private_domain_hook else private_domain_hook
-                return hook
-            return "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎在评论区一起交流探讨～"
+            kw = resource_keyword or "该项目"
+            return f"直接在 GitHub 搜索【{kw}】即可查看项目源码与文档～"
 
         # A 类（技术答疑）与 B 类（互动/调侃/观点）：全面升级为基于视频主题的拟人口语化回复
         system_prompt = f"""你是一名资深的技术极客博主，平时说话接地气、自然、懂行，像个真正的程序员朋友在评论区和读者随性交流。

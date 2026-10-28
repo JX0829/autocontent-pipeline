@@ -133,12 +133,12 @@ export const MediaShowcaseView: React.FC<MediaShowcaseViewProps> = ({
               borderRadius: 18,
               background: tokens.badgeBg,
               color: tokens.badgeText,
-              fontSize: 32,
+              fontSize: 28,
               fontWeight: 800,
               textAlign: 'center',
             }}
           >
-            💬 评论区回复【{resourceKeyword}】获取完整架构图与部署包
+            💡 评论区AI回复，欢迎交流
           </div>
         )}
       </div>

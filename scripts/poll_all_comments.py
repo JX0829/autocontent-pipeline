@@ -39,7 +39,7 @@ def run():
             import os
             from src.feishu.approval_service import FeishuApprovalService
             service = FeishuApprovalService()
-            target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_47ff8c422d053a35c5eea55d3d75c209")
+            target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_bc831d683c9b59369bc86ee1561ed226")
             rec_type = "open_id" if target.startswith("ou_") else "chat_id"
 
             elements = []

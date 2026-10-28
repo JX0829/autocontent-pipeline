@@ -4,14 +4,22 @@ import { cupertinoGlassPreset } from './presets/cupertino_glass';
 import { neoBrutalismPreset } from './presets/neo_brutalism';
 import { notionCraftPreset } from './presets/notion_craft';
 import { linearObsidianPreset } from './presets/linear_obsidian';
+import { cyberBlueprintPreset } from './presets/cyber_blueprint';
+import { matrixHudPreset } from './presets/matrix_hud';
+import { solarizedAmberPreset } from './presets/solarized_amber';
+import { swissVanguardPreset } from './presets/swiss_vanguard';
 
-// 内置 5 套默认模板注册表
+// 内置模板注册表
 const TEMPLATE_REGISTRY: Record<string, TemplatePreset> = {
   [editorialNewsPreset.id]: editorialNewsPreset,
   [cupertinoGlassPreset.id]: cupertinoGlassPreset,
   [neoBrutalismPreset.id]: neoBrutalismPreset,
   [notionCraftPreset.id]: notionCraftPreset,
   [linearObsidianPreset.id]: linearObsidianPreset,
+  [cyberBlueprintPreset.id]: cyberBlueprintPreset,
+  [matrixHudPreset.id]: matrixHudPreset,
+  [solarizedAmberPreset.id]: solarizedAmberPreset,
+  [swissVanguardPreset.id]: swissVanguardPreset,
 };
 
 // 默认按 theme 的路由映射表
