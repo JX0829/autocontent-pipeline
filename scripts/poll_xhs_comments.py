@@ -33,11 +33,12 @@ def check_and_seed_empty_comments(provider: XiaohongshuCDPProvider, db: Pipeline
     则自动生成一条关于技术话题的开放探讨向主评论（每视频终身仅限一条）。
     """
     logger.info("Checking recently published notes for cold-start seed comment via CDP...")
+    seeded_records = []
     try:
         notes = provider.get_recent_notes(limit=5)
         if not notes:
             logger.info("No recent notes found on profile via CDP.")
-            return
+            return []
 
         with db.get_conn() as conn:
             conn.row_factory = sqlite3.Row
@@ -127,9 +128,31 @@ def check_and_seed_empty_comments(provider: XiaohongshuCDPProvider, db: Pipeline
                     "reply": seed_comment,
                     "status": "SEED_POSTED" if not dry_run else "DRY_RUN"
                 })
+                if not dry_run:
+                    seeded_records.append({
+                        "platform": "小红书",
+                        "feed_title": display_title,
+                        "user": "博主自留(冷启动)",
+                        "comment": "（冷启动抛砖引玉）",
+                        "reply": seed_comment
+                    })
                 break
+        return seeded_records
     except Exception as e:
         logger.error(f"Error checking and seeding comments via CDP: {e}")
+        return []
+
+def poll_and_reply_xhs_comments(dry_run: bool = False):
+    logger.info("Starting live Xiaohongshu comment poll and guard cycle via CDP...")
+    provider = XiaohongshuCDPProvider()
+    if not provider.check_login_status():
+        logger.warning("Xiaohongshu is NOT logged in inside Brave (port 9222).")
+        return []
+
+    db = PipelineDB(str(PROJECT_ROOT / "data" / "pipeline_state.db"))
+    funnel = CommentSafetyFunnel()
+
+    return check_and_seed_empty_comments(provider, db, funnel, dry_run=dry_run)
 
 def main():
     import argparse
@@ -137,15 +160,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Dry run mode without posting")
     args = parser.parse_args()
 
-    provider = XiaohongshuCDPProvider()
-    if not provider.check_login_status():
-        logger.error("Xiaohongshu is NOT logged in inside Brave (port 9222).")
-        sys.exit(1)
-
-    db = PipelineDB(str(PROJECT_ROOT / "data" / "pipeline_state.db"))
-    funnel = CommentSafetyFunnel()
-
-    check_and_seed_empty_comments(provider, db, funnel, dry_run=args.dry_run)
+    poll_and_reply_xhs_comments(dry_run=args.dry_run)
 
 if __name__ == "__main__":
     main()
