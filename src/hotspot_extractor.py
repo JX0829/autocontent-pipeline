@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import logging
+import sqlite3
+import re
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -41,7 +43,7 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 3. title: 抖音/小红书吸引眼球的极客标题（不超过28字）
 4. cover_main_text: 封面正中央超大主标题（简短有力，8~12字，九宫格不裁切）
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
-6. hook_narration: 黄金前3秒抓人吸睛口播（不超过35字）
+6. hook_narration: 黄金前3秒抓人吸睛口播（严禁超过30字！必须极其简练抓人，不超过30字）
 7. fact_summary_150: 供评论区智能防护沙箱使用的客观核心事实摘要（不超过150字）
 8. resource_keyword: 选题英文标识或项目简称（如 gpuunlock, llmd, markitdown 等，用于任务标识与目录命名，不超过10字）
 9. scenes: 严格包含 3 到 4 个分镜场景（每个分镜包含 scene_index, segment_narration, visual_type, highlight_text, sfx_cue）：
@@ -60,6 +62,68 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 
 你必须只输出纯 JSON 字符串，严禁包含任何 Markdown 格式标记（如 ```json ）。"""
 
+def get_recent_pipeline_topics(limit: int = 50) -> list:
+    """从本地数据库获取最近已处理/已生成的短视频主题"""
+    db_path = PROJECT_ROOT / "data" / "pipeline_state.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute("SELECT task_id, entity_key, draft_script_json, created_at FROM content_tasks ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = c.fetchall()
+        topics = []
+        for tid, ek, dj, cat in rows:
+            title = ""
+            slug = ""
+            if dj:
+                try:
+                    d = json.loads(dj)
+                    title = d.get("title", "")
+                    slug = d.get("resource_keyword", "")
+                except Exception:
+                    pass
+            topics.append({"task_id": tid, "entity_key": ek or "", "title": title, "slug": slug or ""})
+        return topics
+    except Exception as e:
+        logger.warning(f"Failed to read pipeline db: {e}")
+        return []
+
+def check_topic_duplicate(candidate: dict, recent_topics: list) -> tuple:
+    """代码级严格硬去重判断"""
+    cand_title = (candidate.get("title") or "").lower()
+    cand_slug = (candidate.get("resource_keyword") or "").lower()
+    cand_key = (candidate.get("entity_key") or "").lower()
+    cand_norm_title = "".join(c for c in cand_title if c.isalnum() or '\u4e00' <= c <= '\u9fff')
+
+    for rec in recent_topics:
+        rec_title = (rec.get("title") or "").lower()
+        rec_slug = (rec.get("slug") or "").lower()
+        rec_key = (rec.get("entity_key") or "").lower()
+        rec_norm_title = "".join(c for c in rec_title if c.isalnum() or '\u4e00' <= c <= '\u9fff')
+
+        # 1. 关键词 slug 精准比对
+        if cand_slug and rec_slug and cand_slug == rec_slug and len(cand_slug) >= 3:
+            return True, f"选题 slug '{cand_slug}' 与已有任务 ({rec.get('task_id')}) 重复"
+
+        # 2. entity_key 比对
+        if cand_key and rec_key and cand_key == rec_key:
+            return True, f"事件标识 entity_key '{cand_key}' 重复"
+
+        # 3. 核心科技实体名称硬比对
+        for keyword in ["hbm4", "hbm", "genie", "thinkrail", "ginux", "openbot", "hallmark", "deeptutor", "cindy", "survival llm", "deepinfer", "kimik3", "pydantic"]:
+            if keyword in cand_title and keyword in rec_title:
+                return True, f"核心实体 '{keyword}' 近期已制作过短视频 ({rec_title})"
+            if keyword in cand_slug and keyword in rec_slug:
+                return True, f"核心实体 slug '{keyword}' 近期已制作过短视频"
+
+        # 4. 标题子串高度重叠
+        if cand_norm_title and rec_norm_title:
+            if cand_norm_title in rec_norm_title or rec_norm_title in cand_norm_title:
+                return True, f"标题与已有视频高度重叠 ({rec_title})"
+
+    return False, ""
+
 def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
     api_key = os.getenv("LLM_API_KEY")
     base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
@@ -70,30 +134,64 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
 
     client = OpenAI(api_key=api_key, base_url=base_url)
 
-    prompt = f"以下是本次2小时全网监控提炼出的最新热点资讯列表：\n\n{news_text}\n\n请严格挑选出其中最重磅的【一条最新科技热点】，提炼并生成标准的 DraftScriptPayload JSON。"
+    # 1. 查询近期已制作的排他黑名单
+    recent_topics = get_recent_pipeline_topics(limit=30)
+    exclude_items = []
+    for rt in recent_topics:
+        t_desc = rt.get("title") or rt.get("slug") or rt.get("entity_key")
+        if t_desc:
+            exclude_items.append(t_desc)
+
+    exclude_prompt = ""
+    if exclude_items:
+        unique_excludes = list(dict.fromkeys(exclude_items))[:20]
+        exclude_prompt = "\n\n【🚨 选题排他黑名单（以下主题在近期已制作过短视频，严禁再次挑选重复话题！必须挑选列表中全新的增量热点）：】\n" + "\n".join([f"- {t}" for t in unique_excludes])
+
+    prompt = f"以下是本次全网监控提炼出的最新热点资讯列表：\n\n{news_text}{exclude_prompt}\n\n请严格挑选出其中最重磅的【一条最新且未制作过的科技热点】，提炼并生成标准的 DraftScriptPayload JSON。"
 
     logger.info("Calling LLM to pick top tech hotspot and generate script payload...")
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3,
-        response_format={"type": "json_object"}
-    )
+    
+    max_retries = 3
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt}
+    ]
 
-    raw_json = response.choices[0].message.content.strip()
-    data = json.loads(raw_json)
+    for attempt in range(max_retries):
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.3 + (attempt * 0.2),
+            response_format={"type": "json_object"}
+        )
 
-    # 校验合法性
-    payload = DraftScriptPayload(**data)
-    result = payload.model_dump()
-    if task_id:
-        result["task_id"] = task_id
-    else:
-        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        slug = result.get("resource_keyword", "hotspot").lower()
-        result["task_id"] = f"news_{slug}_{date_str}"
+        raw_json = response.choices[0].message.content.strip()
+        data = json.loads(raw_json)
 
-    return result
+        # 校验合法性
+        payload = DraftScriptPayload(**data)
+        result = payload.model_dump()
+
+        # 代码级严格去重校验
+        is_dup, reason = check_topic_duplicate(result, recent_topics)
+        if is_dup:
+            logger.warning(f"[Attempt {attempt+1}] Picked topic is duplicate: {reason}. Retrying next candidate...")
+            if attempt < max_retries - 1:
+                messages.append({"role": "assistant", "content": raw_json})
+                messages.append({
+                    "role": "user", 
+                    "content": f"你挑选的选题 '{result.get('title')}' 命中了历史已制作黑名单（原因: {reason}）！请绝对排除它，重新挑选资讯列表中【未被制作过的第二候选热点】！"
+                })
+                continue
+            else:
+                logger.error(f"All {max_retries} attempts picked duplicate topics! Fallback to last.")
+
+        if task_id:
+            result["task_id"] = task_id
+        else:
+            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            slug = result.get("resource_keyword", "hotspot").lower()
+            result["task_id"] = f"news_{slug}_{date_str}"
+
+        return result
+

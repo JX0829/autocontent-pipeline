@@ -16,18 +16,34 @@ class XiaohongshuProvider(BaseSocialProvider):
         self.mcp_url = account_config.get("mcp_url", "http://localhost:18060/mcp")
         self.session_id: Optional[str] = None
 
-    def _call_mcp(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _call_mcp(self, method: str, params: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+        """
+        调用 MCP 接口，内置网络抖动指数退避重试机制（最多重试 3 次）
+        """
+        import time
         headers = ["-H", "Content-Type: application/json"]
         if self.session_id:
             headers.extend(["-H", f"Mcp-Session-Id: {self.session_id}"])
         data = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        cmd = ["curl", "-s", "-i", "-X", "POST", self.mcp_url] + headers + ["-d", data]
-        res = subprocess.check_output(cmd).decode()
-        header_part, body_part = res.split("\r\n\r\n", 1)
-        for line in header_part.split("\r\n"):
-            if line.lower().startswith("mcp-session-id:"):
-                self.session_id = line.split(":", 1)[1].strip()
-        return json.loads(body_part.strip())
+        cmd = ["curl", "-s", "--connect-timeout", "5", "--max-time", "60", "-i", "-X", "POST", self.mcp_url] + headers + ["-d", data]
+
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                res = subprocess.check_output(cmd).decode()
+                header_part, body_part = res.split("\r\n\r\n", 1)
+                for line in header_part.split("\r\n"):
+                    if line.lower().startswith("mcp-session-id:"):
+                        self.session_id = line.split(":", 1)[1].strip()
+                return json.loads(body_part.strip())
+            except Exception as e:
+                last_error = e
+                logger.warning(f"MCP Call attempt {attempt}/{max_retries} failed for '{method}': {e}")
+                if attempt < max_retries:
+                    time.sleep(attempt * 1.5)
+
+        logger.error(f"All {max_retries} MCP call attempts failed for '{method}': {last_error}")
+        return {"error": {"code": -32000, "message": f"Network retry exhausted: {str(last_error)}"}}
 
     def _ensure_session(self):
         if not self.session_id:

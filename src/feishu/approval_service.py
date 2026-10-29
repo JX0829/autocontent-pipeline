@@ -53,10 +53,11 @@ class FeishuApprovalService:
         logger.info(f"Feishu card message sent successfully, message_id={message_id}")
         return message_id
 
-    def update_card(self, message_id: str, card_content: Dict[str, Any]) -> bool:
+    def update_card(self, message_id: str, card_content: Dict[str, Any], max_retries: int = 3) -> bool:
         """
-        更新已发送卡片的内容与状态（用于审批后变更展示为已批准/已驳回，撤销按钮）
+        更新已发送卡片的内容与状态（带网络抖动重试机制，最多 3 次）
         """
+        import time
         req = PatchMessageRequest.builder() \
             .message_id(message_id) \
             .request_body(
@@ -65,11 +66,20 @@ class FeishuApprovalService:
                 .build()
             ).build()
 
-        resp = self.client.im.v1.message.patch(req)
-        if not resp.success():
-            logger.error(f"Failed to patch card message {message_id}: code={resp.code}, msg={resp.msg}")
-            return False
-        return True
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = self.client.im.v1.message.patch(req)
+                if resp.success():
+                    return True
+                logger.warning(f"Patch card message attempt {attempt}/{max_retries} failed: code={resp.code}, msg={resp.msg}")
+            except Exception as e:
+                logger.warning(f"Patch card message exception attempt {attempt}/{max_retries}: {e}")
+
+            if attempt < max_retries:
+                time.sleep(attempt * 1.0)
+
+        logger.error(f"Failed to patch card message {message_id} after {max_retries} attempts.")
+        return False
 
     def upload_and_send_video(self, receive_id: str, receive_id_type: str, video_path: str, file_name: Optional[str] = None) -> Optional[str]:
         """

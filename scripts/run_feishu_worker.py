@@ -9,7 +9,9 @@ Phase 2: 飞书长连接卡片审批工作台 Worker
 import os
 import sys
 import json
+import time
 import logging
+from typing import Dict
 from dotenv import load_dotenv
 
 # 确保 autocontent-pipeline 根目录在 sys.path 中
@@ -36,6 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger("FeishuWorker")
 
 db = PipelineDB(os.getenv("SQLITE_DB_PATH", os.path.join(PIPELINE_ROOT, "data/pipeline_state.db")))
+
+# 防抖锁与冷却时间（同一任务 5 秒内禁止并发重复触发）
+DEBOUNCE_CACHE: Dict[str, float] = {}
+DEBOUNCE_COOLDOWN_SEC = 5.0
 
 
 def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
@@ -71,6 +77,15 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         if not task_id:
             resp.toast = {"type": "error", "content": "缺少任务 ID"}
             return resp
+
+        # 防抖检查：拦截 5 秒内的多重点击
+        now = time.time()
+        last_click = DEBOUNCE_CACHE.get(task_id, 0.0)
+        if (now - last_click) < DEBOUNCE_COOLDOWN_SEC:
+            logger.info(f"Task {task_id} action debounced (within {DEBOUNCE_COOLDOWN_SEC}s)")
+            resp.toast = {"type": "info", "content": "⚡ 任务正在后台处理中，请勿重复点击"}
+            return resp
+        DEBOUNCE_CACHE[task_id] = now
 
         # 查询当前任务
         task = db.get_task(task_id)
@@ -121,10 +136,15 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
             )
             resp.card = {"type": "raw", "data": new_card}
 
-            # 触发后台进程执行发布上传
+            # 纯异步解耦：立即触发独立后台进程执行上传，主事件循环毫秒级返回
             import subprocess
             publish_script = os.path.join(str(PIPELINE_ROOT), "scripts", "run_publish_worker.py")
-            subprocess.Popen([sys.executable, publish_script, "--task-id", task_id])
+            subprocess.Popen(
+                [sys.executable, publish_script, "--task-id", task_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
 
         elif action_type == "REJECT_TASK":
             db.update_task_status(task_id, "REJECTED")
