@@ -40,7 +40,7 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 生成的 DraftScriptPayload 必须遵循以下规范：
 1. theme: 必须是 "tech-github" 或 "ai-product" 或 "breaking-news"
 2. entity_key: 唯一事件或项目标识，如 github:owner/repo 或 news:event-slug
-3. title: 抖音/小红书吸引眼球的极客标题（不超过28字）
+3. title: 抖音/小红书吸引眼球的极客标题（严禁超过20字！黄金区间为16~20字，中英全量字符严禁超过20字，确保小红书与抖音双列瀑布流完整展示无截断）
 4. cover_main_text: 封面正中央超大主标题（简短有力，8~12字，九宫格不裁切）
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
 6. hook_narration: 黄金前3秒抓人吸睛口播（严禁超过30字！必须极其简练抓人，不超过30字）

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Literal, Optional
 
 class SceneItemDraft(BaseModel):
@@ -14,7 +14,7 @@ class SceneItemDraft(BaseModel):
 class DraftScriptPayload(BaseModel):
     theme: Literal["tech-github", "ai-product", "breaking-news"]
     entity_key: str
-    title: str = Field(..., max_length=50)
+    title: str = Field(..., max_length=20, description="小红书/抖音双列瀑布流极客标题，严格限制在20字以内")
     cover_main_text: str = Field(..., max_length=20)
     cover_sub_text: str = Field(..., max_length=30)
     hook_narration: str = Field(..., max_length=50)
@@ -27,6 +27,25 @@ class DraftScriptPayload(BaseModel):
     scenes: List[SceneItemDraft] = Field(..., min_length=3, max_length=8)
     tags: List[str]
     target_account_type: Literal["tech", "news"]
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def sanitize_title_length(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.strip()
+            if len(v) > 20:
+                sub = v[:20]
+                delimiters = ["！", "!", "，", ",", "：", ":", " ", "、", "-", "—", "|", "？", "?"]
+                best_cut = -1
+                for d in delimiters:
+                    idx = sub.rfind(d)
+                    if idx >= 10:
+                        best_cut = max(best_cut, idx)
+                if best_cut != -1:
+                    v = sub[:best_cut].rstrip("！!，,:：、-—|?？ ")
+                else:
+                    v = sub.rstrip("！!，,:：、-—|?？ ")
+        return v
 
 class SubtitleItem(BaseModel):
     text: str

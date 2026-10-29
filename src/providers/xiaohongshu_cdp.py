@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import logging
 import urllib.parse
 from typing import Optional, List, Dict, Any
@@ -61,6 +62,156 @@ class XiaohongshuCDPProvider:
         except Exception as e:
             logger.error(f"CDP get_recent_notes error: {e}")
         return notes
+
+    def get_mentions_and_comments(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """通过真实 Brave 浏览器抓取通知中心（评论和@）"""
+        notifications = []
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.connect_over_cdp(self.cdp_url)
+                context = browser.contexts[0]
+                page = context.pages[0] if context.pages else context.new_page()
+
+                raw_items = []
+                def handle_response(response):
+                    if "mentions" in response.url:
+                        try:
+                            data = response.json()
+                            if data.get("success"):
+                                raw_items.extend(data.get("data", {}).get("message_list", []))
+                        except Exception:
+                            pass
+
+                page.on("response", handle_response)
+                # 无论当前是否在 notification，先切 explore 确保强制重新触发 mentions 请求
+                page.goto("https://www.xiaohongshu.com/explore", wait_until="domcontentloaded")
+                page.wait_for_timeout(1000)
+                page.goto("https://www.xiaohongshu.com/notification", wait_until="domcontentloaded")
+                page.wait_for_timeout(3500)
+
+                for m in raw_items[:limit]:
+                    comment_info = m.get("comment_info", {})
+                    user_info = m.get("user_info", {})
+                    item_info = m.get("item_info", {})
+
+                    comment_id = comment_info.get("id")
+                    comment_text = (comment_info.get("content") or "").strip()
+                    user_name = (user_info.get("nickname") or "未知用户").strip()
+                    feed_id = item_info.get("id", "")
+                    feed_title = (item_info.get("content") or "").strip()
+
+                    if comment_id and comment_text:
+                        notifications.append({
+                            "comment_id": comment_id,
+                            "comment_text": comment_text,
+                            "user_name": user_name,
+                            "feed_id": feed_id,
+                            "feed_title": feed_title,
+                            "from": {"nickname": user_name},
+                            "raw": m
+                        })
+                browser.close()
+        except Exception as e:
+            logger.error(f"CDP get_mentions_and_comments error: {e}")
+        return notifications
+
+    def reply_comment(self, comment_id: str, content: str, user_name: str = "", comment_text: str = "", max_retries: int = 3) -> bool:
+        """
+        通过真实 Brave 浏览器在通知页面进行原位智能回复。
+        支持失败重试机制（结合指数退避，确保高可用）。
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.connect_over_cdp(self.cdp_url)
+                    context = browser.contexts[0]
+                    page = context.pages[0] if context.pages else context.new_page()
+
+                    if "xiaohongshu.com/notification" not in page.url:
+                        page.goto("https://www.xiaohongshu.com/notification", wait_until="networkidle")
+                        page.wait_for_timeout(2000)
+
+                    page.wait_for_selector(".tabs-content-container > .container", timeout=10000)
+                    rows = page.query_selector_all(".tabs-content-container > .container")
+
+                    target_row = None
+                    for r in rows:
+                        u = r.query_selector(".user-info a")
+                        c = r.query_selector(".interaction-content")
+                        u_name = u.inner_text().strip() if u else ""
+                        c_text = c.inner_text().strip() if c else ""
+
+                        if user_name and user_name in u_name:
+                            target_row = r
+                            break
+                        if comment_text and (comment_text[:10] in c_text or c_text[:10] in comment_text):
+                            target_row = r
+                            break
+
+                    if not target_row:
+                        logger.warning(f"[Attempt {attempt}/{max_retries}] Row not found for {user_name}: {comment_text[:20]}")
+                        browser.close()
+                        time.sleep(2 ** attempt)
+                        continue
+
+                    reply_btn = target_row.query_selector(".action-reply")
+                    if not reply_btn:
+                        logger.warning(f"[Attempt {attempt}/{max_retries}] .action-reply not found for {user_name}")
+                        browser.close()
+                        time.sleep(2 ** attempt)
+                        continue
+
+                    reply_btn.click()
+                    page.wait_for_timeout(800)
+
+                    textarea = target_row.query_selector(".comment-input")
+                    if not textarea:
+                        logger.warning(f"[Attempt {attempt}/{max_retries}] Textarea not found for {user_name}")
+                        browser.close()
+                        time.sleep(2 ** attempt)
+                        continue
+
+                    textarea.click()
+                    textarea.fill("")
+                    page.keyboard.type(content, delay=35)
+                    page.wait_for_timeout(600)
+
+                    submit_btn = target_row.query_selector(".submit")
+                    if not submit_btn:
+                        logger.warning(f"[Attempt {attempt}/{max_retries}] Submit button not found for {user_name}")
+                        browser.close()
+                        time.sleep(2 ** attempt)
+                        continue
+
+                    post_response_ok = {"val": False}
+                    def on_post_response(res):
+                        if "comment" in res.url and res.request.method == "POST":
+                            try:
+                                data = res.json()
+                                if data.get("success") or data.get("code") == 0:
+                                    post_response_ok["val"] = True
+                            except Exception:
+                                pass
+
+                    page.on("response", on_post_response)
+                    submit_btn.click()
+                    page.wait_for_timeout(3000)
+
+                    is_closed = target_row.query_selector(".comment-input") is None
+                    if post_response_ok["val"] or is_closed:
+                        logger.info(f"✅ CDP reply_comment successfully sent to {user_name} ({comment_id}): {content}")
+                        browser.close()
+                        return True
+                    else:
+                        logger.warning(f"[Attempt {attempt}/{max_retries}] Reply submission check pending/unconfirmed for {user_name}")
+                        browser.close()
+            except Exception as e:
+                logger.error(f"[Attempt {attempt}/{max_retries}] CDP reply_comment error: {e}")
+
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+
+        return False
 
     def get_note_detail_and_comments(self, feed_id: str) -> Dict[str, Any]:
         """通过主页点击卡片弹窗方式安全获取指定笔记详情与评论"""

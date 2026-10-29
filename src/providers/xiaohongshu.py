@@ -7,6 +7,39 @@ from src.providers.base import BaseSocialProvider
 
 logger = logging.getLogger("XiaohongshuProvider")
 
+def sanitize_xhs_title(title: str, max_chars: int = 20) -> str:
+    """
+    小红书标题专用清洗与截断保护：
+    1. 小红书客户端与网页发布硬性限制 20 字符。
+    2. 优先保留完整原标题（<= 20 字）。
+    3. 若超过 20 字符，按语义标点/空格边界智能截断，避免硬生生腰斩汉字或英文单词。
+    4. 移除末尾残留标点。
+    """
+    cleaned = title.strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    sub = cleaned[:max_chars]
+    delimiters = ["！", "!", "，", ",", "：", ":", " ", "、", "-", "—", "|", "？", "?"]
+    best_cut = -1
+    for d in delimiters:
+        idx = sub.rfind(d)
+        if idx >= 10:
+            best_cut = max(best_cut, idx)
+
+    if best_cut != -1:
+        result = sub[:best_cut].rstrip("！!，,:：、-—|?？ ")
+        if len(result) >= 10:
+            return result
+
+    # 英文单词边界保护（避免截断英文单词半拉子）
+    if sub[-1].isalnum() and len(cleaned) > max_chars and cleaned[max_chars].isalnum():
+        last_space = sub.rfind(" ")
+        if last_space >= 10:
+            return sub[:last_space].rstrip("！!，,:：、-—|?？ ")
+
+    return sub.rstrip("！!，,:：、-—|?？ ")
+
 class XiaohongshuProvider(BaseSocialProvider):
     """
     小红书发布与互动 Provider（基于 xiaohongshu-mcp 服务）
@@ -98,7 +131,8 @@ class XiaohongshuProvider(BaseSocialProvider):
         """
         小红书视频发布（支持私密/公开模式，目前默认私密）
         """
-        clean_title = title.replace("！", "").replace("!", "")[:20]
+        clean_title = sanitize_xhs_title(title, max_chars=20)
+        logger.info(f"Sanitized Xiaohongshu note title: '{clean_title}' (raw: '{title}')")
         visibility = self.account_config.get("visibility", "仅自己可见")
         
         # 视频上传及前端排版耗时较长，放宽超时至 300 秒
