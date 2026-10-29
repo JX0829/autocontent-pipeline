@@ -26,12 +26,23 @@ load_dotenv(PIPELINE_ROOT / ".env")
 from src.db import PipelineDB
 from src.providers.douyin import DouyinProvider
 from src.providers.xiaohongshu import XiaohongshuProvider
+from src.feishu.approval_service import FeishuApprovalService
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("PublishWorker")
+
+def notify_feishu(message: str):
+    """向飞书审批会话主动播报发布结果通知"""
+    try:
+        svc = FeishuApprovalService()
+        target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_bc831d683c9b59369bc86ee1561ed226")
+        rec_type = "open_id" if target.startswith("ou_") else "chat_id"
+        svc.send_text_message(receive_id=target, receive_id_type=rec_type, text=message)
+    except Exception as e:
+        logger.warning(f"Failed to send feishu publish notification: {e}")
 
 
 def load_accounts_map():
@@ -109,6 +120,7 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
 
     # 同步发布至小红书（若已配置 xhs-tech-main 且启用）
     xhs_account = accounts_map.get("xhs-tech-main")
+    xhs_error = None
     if xhs_account and xhs_account.get("enabled", True):
         logger.info(f"Synchronizing task '{task_id}' to Xiaohongshu...")
         try:
@@ -129,14 +141,33 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
                     primary_draft_id = xhs_draft_id
                 publish_success = True
             else:
-                logger.warning(f"⚠️ Xiaohongshu sync failed for '{task_id}': {xhs_res.get('message')}")
+                xhs_error = xhs_res.get("message") or "发布接口返回失败"
+                logger.warning(f"⚠️ Xiaohongshu sync failed for '{task_id}': {xhs_error}")
         except Exception as e:
+            xhs_error = str(e)
             logger.error(f"Error during Xiaohongshu sync for '{task_id}': {e}")
 
     if publish_success:
         db.update_task_status(task_id, "DRAFTED", platform_draft_id=primary_draft_id)
+        logger.info(f"Task '{task_id}' transitioned to DRAFTED with platform_draft_id={primary_draft_id}")
+        notify_feishu(
+            f"🎉 视频草稿发布成功！\n"
+            f"🎬 标题：《{title}》\n"
+            f"📌 任务 ID: {task_id}\n"
+            f"📦 草稿 ID: {primary_draft_id}\n"
+            f"已成功同步保存至小红书草稿箱，请前往确认！"
+        )
         return True
-    return False
+    else:
+        err_detail = xhs_error or "发布异常"
+        logger.error(f"Task '{task_id}' publish failed: {err_detail}")
+        notify_feishu(
+            f"⚠️ 视频草稿发布失败！\n"
+            f"🎬 标题：《{title}》\n"
+            f"📌 任务 ID: {task_id}\n"
+            f"❌ 失败原因: {err_detail}"
+        )
+        return False
 
 
 def main():

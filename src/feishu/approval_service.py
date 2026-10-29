@@ -129,3 +129,32 @@ class FeishuApprovalService:
         except Exception as e:
             logger.exception(f"Error in upload_and_send_video: {e}")
             return None
+
+    def send_text_message(self, receive_id: str, receive_id_type: str, text: str) -> Optional[str]:
+        """
+        向指定用户或群聊发送普通文本通知消息
+        :param receive_id: 用户 open_id 或群 chat_id
+        :param receive_id_type: 'open_id' 或 'chat_id'
+        :param text: 文本内容
+        :return: message_id
+        """
+        try:
+            req = CreateMessageRequest.builder() \
+                .receive_id_type(receive_id_type) \
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(receive_id)
+                    .msg_type("text")
+                    .content(json.dumps({"text": text}, ensure_ascii=False))
+                    .build()
+                ).build()
+            resp = self.client.im.v1.message.create(req)
+            if not resp.success():
+                logger.error(f"Failed to send feishu text message: code={resp.code}, msg={resp.msg}")
+                return None
+            msg_id = resp.data.message_id
+            logger.info(f"Feishu text message sent successfully, message_id={msg_id}")
+            return msg_id
+        except Exception as e:
+            logger.exception(f"Error in send_text_message: {e}")
+            return None
