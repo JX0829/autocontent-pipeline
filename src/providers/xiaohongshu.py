@@ -16,7 +16,7 @@ class XiaohongshuProvider(BaseSocialProvider):
         self.mcp_url = account_config.get("mcp_url", "http://localhost:18060/mcp")
         self.session_id: Optional[str] = None
 
-    def _call_mcp(self, method: str, params: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+    def _call_mcp(self, method: str, params: Dict[str, Any], max_retries: int = 3, timeout_sec: int = 60) -> Dict[str, Any]:
         """
         调用 MCP 接口，内置网络抖动指数退避重试机制（最多重试 3 次）
         """
@@ -25,7 +25,7 @@ class XiaohongshuProvider(BaseSocialProvider):
         if self.session_id:
             headers.extend(["-H", f"Mcp-Session-Id: {self.session_id}"])
         data = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        cmd = ["curl", "-s", "--connect-timeout", "5", "--max-time", "60", "-i", "-X", "POST", self.mcp_url] + headers + ["-d", data]
+        cmd = ["curl", "-s", "--connect-timeout", "10", "--max-time", str(timeout_sec), "-i", "-X", "POST", self.mcp_url] + headers + ["-d", data]
 
         last_error = None
         for attempt in range(1, max_retries + 1):
@@ -55,12 +55,12 @@ class XiaohongshuProvider(BaseSocialProvider):
             if "error" in init_res:
                 logger.error(f"Failed to initialize Xiaohongshu MCP: {init_res['error']}")
 
-    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def call_tool(self, tool_name: str, arguments: Dict[str, Any], timeout_sec: int = 60) -> Dict[str, Any]:
         self._ensure_session()
         resp = self._call_mcp("tools/call", {
             "name": tool_name,
             "arguments": arguments
-        })
+        }, timeout_sec=timeout_sec)
         if "error" in resp:
             logger.error(f"MCP Tool call '{tool_name}' failed: {resp['error']}")
             return {"success": False, "error": resp["error"]}
@@ -101,13 +101,14 @@ class XiaohongshuProvider(BaseSocialProvider):
         clean_title = title.replace("！", "").replace("!", "")[:20]
         visibility = self.account_config.get("visibility", "仅自己可见")
         
+        # 视频上传及前端排版耗时较长，放宽超时至 300 秒
         res = self.call_tool("publish_with_video", {
             "title": clean_title,
             "content": content_text,
             "video": video_path,
             "tags": topics[:5],
             "visibility": visibility
-        })
+        }, timeout_sec=300)
 
         if res.get("success") and "成功" in res.get("raw_text", ""):
             return {

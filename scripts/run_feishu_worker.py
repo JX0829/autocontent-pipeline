@@ -139,10 +139,12 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
             # 纯异步解耦：立即触发独立后台进程执行上传，主事件循环毫秒级返回
             import subprocess
             publish_script = os.path.join(str(PIPELINE_ROOT), "scripts", "run_publish_worker.py")
+            publish_log = os.path.join(str(PIPELINE_ROOT), "data", f"publish_{task_id}.log")
+            log_f = open(publish_log, "a", encoding="utf-8")
             subprocess.Popen(
                 [sys.executable, publish_script, "--task-id", task_id],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=log_f,
                 start_new_session=True
             )
 
