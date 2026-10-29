@@ -34,5 +34,5 @@ accounts:
     mcp_url: "http://localhost:18060/mcp"
     visibility: "仅自己可见"
     private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，评论区AI已接入，欢迎交流～"
-    enabled: true
+    enabled: false  # 紧急避险：风控预警期间彻底关闭自动化发布，冷冻48~72小时，成片由人工在手机App端发布
 
