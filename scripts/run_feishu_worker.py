@@ -30,6 +30,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 )
 from src.db import PipelineDB
 from src.feishu.card_builder import FeishuCardBuilder
+from src.feishu.approval_service import FeishuApprovalService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger("FeishuWorker")
 
 db = PipelineDB(os.getenv("SQLITE_DB_PATH", os.path.join(PIPELINE_ROOT, "data/pipeline_state.db")))
+approval_service = FeishuApprovalService()
 
 # 防抖锁与冷却时间（同一任务 5 秒内禁止并发重复触发）
 DEBOUNCE_CACHE: Dict[str, float] = {}
@@ -72,9 +74,15 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         action_type = action_val.get("action")
         task_id = action_val.get("task_id")
 
-        logger.info(f"Received card action: action_type={action_type}, task_id={task_id}")
+        # 核心过滤：若为通用方案决策卡片（如 hermes_decision_card）或非本流水线动作，Worker 必须静默忽略，绝不拦截报错
+        if action_val.get("hermes_decision_card") or action_type not in ("APPROVE_TASK", "REJECT_TASK"):
+            logger.debug(f"Ignoring non-pipeline action: {action_val}")
+            return resp
+
+        logger.info(f"Received pipeline card action: action_type={action_type}, task_id={task_id}")
 
         if not task_id:
+            logger.warning(f"Pipeline action '{action_type}' missing task_id")
             resp.toast = {"type": "error", "content": "缺少任务 ID"}
             return resp
 
@@ -116,25 +124,38 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         except Exception:
             task_template_id = None
 
+        open_message_id = None
+        context_obj = getattr(event, "context", None)
+        if context_obj:
+            open_message_id = getattr(context_obj, "open_message_id", None)
+
         if action_type == "APPROVE_TASK":
             db.update_task_status(task_id, "APPROVED")
             logger.info(f"Task {task_id} status updated to APPROVED")
             resp.toast = {"type": "success", "content": "✅ 已批准！正在自动同步发布至小红书..."}
 
-            # 原位更新卡片为已批准状态
-            new_card = FeishuCardBuilder.build_approval_card(
-                task_id=task_id,
-                title=title,
-                topics=topics,
-                content_text=content_text,
-                resource_keyword=resource_keyword,
-                fact_summary=fact_summary,
-                duration_sec=duration_sec,
-                video_size_mb=video_size_mb,
-                template_id=task_template_id,
-                status="APPROVED"
-            )
-            resp.card = {"type": "raw", "data": new_card}
+            # 极速毫秒级响应：通过异步子线程热更新飞书卡片，避免在大 JSON 序列化与传输时触发前端 362 错误
+            def async_update_card_to_approved():
+                try:
+                    new_card = FeishuCardBuilder.build_approval_card(
+                        task_id=task_id,
+                        title=title,
+                        topics=topics,
+                        content_text=content_text,
+                        resource_keyword=resource_keyword,
+                        fact_summary=fact_summary,
+                        duration_sec=duration_sec,
+                        video_size_mb=video_size_mb,
+                        template_id=task_template_id,
+                        status="APPROVED"
+                    )
+                    if open_message_id and approval_service:
+                        approval_service.update_card(open_message_id, new_card)
+                except Exception as patch_err:
+                    logger.warning(f"Async card patch failed for {task_id}: {patch_err}")
+
+            import threading
+            threading.Thread(target=async_update_card_to_approved, daemon=True).start()
 
             # 纯异步解耦：立即触发独立后台进程执行上传，主事件循环毫秒级返回
             import subprocess
@@ -153,21 +174,28 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
             logger.info(f"Task {task_id} status updated to REJECTED")
             resp.toast = {"type": "info", "content": "❌ 已驳回该短视频脚本"}
 
-            # 原位更新卡片为已驳回状态
-            new_card = FeishuCardBuilder.build_approval_card(
-                task_id=task_id,
-                title=title,
-                topics=topics,
-                content_text=content_text,
-                resource_keyword=resource_keyword,
-                fact_summary=fact_summary,
-                duration_sec=duration_sec,
-                video_size_mb=video_size_mb,
-                template_id=task_template_id,
-                status="REJECTED",
-                rejection_reason="审核人人工驳回"
-            )
-            resp.card = {"type": "raw", "data": new_card}
+            def async_update_card_to_rejected():
+                try:
+                    new_card = FeishuCardBuilder.build_approval_card(
+                        task_id=task_id,
+                        title=title,
+                        topics=topics,
+                        content_text=content_text,
+                        resource_keyword=resource_keyword,
+                        fact_summary=fact_summary,
+                        duration_sec=duration_sec,
+                        video_size_mb=video_size_mb,
+                        template_id=task_template_id,
+                        status="REJECTED",
+                        rejection_reason="审核人人工驳回"
+                    )
+                    if open_message_id and approval_service:
+                        approval_service.update_card(open_message_id, new_card)
+                except Exception as patch_err:
+                    logger.warning(f"Async card patch failed for {task_id}: {patch_err}")
+
+            import threading
+            threading.Thread(target=async_update_card_to_rejected, daemon=True).start()
 
         else:
             logger.warning(f"Unknown action_type: {action_type}")
