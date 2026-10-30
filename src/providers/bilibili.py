@@ -56,7 +56,7 @@ class BilibiliProvider(BaseSocialProvider):
         # 构造规范化的 B站 简介
         desc = f"{content_text}\n\n💡 项目完整开源地址已整理，欢迎在评论区交流讨论！"
         if declare_aigc:
-            desc += "\n\n(本视频已声明包含AI生成辅助制作)"
+            desc += "\n\n(本视频包含AI辅助生成内容，请理性甄别)"
 
         tag_list = topics[:10] if topics else ["科技", "计算机技术", "人工智能", "开源项目"]
         tag_str = ",".join(tag_list)

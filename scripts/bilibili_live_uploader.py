@@ -47,7 +47,9 @@ async def main():
         desc=args.desc,
         cover=args.cover if args.cover and Path(args.cover).exists() else "",
         tags=args.tags.split(",") if "," in args.tags else [args.tags],
-        original=True
+        original=True,
+        no_reprint=True,  # 开启未经允许禁止转载 (1)
+        recreate=False    # 严禁二创/重新上传
     )
 
     uploader = video_uploader.VideoUploader(
