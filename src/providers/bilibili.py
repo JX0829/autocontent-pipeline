@@ -29,7 +29,7 @@ class BilibiliProvider(BaseSocialProvider):
 
     def check_login_status(self) -> bool:
         """检查 B 站登录凭据或会话有效性"""
-        cookie_file = Path(self.profile_path) / "cookies.json"
+        cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
         if cookie_file.exists():
             return True
         user_bili = Path.home() / ".bili"
@@ -61,8 +61,33 @@ class BilibiliProvider(BaseSocialProvider):
         tag_list = topics[:10] if topics else ["科技", "计算机技术", "人工智能", "开源项目"]
         tag_str = ",".join(tag_list)
 
+        # 检查是否具备真实 B站 Credential 凭据以支持直传线上
+        cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
+        real_upload_res = None
+        if cookie_file.exists():
+            try:
+                import subprocess
+                upload_script = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/scripts/bilibili_live_uploader.py")
+                if upload_script.exists():
+                    p = subprocess.run([
+                        "/Users/a1/.agent-reach/tools/bili-cli/venv/bin/python3",
+                        str(upload_script),
+                        "--video", video_path,
+                        "--cover", cover_path,
+                        "--title", title[:80],
+                        "--desc", desc,
+                        "--tags", tag_str,
+                        "--tid", str(self.tid)
+                    ], capture_output=True, text=True, timeout=180)
+                    if p.returncode == 0:
+                        real_data = json.loads(p.stdout.strip())
+                        real_upload_res = real_data
+                        logger.info(f"Real Bilibili upload successful: {real_data}")
+            except Exception as e:
+                logger.warning(f"Real upload attempt failed, falling back to draft staging: {e}")
+
         # 生成 draft id
-        draft_id = f"bili_draft_{int(os.path.getmtime(video_path))}"
+        draft_id = real_upload_res.get("bvid") if real_upload_res else f"bili_draft_{int(os.path.getmtime(video_path))}"
         
         # 写入本地草稿与待审归档
         draft_record = {
