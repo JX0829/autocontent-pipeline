@@ -89,6 +89,10 @@ class BilibiliProvider(BaseSocialProvider):
         # 生成 draft id
         draft_id = real_upload_res.get("bvid") if real_upload_res else f"bili_draft_{int(os.path.getmtime(video_path))}"
         
+        # 判断可见性与私密模式
+        is_private = any(k in self.publish_mode.lower() for k in ["private", "self", "draft", "hidden"])
+        privacy_val = "only_self" if is_private else "public"
+
         # 写入本地草稿与待审归档
         draft_record = {
             "platform": "bilibili",
@@ -98,7 +102,7 @@ class BilibiliProvider(BaseSocialProvider):
             "tags": tag_str,
             "tid": self.tid,
             "publish_mode": self.publish_mode,
-            "privacy": "private" if "private" in self.publish_mode else "public",
+            "privacy": privacy_val,
             "video_path": video_path,
             "cover_path": cover_path,
             "desc": desc,

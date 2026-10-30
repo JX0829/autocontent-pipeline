@@ -36,12 +36,25 @@ accounts:
     private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎评论区交流～"
     enabled: false  # 紧急避险：风控安全保护期间彻底冻结自动化发布（7天冷冻静默期至2026-11-06），成片由人工在手机App端发布
 
+  - id: "bilibili-tech-main"
+    platform: "bilibili"
+    name: "CodeJarvis"
+    account_type: "tech"
+    mid: "238305427"
+    cookie_path: "./data/cookies_bilibili.json"
+    tid: 95                        # 科技 -> 计算机技术
+    is_story: 1                    # 开启 B站竖屏 Story 模式
+    is_aigc: 1                     # 声明 AIGC 生成
+    no_reprint: 1                  # 原创自制
+    enabled: true
+
+
   - id: "bili-tech-main"
     platform: "bilibili"
     name: "B站科技号"
     account_type: "tech"
     profile_path: "./data/browser_profiles/bilibili-tech"
-    publish_mode: "draft"            # 存入稿件管理箱，供人工二审
+    publish_mode: "only_self_visible" # 仅自己可见/私密草稿箱，绝对不公开扩散
     tid: 231                         # 科技 -> 计算机技术分区
     declare_aigc: true
     enabled: true
