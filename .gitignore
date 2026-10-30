@@ -61,6 +61,10 @@ yarn-error.log*
 .remotion
 renderer/public/tasks/
 
+# External submodules / tools
+external/MediaCrawler/
+external/MediaCrawler/.venv/
+
 # OS / Editor
 .DS_Store
 .DS_Store?
