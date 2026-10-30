@@ -63,7 +63,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
             "status": "DRAFT_SAVED"
         }
 
-        draft_store_dir = Path("./data/drafts/channels")
+        draft_store_dir = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/drafts/channels")
         draft_store_dir.mkdir(parents=True, exist_ok=True)
         with open(draft_store_dir / f"{draft_id}.json", "w", encoding="utf-8") as f:
             json.dump(draft_record, f, ensure_ascii=False, indent=2)
