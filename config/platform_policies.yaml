@@ -1,22 +1,21 @@
 # config/platform_policies.yaml
-# 多平台差异化风控与互动策略配置中心
+# 多平台差异化文本与互动策略配置中心 (autocontent-pipeline)
 
 platforms:
   xiaohongshu:
     display_name: "小红书"
-    # 文本与视觉呈现策略
+    freeze_until: "2026-11-06"
+    status: "frozen_for_safety"          # 7天冷冻静默期（至2026-11-06）：严禁API/脚本直发与高频轮询，成片人工手机发布
     text_policy:
       footer_callout: "💡 欢迎评论区交流"
       seed_comment_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎评论区交流～"
-      max_title_chars: 20
-      filter_ai_keywords: true
+      max_title_chars: 20                  # 小红书 MCP 发布工具硬校验 <= 20 字符
+      filter_ai_keywords: true             # 严格过滤“AI回复/自动回复/脚本”等敏感词
       declare_aigc: false
-
-    # 评论与互动策略
     interaction_policy:
-      reply_mode: "manual_approval"      # 严格模式：仅生成建议话术推送到飞书，由人工在手机App端复制回复
-      allow_direct_api_reply: false     # 严禁脚本/CDP直接写回
-      enable_background_polling: false  # 暂停高频自动扫号
+      reply_mode: "manual_approval"        # 严格人工闭环：仅生成拟稿并推送到飞书，由人工在手机App端手动回复
+      allow_direct_api_reply: false       # 严禁脚本直接调用 API / CDP 回复
+      enable_background_polling: false    # 7天冷冻期彻底关闭后台轮询（防风控机器检测）
 
   douyin:
     display_name: "抖音"
@@ -26,21 +25,19 @@ platforms:
       max_title_chars: 30
       filter_ai_keywords: false
       declare_aigc: true
-
     interaction_policy:
-      reply_mode: "auto_direct_reply"    # 抖音平台：允许 AI 自动审查并自动直发
+      reply_mode: "auto_direct_reply"      # 抖音平台：保留 AI 自动审查并自动直发回复
       allow_direct_api_reply: true
       enable_background_polling: true
 
   default:
-    display_name: "默认平台"
+    display_name: "默认通用平台"
     text_policy:
       footer_callout: "💡 欢迎评论区交流"
       seed_comment_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎评论区交流～"
       max_title_chars: 30
       filter_ai_keywords: false
       declare_aigc: false
-
     interaction_policy:
       reply_mode: "manual_approval"
       allow_direct_api_reply: false
