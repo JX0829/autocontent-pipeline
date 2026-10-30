@@ -30,6 +30,32 @@ platforms:
       allow_direct_api_reply: true
       enable_background_polling: true
 
+  bilibili:
+    display_name: "哔哩哔哩"
+    text_policy:
+      footer_callout: "💡 源码与项目见简介与置顶评论"
+      seed_comment_hook: "项目完整开源地址已整理，欢迎在评论区与弹幕交流探讨！"
+      max_title_chars: 80
+      filter_ai_keywords: false
+      declare_aigc: true
+    interaction_policy:
+      reply_mode: "manual_approval"
+      allow_direct_api_reply: false
+      enable_background_polling: true
+
+  channels:
+    display_name: "微信视频号"
+    text_policy:
+      footer_callout: "💡 欢迎在评论区交流讨论"
+      seed_comment_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎交流～"
+      max_title_chars: 30
+      filter_ai_keywords: true
+      declare_aigc: false
+    interaction_policy:
+      reply_mode: "manual_approval"
+      allow_direct_api_reply: false
+      enable_background_polling: false
+
   default:
     display_name: "默认通用平台"
     text_policy:

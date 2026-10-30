@@ -36,3 +36,22 @@ accounts:
     private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎评论区交流～"
     enabled: false  # 紧急避险：风控安全保护期间彻底冻结自动化发布（7天冷冻静默期至2026-11-06），成片由人工在手机App端发布
 
+  - id: "bili-tech-main"
+    platform: "bilibili"
+    name: "B站科技号"
+    account_type: "tech"
+    profile_path: "./data/browser_profiles/bilibili-tech"
+    publish_mode: "draft"            # 存入稿件管理箱，供人工二审
+    tid: 231                         # 科技 -> 计算机技术分区
+    declare_aigc: true
+    enabled: true
+
+  - id: "channels-tech-main"
+    platform: "channels"
+    name: "微信视频号科技"
+    account_type: "tech"
+    profile_path: "./data/browser_profiles/channels-tech"
+    publish_mode: "draft"            # 存为视频号草稿
+    declare_aigc: false
+    enabled: true
+

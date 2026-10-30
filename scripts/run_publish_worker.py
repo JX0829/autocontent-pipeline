@@ -26,6 +26,8 @@ load_dotenv(PIPELINE_ROOT / ".env")
 from src.db import PipelineDB
 from src.providers.douyin import DouyinProvider
 from src.providers.xiaohongshu import XiaohongshuProvider
+from src.providers.bilibili import BilibiliProvider
+from src.providers.channels_cdp import ChannelsCDPProvider
 from src.feishu.approval_service import FeishuApprovalService
 
 logging.basicConfig(
@@ -113,6 +115,36 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
                 logger.info(f"✅ Task '{task_id}' successfully saved as draft on Douyin! draft_id={primary_draft_id}")
             else:
                 logger.error(f"❌ Failed to save draft on Douyin for task '{task_id}': {res.get('message') or res.get('error')}")
+        elif platform == "bilibili":
+            provider = BilibiliProvider(account_config)
+            res = provider.save_draft(
+                video_path=video_path,
+                cover_path=cover_path,
+                title=title,
+                topics=topics,
+                content_text=content_text
+            )
+            if res.get("success"):
+                primary_draft_id = res.get("draft_id", f"bili_{task_id}")
+                publish_success = True
+                logger.info(f"✅ Task '{task_id}' successfully saved as draft on Bilibili! draft_id={primary_draft_id}")
+            else:
+                logger.error(f"❌ Failed to save draft on Bilibili for task '{task_id}': {res.get('message')}")
+        elif platform == "channels":
+            provider = ChannelsCDPProvider(account_config)
+            res = provider.save_draft(
+                video_path=video_path,
+                cover_path=cover_path,
+                title=title,
+                topics=topics,
+                content_text=content_text
+            )
+            if res.get("success"):
+                primary_draft_id = res.get("draft_id", f"channels_{task_id}")
+                publish_success = True
+                logger.info(f"✅ Task '{task_id}' successfully saved as draft on WeChat Channels! draft_id={primary_draft_id}")
+            else:
+                logger.error(f"❌ Failed to save draft on WeChat Channels for task '{task_id}': {res.get('message')}")
         else:
             logger.error(f"Unsupported primary platform: {platform}")
     else:
