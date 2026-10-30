@@ -35,5 +35,6 @@ export interface AlignedRenderPayload extends Record<string, unknown> {
   cover_sub_text: string;
   resource_keyword: string;
   bgm_src: string;
+  footer_callout?: string;
   scenes: AlignedSceneItem[];
 }

@@ -10,6 +10,7 @@ export interface TerminalCodeViewProps {
   resourceKeyword?: string;
   highlightText: string;
   codeSnippet: string;
+  footer_callout?: string;
 }
 
 export const TerminalCodeView: React.FC<TerminalCodeViewProps> = ({
@@ -19,6 +20,7 @@ export const TerminalCodeView: React.FC<TerminalCodeViewProps> = ({
   resourceKeyword,
   highlightText,
   codeSnippet,
+  footer_callout,
 }) => {
   const frame = useCurrentFrame();
   const { tokens, layout } = useTemplate();
@@ -176,7 +178,7 @@ export const TerminalCodeView: React.FC<TerminalCodeViewProps> = ({
               fontWeight: 800,
             }}
           >
-            💡 评论区AI回复，欢迎交流
+            {footer_callout || '💡 欢迎评论区交流'}
           </div>
         </div>
       )}

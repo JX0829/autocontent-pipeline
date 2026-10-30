@@ -5,6 +5,7 @@ import edge_tts
 from mutagen.mp3 import MP3
 from ..schemas import DraftScriptPayload, AlignedRenderPayload, AlignedSceneItem, SubtitleItem
 from ..templates_manager import TemplateManager
+from ..platform_policy import get_footer_callout
 
 class TTSAligner:
     def __init__(self, voice="zh-CN-YunxiNeural", rate="+10%"):
@@ -89,6 +90,7 @@ class TTSAligner:
             cover_sub_text=draft.cover_sub_text,
             resource_keyword=draft.resource_keyword,
             bgm_src="sfx/bgm_loop.wav",
+            footer_callout=get_footer_callout(getattr(draft, "target_account_type", "xiaohongshu")),
             scenes=aligned_scenes
         )
 

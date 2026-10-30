@@ -85,4 +85,8 @@ class AlignedRenderPayload(BaseModel):
     cover_sub_text: str
     resource_keyword: str
     bgm_src: str
+    footer_callout: str = Field(
+        default="💡 欢迎评论区交流",
+        description="视频画面底部及卡片引导语，由平台策略中心动态注入"
+    )
     scenes: List[AlignedSceneItem]

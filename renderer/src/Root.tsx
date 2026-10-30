@@ -33,7 +33,8 @@ const VideoSceneContent: React.FC<{
   entityKey?: string;
   resourceKeyword?: string;
   fps: number;
-}> = ({ scene, totalScenes, entityKey, resourceKeyword, fps }) => {
+  footer_callout?: string;
+}> = ({ scene, totalScenes, entityKey, resourceKeyword, fps, footer_callout }) => {
   return (
     <SafeAreaContainer showDebugBorder={false}>
       {/* 上方核心视觉容器 */}
@@ -46,6 +47,7 @@ const VideoSceneContent: React.FC<{
             resourceKeyword={resourceKeyword}
             codeSnippet={scene.code_snippet || ''}
             highlightText={scene.highlight_text}
+            footer_callout={footer_callout}
           />
         )}
         {scene.visual_type === 'ui_card' && (
@@ -76,6 +78,7 @@ const VideoSceneContent: React.FC<{
             mediaAssetUrl={
               scene.media_asset_url ? staticFile(scene.media_asset_url) : undefined
             }
+            footer_callout={footer_callout}
           />
         )}
       </div>
@@ -112,6 +115,7 @@ export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
               entityKey={props.resource_keyword || 'OpenSource'}
               resourceKeyword={props.resource_keyword}
               fps={props.fps}
+              footer_callout={props.footer_callout}
             />
           </Sequence>
         ))}
@@ -238,7 +242,7 @@ const CoverStillInner: React.FC<AlignedRenderPayload> = (props) => {
             letterSpacing: 1.5,
           }}
         >
-          💡 评论区AI回复，欢迎交流
+          {props.footer_callout || '💡 欢迎评论区交流'}
         </span>
       </div>
 
@@ -374,7 +378,7 @@ const XhsCardStillInner: React.FC<AlignedRenderPayload & { frameIndex?: number }
         }}
       >
         <span style={{ fontSize: 24, color: tokens.accentPrimary, fontWeight: 800 }}>
-          💡 评论区AI回复，欢迎交流
+          {props.footer_callout || '💡 欢迎评论区交流'}
         </span>
         <span style={{ fontSize: 20, color: tokens.textSecondary }}>科技极客速递</span>
       </div>
@@ -395,6 +399,7 @@ const defaultMockProps: AlignedRenderPayload = {
   cover_sub_text: 'GitHub 趋势',
   resource_keyword: 'MarkItDown',
   bgm_src: 'sfx/bgm_loop.wav',
+  footer_callout: '💡 欢迎评论区交流',
   scenes: [],
 };
 

@@ -22,12 +22,21 @@ def run():
     except Exception as e:
         logger.error(f"Douyin comment guard failed: {e}")
 
-    # 2. 运行小红书守护
+    # 2. 运行小红书守护（根据多平台策略中心控制）
     try:
-        from scripts.poll_xhs_comments import poll_and_reply_xhs_comments
-        xhs_records = poll_and_reply_xhs_comments(dry_run=False)
-        if xhs_records:
-            all_replied.extend(xhs_records)
+        from src.platform_policy import get_platform_policy
+        xhs_policy = get_platform_policy("xiaohongshu")
+        interaction_policy = xhs_policy.get("interaction_policy", {})
+
+        if interaction_policy.get("enable_background_polling", False):
+            from scripts.poll_xhs_comments import poll_and_reply_xhs_comments
+            # 若策略为 manual_approval，则强制 dry_run=True（只产出建议话术与日志，不调用直接写入）
+            is_dry_run = (interaction_policy.get("reply_mode") == "manual_approval")
+            xhs_records = poll_and_reply_xhs_comments(dry_run=is_dry_run)
+            if xhs_records:
+                all_replied.extend(xhs_records)
+        else:
+            logger.info("Xiaohongshu polling is currently DISABLED by platform policy (safe/standby mode).")
     except Exception as e:
         logger.error(f"Xiaohongshu comment guard failed: {e}")
 

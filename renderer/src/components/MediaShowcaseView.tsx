@@ -10,6 +10,7 @@ export interface MediaShowcaseViewProps {
   resourceKeyword?: string;
   highlightText: string;
   mediaAssetUrl?: string;
+  footer_callout?: string;
 }
 
 export const MediaShowcaseView: React.FC<MediaShowcaseViewProps> = ({
@@ -19,6 +20,7 @@ export const MediaShowcaseView: React.FC<MediaShowcaseViewProps> = ({
   resourceKeyword,
   highlightText,
   mediaAssetUrl,
+  footer_callout,
 }) => {
   const frame = useCurrentFrame();
   const { tokens, layout } = useTemplate();
@@ -138,7 +140,7 @@ export const MediaShowcaseView: React.FC<MediaShowcaseViewProps> = ({
               textAlign: 'center',
             }}
           >
-            💡 评论区AI回复，欢迎交流
+            {footer_callout || '💡 欢迎评论区交流'}
           </div>
         )}
       </div>
