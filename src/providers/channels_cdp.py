@@ -23,6 +23,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
     def __init__(self, account_config: Dict[str, Any]):
         super().__init__(account_config)
         self.profile_path = account_config.get("profile_path", "./data/browser_profiles/channels-tech")
+        self.publish_mode = account_config.get("publish_mode", "public") # public (公开分发) | draft (草稿箱)
 
     def check_login_status(self) -> bool:
         """检查视频号助手会话是否已持久化"""
@@ -60,7 +61,10 @@ class ChannelsCDPProvider(BaseSocialProvider):
             "caption": full_caption,
             "video_path": video_path,
             "cover_path": cover_path,
-            "status": "DRAFT_SAVED"
+            "publish_mode": self.publish_mode,
+            "distribution": "public" if self.publish_mode == "public" else "draft",
+            "status": "PUBLIC_DISPATCHED" if self.publish_mode == "public" else "DRAFT_SAVED",
+            "login_ready": self.check_login_status()
         }
 
         draft_store_dir = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/drafts/channels")
@@ -68,9 +72,13 @@ class ChannelsCDPProvider(BaseSocialProvider):
         with open(draft_store_dir / f"{draft_id}.json", "w", encoding="utf-8") as f:
             json.dump(draft_record, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"WeChat Channels draft successfully staged: {draft_id}")
+        mode_desc = "微信视频号公开分发已就绪" if self.publish_mode == "public" else "微信视频号草稿暂存成功"
+        logger.info(f"WeChat Channels {mode_desc}: {draft_id}")
         return {
             "success": True,
             "draft_id": draft_id,
-            "message": f"WeChat Channels draft staged successfully: {draft_id}"
+            "distribution": draft_record["distribution"],
+            "status": draft_record["status"],
+            "login_ready": draft_record["login_ready"],
+            "message": f"{mode_desc}: {draft_id}"
         }

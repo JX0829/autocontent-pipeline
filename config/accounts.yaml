@@ -64,7 +64,7 @@ accounts:
     name: "微信视频号科技"
     account_type: "tech"
     profile_path: "./data/browser_profiles/channels-tech"
-    publish_mode: "draft"            # 存为视频号草稿
+    publish_mode: "public"           # 公开分发模式
     declare_aigc: false
     enabled: true
 
