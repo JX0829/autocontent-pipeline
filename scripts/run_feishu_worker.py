@@ -75,7 +75,7 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         task_id = action_val.get("task_id")
 
         # 核心过滤：若为通用方案决策卡片（如 hermes_decision_card）或非本流水线动作，Worker 必须静默忽略，绝不拦截报错
-        if action_val.get("hermes_decision_card") or action_type not in ("APPROVE_TASK", "REJECT_TASK"):
+        if action_val.get("hermes_decision_card") or action_type not in ("APPROVE_TASK", "REJECT_TASK", "PREPARE_MANUAL_PUBLISH", "COMPLETE_MANUAL_PUBLISH"):
             logger.debug(f"Ignoring non-pipeline action: {action_val}")
             return resp
 
@@ -104,8 +104,10 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
 
         draft_script = json.loads(task.get("draft_script_json") or "{}")
         title = draft_script.get("title", "未命名短视频")
-        topics = draft_script.get("topics", [])
-        content_text = draft_script.get("content_text", "")
+        # 兼容 tags 和 topics
+        topics = draft_script.get("tags") or draft_script.get("topics") or []
+        # 兼容 content_text 和 fact_summary_150 / hook_narration
+        content_text = draft_script.get("content_text") or draft_script.get("fact_summary_150") or ""
         resource_keyword = task.get("resource_keyword") or draft_script.get("resource_keyword", "")
         fact_summary = task.get("fact_summary_150") or draft_script.get("fact_summary_150", "")
 
@@ -129,7 +131,84 @@ def handle_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse
         if context_obj:
             open_message_id = getattr(context_obj, "open_message_id", None)
 
-        if action_type == "APPROVE_TASK":
+        if action_type == "PREPARE_MANUAL_PUBLISH":
+            db.update_task_status(task_id, "MANUAL_PUBLISHING")
+            logger.info(f"Task {task_id} status updated to MANUAL_PUBLISHING")
+            resp.toast = {"type": "success", "content": "📋 发帖素材已就绪！请长按复制文案并保存视频"}
+
+            def async_send_manual_material():
+                try:
+                    # 1. 构造纯净发帖文案
+                    clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
+                    pure_post_text = (
+                        f"{title}\n\n"
+                        f"{content_text}\n\n"
+                        f"欢迎在评论区交流讨论～\n\n"
+                        f"{clean_tags}"
+                    )
+                    
+                    target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_bc831d683c9b59369bc86ee1561ed226")
+                    rec_type = "open_id" if target.startswith("ou_") else "chat_id"
+
+                    # 2. 推送一条纯净可复制文本消息
+                    if approval_service:
+                        approval_service.send_text_message(
+                            receive_id=target,
+                            receive_id_type=rec_type,
+                            text=f"📱 【手机发帖专例文案·长按复制】\n━━━━━━━━━━━━━━\n{pure_post_text}\n━━━━━━━━━━━━━━"
+                        )
+                        logger.info(f"Successfully sent pure post text for task {task_id}")
+
+                    # 3. 异步热更新原卡片状态为 MANUAL_PUBLISHING
+                    new_card = FeishuCardBuilder.build_approval_card(
+                        task_id=task_id,
+                        title=title,
+                        topics=topics,
+                        content_text=content_text,
+                        resource_keyword=resource_keyword,
+                        fact_summary=fact_summary,
+                        duration_sec=duration_sec,
+                        video_size_mb=video_size_mb,
+                        template_id=task_template_id,
+                        status="MANUAL_PUBLISHING"
+                    )
+                    if open_message_id and approval_service:
+                        approval_service.update_card(open_message_id, new_card)
+                        logger.info(f"Updated card {open_message_id} to MANUAL_PUBLISHING")
+                except Exception as mat_err:
+                    logger.exception(f"Async send manual material failed for {task_id}: {mat_err}")
+
+            import threading
+            threading.Thread(target=async_send_manual_material, daemon=True).start()
+
+        elif action_type == "COMPLETE_MANUAL_PUBLISH":
+            db.update_task_status(task_id, "PUBLISHED")
+            logger.info(f"Task {task_id} status updated to PUBLISHED (manual)")
+            resp.toast = {"type": "success", "content": "🎉 祝贺！手机端发帖已成功归档"}
+
+            def async_update_card_to_published():
+                try:
+                    new_card = FeishuCardBuilder.build_approval_card(
+                        task_id=task_id,
+                        title=title,
+                        topics=topics,
+                        content_text=content_text,
+                        resource_keyword=resource_keyword,
+                        fact_summary=fact_summary,
+                        duration_sec=duration_sec,
+                        video_size_mb=video_size_mb,
+                        template_id=task_template_id,
+                        status="PUBLISHED"
+                    )
+                    if open_message_id and approval_service:
+                        approval_service.update_card(open_message_id, new_card)
+                except Exception as patch_err:
+                    logger.warning(f"Async card patch to PUBLISHED failed for {task_id}: {patch_err}")
+
+            import threading
+            threading.Thread(target=async_update_card_to_published, daemon=True).start()
+
+        elif action_type == "APPROVE_TASK":
             db.update_task_status(task_id, "APPROVED")
             logger.info(f"Task {task_id} status updated to APPROVED")
             resp.toast = {"type": "success", "content": "✅ 已批准！正在自动同步发布至小红书..."}

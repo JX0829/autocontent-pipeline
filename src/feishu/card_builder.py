@@ -29,6 +29,8 @@ class FeishuCardBuilder:
         status_badges = {
             "PENDING_APPROVAL": ("🟠 待人工审核", "orange"),
             "APPROVED": ("🟢 审核通过 · 待上传草稿", "green"),
+            "MANUAL_PUBLISHING": ("📱 已提取素材 · 待手机发布", "blue"),
+            "PUBLISHED": ("✅ 手机发布已完成", "green"),
             "REJECTED": ("🔴 已驳回", "red"),
         }
         badge_text, badge_color = status_badges.get(status, ("⚪ 未知状态", "grey"))
@@ -95,9 +97,21 @@ class FeishuCardBuilder:
                         "tag": "button",
                         "text": {
                             "tag": "plain_text",
-                            "content": "✅ 一键批准 (进入草稿箱)"
+                            "content": "📱 提取手机发帖素材"
                         },
                         "type": "primary",
+                        "value": {
+                            "action": "PREPARE_MANUAL_PUBLISH",
+                            "task_id": task_id
+                        }
+                    },
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": "✅ 一键批准 (草稿箱)"
+                        },
+                        "type": "default",
                         "value": {
                             "action": "APPROVE_TASK",
                             "task_id": task_id
@@ -112,6 +126,25 @@ class FeishuCardBuilder:
                         "type": "danger",
                         "value": {
                             "action": "REJECT_TASK",
+                            "task_id": task_id
+                        }
+                    }
+                ]
+            })
+        elif status == "MANUAL_PUBLISHING":
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": "✅ 手机发布已完成"
+                        },
+                        "type": "primary",
+                        "value": {
+                            "action": "COMPLETE_MANUAL_PUBLISH",
                             "task_id": task_id
                         }
                     }
