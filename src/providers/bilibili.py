@@ -77,7 +77,7 @@ class BilibiliProvider(BaseSocialProvider):
             "status": "DRAFT_SAVED"
         }
         
-        draft_store_dir = Path("./data/drafts/bilibili")
+        draft_store_dir = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/drafts/bilibili")
         draft_store_dir.mkdir(parents=True, exist_ok=True)
         with open(draft_store_dir / f"{fake_bvid}.json", "w", encoding="utf-8") as f:
             json.dump(draft_record, f, ensure_ascii=False, indent=2)
