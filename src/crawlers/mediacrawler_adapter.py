@@ -27,7 +27,7 @@ def search_media_trending(
     platform: str = "xhs",
     keywords: str = "AI,大模型,开源",
     max_count: int = 5,
-    timeout_sec: int = 90
+    timeout_sec: int = 8
 ) -> List[Dict[str, Any]]:
     """
     通用搜索适配器：
@@ -81,10 +81,23 @@ def search_media_trending(
     # 读取生成的 jsonl 数据
     results: List[Dict[str, Any]] = []
     try:
-        # 查找最新生成的 jsonl 文件
-        jsonl_files = sorted(output_dir.glob("*.jsonl"), key=os.path.getmtime, reverse=True)
+        # 支持多种落盘路径模式：
+        # 1. output_dir 直属
+        # 2. output_dir / platform / jsonl
+        # 3. MEDIACRAWLER_DIR / data / platform / jsonl
+        search_dirs = [
+            output_dir,
+            output_dir / "jsonl",
+            MEDIACRAWLER_DIR / "data" / platform / "jsonl",
+            MEDIACRAWLER_DIR / "data" / platform
+        ]
+        jsonl_files = []
+        for d in search_dirs:
+            if d.exists():
+                jsonl_files.extend(list(d.glob("*.jsonl")))
+
         if jsonl_files:
-            latest_file = jsonl_files[0]
+            latest_file = sorted(jsonl_files, key=os.path.getmtime, reverse=True)[0]
             with open(latest_file, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
