@@ -22,10 +22,14 @@ TWITTER_CLI_BIN = Path.home() / ".local" / "bin" / "twitter"
 def fetch_x_trending(query: str = "AI OR LLM OR OpenSource", max_count: int = 5, timeout_sec: int = 6) -> List[Dict[str, Any]]:
     """
     通过本机 twitter-cli 只读检索 X (Twitter) 热门推文
-    设置严格超时与未登录降级，防止阻塞速递主流程
+    支持注入探针凭证、代理与严格超时优雅降级
     """
     if not TWITTER_CLI_BIN.exists():
         return []
+
+    from src.crawlers.mediacrawler_adapter import load_probe_config
+    probe_cfg = load_probe_config()
+    tw_probe = probe_cfg.get("twitter_probe", {})
 
     cmd = [
         str(TWITTER_CLI_BIN),
@@ -35,13 +39,30 @@ def fetch_x_trending(query: str = "AI OR LLM OR OpenSource", max_count: int = 5,
         f"--count={max_count}"
     ]
 
+    env = os.environ.copy()
+    # 注入代理（支持本地 Clash/V2Ray 等海外代理端口）
+    proxy_url = os.getenv("TWITTER_PROXY") or tw_probe.get("proxy_url", "")
+    if proxy_url:
+        env["HTTP_PROXY"] = proxy_url
+        env["HTTPS_PROXY"] = proxy_url
+        env["ALL_PROXY"] = proxy_url
+
+    # 注入探针 Token
+    token = os.getenv("TWITTER_AUTH_TOKEN") or tw_probe.get("auth_token", "")
+    ct0 = os.getenv("TWITTER_CT0") or tw_probe.get("ct0", "")
+    if token:
+        env["TWITTER_AUTH_TOKEN"] = token
+    if ct0:
+        env["TWITTER_CT0"] = ct0
+
     try:
         res = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_sec
+            timeout=timeout_sec,
+            env=env
         )
         if res.returncode != 0:
             logger.info(f"X search exited with status {res.returncode} (auth pending or network limit)")

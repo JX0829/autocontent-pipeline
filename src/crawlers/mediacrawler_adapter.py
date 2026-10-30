@@ -8,6 +8,7 @@ src/crawlers/mediacrawler_adapter.py
 import os
 import sys
 import json
+import yaml
 import logging
 import subprocess
 from pathlib import Path
@@ -18,6 +19,18 @@ logger = logging.getLogger("MediaCrawlerAdapter")
 PIPELINE_ROOT = Path(__file__).resolve().parent.parent.parent
 MEDIACRAWLER_DIR = PIPELINE_ROOT / "external" / "MediaCrawler"
 VENV_PYTHON = MEDIACRAWLER_DIR / ".venv" / "bin" / "python"
+
+def load_probe_config() -> Dict[str, Any]:
+    """读取隔离的探针与代理配置"""
+    cfg_path = PIPELINE_ROOT / "config" / "probe_config.yaml"
+    if not cfg_path.exists():
+        return {}
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning(f"Failed to read probe_config.yaml: {e}")
+        return {}
 
 def is_mediacrawler_available() -> bool:
     """检查 MediaCrawler 独立虚拟环境是否就绪"""
@@ -46,6 +59,9 @@ def search_media_trending(
     output_dir = PIPELINE_ROOT / "data" / "crawler_output" / platform
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    probe_cfg = load_probe_config()
+    xhs_probe = probe_cfg.get("xiaohongshu_probe", {})
+
     cmd = [
         str(VENV_PYTHON),
         "main.py",
@@ -60,6 +76,20 @@ def search_media_trending(
         "--get_sub_comment=false",
         "--get_media=false"
     ]
+
+    # 动态注入只读探针 Cookie（优先从配置或环境变量读取，绝对隔离主号）
+    probe_cookie = os.getenv("XHS_PROBE_COOKIE") or xhs_probe.get("cookies", "")
+    if probe_cookie:
+        cmd.extend(["--lt=cookie", f"--cookies={probe_cookie}"])
+
+    # 动态注入探针代理
+    probe_proxy = os.getenv("XHS_PROBE_PROXY") or xhs_probe.get("proxy_url", "")
+    if (xhs_probe.get("enable_proxy", False) or os.getenv("XHS_PROBE_PROXY")) and probe_proxy:
+        cmd.extend([
+            "--enable_ip_proxy=true",
+            "--ip_proxy_provider_name=static",
+            f"--static_proxy_url={probe_proxy}"
+        ])
 
     logger.info(f"Executing MediaCrawler: platform={platform}, keywords={keywords}, max_count={max_count}")
     try:

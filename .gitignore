@@ -5,6 +5,7 @@
 
 # Accounts & Credentials
 # config/accounts.yaml 可以作为模版提交，但需确保无真实密码/密钥
+config/probe_config.yaml
 # Browser cookies & sessions
 **/browser_profiles/
 **/storage_state.json
