@@ -87,9 +87,16 @@ class FeishuCardBuilder:
                 }
             })
 
-        # 仅在待审批状态下展示操作按钮
+        # 仅在待审批状态下展示操作按钮：二合一极简收敛（批准发布并分发 + 驳回）
         if status == "PENDING_APPROVAL":
             elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "🚀 **动态多平台分发矩阵**: `📺 B站(私密草稿)` · `📲 微信视频号(公开分发)` · `📕 小红书(手机文案提取)`"
+                }
+            })
             elements.append({
                 "tag": "action",
                 "actions": [
@@ -97,23 +104,11 @@ class FeishuCardBuilder:
                         "tag": "button",
                         "text": {
                             "tag": "plain_text",
-                            "content": "📱 提取手机发帖素材"
+                            "content": "✅ 批准发布并分发"
                         },
                         "type": "primary",
                         "value": {
-                            "action": "PREPARE_MANUAL_PUBLISH",
-                            "task_id": task_id
-                        }
-                    },
-                    {
-                        "tag": "button",
-                        "text": {
-                            "tag": "plain_text",
-                            "content": "✅ 一键批准 (草稿箱)"
-                        },
-                        "type": "default",
-                        "value": {
-                            "action": "APPROVE_TASK",
+                            "action": "APPROVE_AND_DISPATCH",
                             "task_id": task_id
                         }
                     },

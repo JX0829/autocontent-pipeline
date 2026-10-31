@@ -61,14 +61,8 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
         return False
 
     status = task.get("status")
-    if status != "APPROVED":
-        logger.warning(f"Task '{task_id}' is in status '{status}', expected 'APPROVED'.")
-        return False
-
-    target_account_id = task.get("target_account_id", "douyin-tech-main")
-    account_config = accounts_map.get(target_account_id)
-    if not account_config:
-        logger.error(f"Account configuration for '{target_account_id}' not found.")
+    if status not in ("APPROVED", "WAITING_APPROVAL"):
+        logger.warning(f"Task '{task_id}' is in status '{status}', expected 'APPROVED' or 'WAITING_APPROVAL'.")
         return False
 
     draft_script = json.loads(task.get("draft_script_json") or "{}")
@@ -78,12 +72,10 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     topics = draft_script.get("topics") or draft_script.get("tags") or []
     content_text = draft_script.get("content_text") or draft_script.get("fact_summary_150") or ""
 
-    # 过滤与合规化：去除完整 URL 及外链，替换为关键词搜索引导
     import re
     def sanitize_text(text: str) -> str:
         if not text:
             return ""
-        # 移除完整 http/https 链接或 github.com 路径
         text = re.sub(r'https?://[^\s]+', '', text)
         text = re.sub(r'github\.com/[^\s]+', '', text)
         return text.strip()
@@ -91,117 +83,77 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     title = sanitize_text(title)
     content_text = sanitize_text(content_text)
 
-    # 检查抖音账号是否启用（解封前可置为 enabled: false）
-    publish_success = False
-    primary_draft_id = None
-
-    if account_config.get("enabled", False):
-        platform = account_config.get("platform", "douyin")
-        logger.info(f"Dispatching task '{task_id}' to primary provider: {platform} (Account: {target_account_id})")
-
-        if platform == "douyin":
-            provider = DouyinProvider(account_config)
-            res = provider.save_draft(
-                video_path=video_path,
-                cover_path=cover_path,
-                title=title,
-                topics=topics,
-                content_text=content_text
-            )
-
-            if res.get("success"):
-                primary_draft_id = res.get("draft_id", f"draft_{task_id}")
-                publish_success = True
-                logger.info(f"✅ Task '{task_id}' successfully saved as draft on Douyin! draft_id={primary_draft_id}")
-            else:
-                logger.error(f"❌ Failed to save draft on Douyin for task '{task_id}': {res.get('message') or res.get('error')}")
-        elif platform == "bilibili":
-            provider = BilibiliProvider(account_config)
-            res = provider.save_draft(
-                video_path=video_path,
-                cover_path=cover_path,
-                title=title,
-                topics=topics,
-                content_text=content_text
-            )
-            if res.get("success"):
-                primary_draft_id = res.get("draft_id", f"bili_{task_id}")
-                publish_success = True
-                logger.info(f"✅ Task '{task_id}' successfully saved as draft on Bilibili! draft_id={primary_draft_id}")
-            else:
-                logger.error(f"❌ Failed to save draft on Bilibili for task '{task_id}': {res.get('message')}")
-        elif platform == "channels":
-            provider = ChannelsCDPProvider(account_config)
-            res = provider.save_draft(
-                video_path=video_path,
-                cover_path=cover_path,
-                title=title,
-                topics=topics,
-                content_text=content_text
-            )
-            if res.get("success"):
-                primary_draft_id = res.get("draft_id", f"channels_{task_id}")
-                publish_success = True
-                logger.info(f"✅ Task '{task_id}' successfully saved as draft on WeChat Channels! draft_id={primary_draft_id}")
-            else:
-                logger.error(f"❌ Failed to save draft on WeChat Channels for task '{task_id}': {res.get('message')}")
-        else:
-            logger.error(f"Unsupported primary platform: {platform}")
-    else:
-        logger.info(f"Primary account '{target_account_id}' is currently DISABLED (e.g. cooldown/standby). Skipping Douyin.")
-
-    # 同步发布至小红书（若已配置 xhs-tech-main 且启用）
-    xhs_account = accounts_map.get("xhs-tech-main")
-    xhs_error = None
-    if xhs_account and xhs_account.get("enabled", True):
-        logger.info(f"Synchronizing task '{task_id}' to Xiaohongshu...")
+    # 结果收集汇总
+    dispatch_results = []
+    
+    # 1. B站分发（若启用 bili-tech-main）
+    bili_account = accounts_map.get("bili-tech-main")
+    if bili_account and bili_account.get("enabled", True):
+        logger.info(f"Dispatching task '{task_id}' to Bilibili ({bili_account.get('publish_mode', 'draft')})...")
         try:
-            xhs_provider = XiaohongshuProvider(xhs_account)
-            # 小红书正文优先取更具极客感的内容摘要
-            xhs_content = draft_script.get("content_text") or draft_script.get("fact_summary_150") or ""
-            xhs_res = xhs_provider.save_draft(
+            bili_provider = BilibiliProvider(bili_account)
+            bili_res = bili_provider.save_draft(
                 video_path=video_path,
                 cover_path=cover_path,
                 title=title,
                 topics=topics,
-                content_text=xhs_content
+                content_text=content_text,
+                declare_aigc=True
             )
-            if xhs_res.get("success"):
-                xhs_draft_id = xhs_res.get("draft_id")
-                logger.info(f"✅ Task '{task_id}' successfully published to Xiaohongshu! {xhs_draft_id}")
-                if not primary_draft_id:
-                    primary_draft_id = xhs_draft_id
-                publish_success = True
+            if bili_res.get("success"):
+                draft_id = bili_res.get("draft_id")
+                dispatch_results.append(f"📺 **B站 (私密草稿)**: ✅ 上传成功 (`{draft_id}`)")
             else:
-                xhs_error = xhs_res.get("message") or "发布接口返回失败"
-                logger.warning(f"⚠️ Xiaohongshu sync failed for '{task_id}': {xhs_error}")
+                dispatch_results.append(f"📺 **B站**: ⚠️ {bili_res.get('message')}")
         except Exception as e:
-            xhs_error = str(e)
-            logger.error(f"Error during Xiaohongshu sync for '{task_id}': {e}")
+            dispatch_results.append(f"📺 **B站**: ❌ 异常 ({e})")
 
-    if publish_success:
-        db.update_task_status(task_id, "DRAFTED", platform_draft_id=primary_draft_id)
-        logger.info(f"Task '{task_id}' transitioned to DRAFTED with platform_draft_id={primary_draft_id}")
-        notify_feishu(
-            f"🎉 视频草稿发布成功！\n"
-            f"🎬 标题：《{title}》\n"
-            f"📌 任务 ID: {task_id}\n"
-            f"📦 草稿 ID: {primary_draft_id}\n"
-            f"已成功同步保存至小红书草稿箱，请前往确认！"
+    # 2. 微信视频号分发（若启用 channels-tech-main）
+    channels_account = accounts_map.get("channels-tech-main")
+    if channels_account and channels_account.get("enabled", True):
+        logger.info(f"Dispatching task '{task_id}' to WeChat Channels ({channels_account.get('publish_mode', 'public')})...")
+        try:
+            channels_provider = ChannelsCDPProvider(channels_account)
+            channels_res = channels_provider.save_draft(
+                video_path=video_path,
+                cover_path=cover_path,
+                title=title,
+                topics=topics,
+                content_text=content_text,
+                declare_aigc=False
+            )
+            if channels_res.get("success"):
+                draft_id = channels_res.get("draft_id")
+                dispatch_results.append(f"📲 **微信视频号 (公开分发)**: ✅ 已就绪 (`{draft_id}`)")
+            else:
+                dispatch_results.append(f"📲 **微信视频号**: ⚠️ {channels_res.get('message')}")
+        except Exception as e:
+            dispatch_results.append(f"📲 **微信视频号**: ❌ 异常 ({e})")
+
+    # 3. 手机发帖专例文案推送（针对小红书 7 天避险冷冻期 & 手机发布）
+    try:
+        clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
+        short_title = title[:20]
+        material_msg = (
+            f"📱 【手机端发帖纯净素材】\n\n"
+            f"{short_title}\n\n"
+            f"{content_text}\n\n"
+            f"💡 欢迎在评论区交流讨论～\n\n"
+            f"{clean_tags}"
         )
-        return True
-    else:
-        err_detail = xhs_error or "发布异常"
-        logger.error(f"Task '{task_id}' publish failed: {err_detail}")
-        notify_feishu(
-            f"⚠️ 视频草稿发布失败！\n"
-            f"🎬 标题：《{title}》\n"
-            f"📌 任务 ID: {task_id}\n"
-            f"❌ 失败原因: {err_detail}"
-        )
-        return False
+        notify_feishu(material_msg)
+        dispatch_results.append(f"📕 **小红书 (手机发帖素材)**: ✅ 纯净文案已推送到飞书私聊")
+    except Exception as e:
+        dispatch_results.append(f"📕 **小红书**: ❌ 素材推送失败 ({e})")
 
+    # 4. 更新 SQLite 数据库任务状态
+    db.update_task_status(task_id, "DISPATCHED", platform_draft_id=f"matrix_{task_id}")
+    logger.info(f"Task '{task_id}' successfully transitioned to DISPATCHED")
 
+    # 5. 向飞书播报整体分发汇总卡片
+    summary_msg = f"🎉 **任务 `{task_id}` 动态多平台分发执行完毕**:\n\n" + "\n".join(dispatch_results)
+    notify_feishu(summary_msg)
+    return True
 def main():
     parser = argparse.ArgumentParser(description="草稿箱上传与发布 Worker")
     parser.add_argument("--task-id", help="指定要处理的 APPROVED 任务 ID")
