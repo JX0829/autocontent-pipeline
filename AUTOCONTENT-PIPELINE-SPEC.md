@@ -496,7 +496,7 @@ autocontent-pipeline/
 ├── scripts/
 │   ├── bootstrap_assets.py           # 【自举脚本】使用 Python 标准库合成测试 WAV 音效与占位图
 │   ├── run_phase1_demo.py            # 【Phase 1 验收入口】端到端执行 TTS 合成 -> 对齐 -> Remotion 渲染
-│   ├── run_feishu_worker.py          # 【Phase 2 验收入口】启动飞书 WebSocket 审批监听服务
+│   ├── run_feishu_worker.py          # 【已废弃/存根】外挂长连接已废弃，审批统一由 Hermes 网关独占接管
 │   ├── run_publish_worker.py         # 【Phase 3 验收入口】执行抖音/小红书草稿或定时发布
 │   └── run_comment_cron.py           # 【Phase 4 验收入口】执行线上作品回溯与评论区三级防护回复
 ├── src/
@@ -666,22 +666,21 @@ npx remotion still src/index.ts XhsCardStill ../output/<task_id>/xhs_cards/card_
   - `output/demo_task_001/video.mp4` 存在且文件大小 `> 500KB`，分辨率为 `1080x1920`，时长与 TTS 音频总长完全一致，包含清晰人声配音、按键/转场音效及安全区内居中字幕；
   - `output/demo_task_001/cover.png`（1080×1920）与 `output/demo_task_001/xhs_cards/card_0.png`（1242×1660）正常生成。
 
-### Phase 2：飞书 WebSocket 长连接审批工作台（✅ 生产实测验收通过）
+### Phase 2：飞书审批工作台与 Hermes 原生网关独占接管（✅ 生产实测验收通过）
 
-- **实测通过状态**：`PASSED` (2026-10-22 / 2026-10-29 容错优化)
-- **真机固化标准**：采用 `lark-oapi` 原生 WebSocket 长连接直连飞书网关，卡片支持一键批准、驳回、毫秒级 Toast 提示与原位热更新（去除公网 Webhook 暴露风险）。
-- **高可用与防抖升级 (v1.0.2)**：
-  - **毫秒级即时 ACK 与独立后台进程**：飞书客户端限制 3 秒超时，事件处理函数先以 100ms 内向飞书客户端回传 ACK 与原位状态更新，并使用 `subprocess.Popen(..., start_new_session=True)` 异步派发发布 Worker，彻底消除卡片等待超时；
-  - **5 秒内存防抖（Debounce）**：基于 `DEBOUNCE_CACHE` 记录各 `task_id` 操作时间戳，5 秒内重复点击直接返回轻提示，拦截并发冲突；
+- **实测通过状态**：`PASSED` (2026-10-22 / 2026-10-30 架构归一整改)
+- **网关独占与防冲突架构**：彻底废除外挂独立长连接 Worker（`run_feishu_worker.py` 已归档废弃），飞书双向长连接由 Hermes 原生网关（`hermes gateway run`）100% 独占维持。杜绝多 Client 竞争分流导致的事件丢包与 362 超时。
+- **高可用与防抖升级 (v1.0.3)**：
+  - **网关原生卡片处理**：短视频审批卡片统一对接 Hermes 网关或 CLI 状态流转机制，流水线彻底回归纯工具脚本定位；
+  - **5 秒内存防抖（Debounce）**：基于任务状态与防抖锁，拦截并发重复点击与数据库冲突；
   - **3 次指数退避网络重试**：`FeishuApprovalService.update_card` 与 `XiaohongshuProvider._call_mcp` 统一集成最大 3 次网络重试，增强跨平台发布韧性。
 - **实现范围**：
-  1. 实现 `src/feishu/card_builder.py` 与 `src/feishu/approval_service.py`，基于 `lark-oapi` 建立长连接监听卡片交互回调；
+  1. 实现 `src/feishu/card_builder.py` 与 `src/feishu/approval_service.py`，卡片构建与富媒体推送；
   2. 支持将 `output/<task_id>/` 下的封面图与视频上传至飞书并构建富媒体审批卡片（展示标题、分段口播、合规绿灯标识、私域暗号及 `【✅ 一键批准】` `【❌ 驳回重写】` 交互按钮）；
-  3. 实现按钮点击后的 SQLite 状态机流转（`PENDING_APPROVAL` ➡️ `APPROVED` / `REJECTED`）与卡片原位热更新。
-- **终端验收命令 (Definition of Done)**：
-  ```bash
-  python3 scripts/run_feishu_worker.py
-  ```
+  3. 实现 Hermes 网关与 SQLite 状态机流转闭环（`WAITING_APPROVAL` ➡️ `APPROVED` / `REJECTED`）。
+- **终端验收规范 (Definition of Done)**：
+  - 确认宿主机零外挂 Worker 常驻：`ps aux | grep -E "run_feishu_worker" | grep -v grep` 输出为空；
+  - 由 Hermes Gateway 统一承接长连接与卡片审批流转。
 
 ### Phase 3：多平台防关联 Provider 闭环（✅ 生产实测验收通过）
 

@@ -52,20 +52,34 @@ def run():
             rec_type = "open_id" if target.startswith("ou_") else "chat_id"
 
             elements = []
+            manual_count = 0
             for r in all_replied:
+                is_manual = (r.get("reply_mode") == "manual_approval" or r.get("platform") == "xiaohongshu")
+                if is_manual:
+                    manual_count += 1
+                    reply_block = f"💡 **AI 建议回复（可长按直接复制在手机App回复）**：\n```text\n{r['reply']}\n```"
+                else:
+                    reply_block = f"🤖 **已自动直发回复**: {r['reply']}"
+
                 elements.append({
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"🏷️ **平台**: {r['platform']}  |  **作品**: 《{r['feed_title']}》\n👤 **粉丝**: `{r['user']}`\n💬 **评论**: {r['comment']}\n🤖 **已自动回复**: {r['reply']}"
+                        "content": f"🏷️ **平台**: {r['platform']}  |  **作品**: 《{r['feed_title']}》\n👤 **粉丝**: `{r['user']}`\n💬 **评论**: {r['comment']}\n{reply_block}"
                     }
                 })
                 elements.append({"tag": "hr"})
 
+            card_title = f"💬 评论区互动报告（新增 {len(all_replied)} 条"
+            if manual_count > 0:
+                card_title += f"，含 {manual_count} 条待手动回复）"
+            else:
+                card_title += "）"
+
             card_content = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"tag": "plain_text", "content": f"💬 评论区自动互动报告（本次新增 {len(all_replied)} 条）"},
+                    "title": {"tag": "plain_text", "content": card_title},
                     "template": "blue"
                 },
                 "elements": elements

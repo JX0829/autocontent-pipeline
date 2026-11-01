@@ -7,8 +7,13 @@
 # config/accounts.yaml 可以作为模版提交，但需确保无真实密码/密钥
 config/probe_config.yaml
 # Browser cookies & sessions
-**/browser_profiles/
+cookies.json
+**/cookies*.json
 **/storage_state.json
+**/browser_profiles/
+*bilibili_qr*.json
+data/*qr*.json
+
 *.png
 *.jpg
 *.jpeg
@@ -20,9 +25,11 @@ config/probe_config.yaml
 data/*.db
 data/*.sqlite
 data/*.jsonl
+data/*.json
 data/*.txt
-data/draft_*.json
-data/douyin_*.png
+data/*.log
+data/drafts/
+*.log
 output/
 
 # Python
