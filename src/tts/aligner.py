@@ -1,11 +1,45 @@
 import os
-import asyncio
 import re
+import math
 import edge_tts
 from mutagen.mp3 import MP3
 from ..schemas import DraftScriptPayload, AlignedRenderPayload, AlignedSceneItem, SubtitleItem
 from ..templates_manager import TemplateManager
 from ..platform_policy import get_footer_callout
+
+def sanitize_narration_guardrail(text: str, is_tail: bool = False) -> str:
+    """
+    全链路最高风控红线拦截门禁：
+    彻底清除“暗号”、“私信”、“主页置顶”、“粉丝群”、“领源码/求源码/领取论文”等任何导流诱导词
+    """
+    if not text:
+        return ""
+    cleaned = text
+    # 违规导流模式拦截与清洗
+    patterns = [
+        r"回复暗号[^\s，。！!？?]*",
+        r"私信我?[^\s，。！!？?]*",
+        r"主页置顶[^\s，。！!？?]*",
+        r"粉丝群[^\s，。！!？?]*",
+        r"进群[^\s，。！!？?]*",
+        r"领取[论文源码资料代码完整包]+[^\s，。！!？?]*",
+        r"暗号",
+        r"加群",
+        r"求源码",
+        r"领源码"
+    ]
+    for p in patterns:
+        cleaned = re.sub(p, "", cleaned)
+    
+    cleaned = cleaned.replace("点赞收藏，", "").replace("点赞收藏", "")
+    cleaned = re.sub(r"^[，,、\s]+", "", cleaned)
+    cleaned = re.sub(r"[，,、\s]+$", "", cleaned).strip()
+
+    if is_tail:
+        # 结尾必须且只能是纯净的极客交流讨论
+        if not cleaned.endswith("交流讨论～") and not cleaned.endswith("交流讨论！") and not cleaned.endswith("看法～"):
+            cleaned = "欢迎在评论区交流讨论～"
+    return cleaned
 
 class TTSAligner:
     def __init__(self, voice="zh-CN-YunxiNeural", rate="+10%"):
@@ -28,13 +62,18 @@ class TTSAligner:
         fps = 30
         pause_tail_sec = 0.25  # 句尾留白呼吸感
 
+        total_scene_count = len(draft.scenes)
         for scene in draft.scenes:
             idx = scene.scene_index
             mp3_rel_path = f"tasks/{task_id}/scene_{idx}.mp3"
             mp3_abs_path = os.path.join(output_base_dir, mp3_rel_path)
 
+            # 严格经过最高风控门禁清洗
+            is_tail_scene = (idx == total_scene_count - 1)
+            clean_narration = sanitize_narration_guardrail(scene.segment_narration, is_tail=is_tail_scene)
+
             # 调用 edge-tts 生成音频文件
-            communicate = edge_tts.Communicate(scene.segment_narration, self.voice, rate=self.rate)
+            communicate = edge_tts.Communicate(clean_narration, self.voice, rate=self.rate)
             await communicate.save(mp3_abs_path)
 
             # mutagen 获取精确时长
@@ -44,14 +83,14 @@ class TTSAligner:
             scene_duration_frames = int(round(total_scene_sec * fps))
 
             # 纯文本切分子句生成字幕轴
-            subtitles = self._split_subtitles(scene.segment_narration, raw_duration)
+            subtitles = self._split_subtitles(clean_narration, raw_duration)
 
             sfx_src = f"sfx/{scene.sfx_cue}.wav" if scene.sfx_cue != "none" else ""
 
             aligned_scene = AlignedSceneItem(
                 scene_index=idx,
                 visual_type=scene.visual_type,
-                segment_narration=scene.segment_narration,
+                segment_narration=clean_narration,
                 highlight_text=scene.highlight_text,
                 code_snippet=scene.code_snippet,
                 media_asset_url=scene.media_asset_url,
