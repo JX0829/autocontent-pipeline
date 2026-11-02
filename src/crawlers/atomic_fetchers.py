@@ -14,6 +14,8 @@ import re
 import json
 import time
 import datetime
+import subprocess
+import hashlib
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -546,4 +548,111 @@ def fetch_github_ai_topics(
     except Exception as e:
         print(f"[Warning: GitHub Topic fetch failed]: {e}", file=sys.stderr)
     return items
+
+# ─────────────────────────────────────────────────────────────
+# 9. 小红书极客与开发者垂直玩法原子抓取函数
+# ─────────────────────────────────────────────────────────────
+
+def fetch_xiaohongshu_tech(
+    query: str = "AI智能体 OR 大模型架构 OR 开源AI",
+    limit: int = 5,
+    timeout_sec: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    单一信源原子函数：基于 agent-reach opencli 检索小红书前沿技术与开发玩法笔记
+    """
+    items: List[Dict[str, Any]] = []
+    agent_reach_bin = "/Users/a1/.local/bin/agent-reach"
+    if not os.path.exists(agent_reach_bin):
+        return items
+
+    cmd = [agent_reach_bin, "xiaohongshu", "search", query, "--limit", str(limit)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        if res.returncode == 0 and res.stdout.strip():
+            data = json.loads(res.stdout)
+            for it in data.get("items", []):
+                title = it.get("title") or "小红书开发者前沿笔记"
+                url = it.get("url") or ""
+                author = it.get("author") or "小红书极客"
+                pub_at = it.get("published_at") or "今日热点"
+                raw = it.get("raw") or {}
+                
+                # 提取唯一的 note_id 作为去重指纹
+                note_id = ""
+                if "search_result/" in url:
+                    note_id = url.split("search_result/")[1].split("?")[0]
+                elif "discovery/item/" in url:
+                    note_id = url.split("discovery/item/")[1].split("?")[0]
+                else:
+                    note_id = hashlib.md5(url.encode()).hexdigest()[:12]
+
+                items.append({
+                    "title": f"前沿笔记: {title}",
+                    "desc": f"小红书创作者 @{author} 发布的最新 AI 实践与开发者技术探讨",
+                    "url": url,
+                    "source": "xiaohongshu",
+                    "author": author,
+                    "published_at": pub_at,
+                    "badge": "小红书 · 极客",
+                    "unique_id": f"xhs_{note_id}",
+                    "raw": raw
+                })
+    except Exception as e:
+        print(f"[Warning: Xiaohongshu fetch failed]: {e}", file=sys.stderr)
+    return items[:limit]
+
+# ─────────────────────────────────────────────────────────────
+# 10. Twitter (X) 全球 AI 领袖一手动态原子抓取函数
+# ─────────────────────────────────────────────────────────────
+
+def fetch_twitter_x_tech(
+    query: str = "Claude 3.7 OR DeepSeek OR Coding Agent OR OpenAI",
+    limit: int = 5,
+    timeout_sec: int = 15
+) -> List[Dict[str, Any]]:
+    """
+    单一信源原子函数：基于 agent-reach opencli 检索全球 X (Twitter) 先锋一手推文
+    """
+    items: List[Dict[str, Any]] = []
+    agent_reach_bin = "/Users/a1/.local/bin/agent-reach"
+    if not os.path.exists(agent_reach_bin):
+        return items
+
+    cmd = [agent_reach_bin, "twitter", "search", query, "--limit", str(limit)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        if res.returncode == 0 and res.stdout.strip():
+            data = json.loads(res.stdout)
+            for it in data.get("items", []):
+                text_content = it.get("text") or it.get("title") or ""
+                url = it.get("url") or ""
+                author = it.get("author") or "AI Researcher"
+                pub_at = it.get("published_at") or "实时动态"
+                
+                # 简单清洗推文正文作为摘要与标题
+                clean_lines = [l.strip() for l in text_content.splitlines() if l.strip()]
+                first_line = clean_lines[0] if clean_lines else "全球 AI 前沿动态突破"
+                if len(first_line) > 35:
+                    first_line = first_line[:35] + "..."
+                
+                # 提取 tweet_id
+                tweet_id = url.split("status/")[-1].split("?")[0] if "status/" in url else hashlib.md5(text_content.encode()).hexdigest()[:12]
+                zh_desc = translate_to_zh(text_content[:200])
+
+                items.append({
+                    "title": f"推特先锋: @{author}: {first_line}",
+                    "desc": zh_desc or text_content[:150],
+                    "url": url,
+                    "source": "twitter",
+                    "author": author,
+                    "published_at": pub_at[:16] if len(pub_at) >= 16 else pub_at,
+                    "badge": "X · 先锋推文",
+                    "unique_id": f"tw_{tweet_id}",
+                    "raw": it
+                })
+    except Exception as e:
+        print(f"[Warning: Twitter fetch failed]: {e}", file=sys.stderr)
+    return items[:limit]
+
 
