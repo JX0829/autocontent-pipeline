@@ -150,6 +150,70 @@ class BilibiliCommentClient:
             logger.error(f"Failed to post top-level comment to Bilibili video av{oid}: {e}")
             return {"success": False, "message": str(e)}
 
+    def top_comment(self, oid: int, rpid: int, action: int = 1) -> Dict[str, Any]:
+        """
+        置顶或取消置顶指定评论
+        :param oid: 稿件目标 ID (aid)
+        :param rpid: 目标评论 ID
+        :param action: 1: 置顶, 0: 取消置顶
+        :return: {"success": bool, "code": int, "message": str}
+        """
+        if not self.is_available():
+            return {"success": False, "message": "CSRF / Cookies not available"}
+
+        url = "https://api.bilibili.com/x/v2/reply/top"
+        payload = {
+            "oid": str(oid),
+            "type": "1", # 1: 视频
+            "rpid": str(rpid),
+            "action": str(action),
+            "csrf": self.csrf
+        }
+        data_encoded = urllib.parse.urlencode(payload).encode("utf-8")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Cookie": self.cookie_str,
+            "Referer": f"https://www.bilibili.com/video/av{oid}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        try:
+            req = urllib.request.Request(url, data=data_encoded, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+                code = res.get("code", -1)
+                msg = res.get("message", "")
+                if code == 0:
+                    logger.info(f"Successfully pinned Bilibili comment {rpid} on av{oid}")
+                    return {"success": True, "code": 0, "message": msg}
+                else:
+                    logger.warning(f"Bilibili top comment API returned error code {code}: {msg}")
+                    return {"success": False, "code": code, "message": msg}
+        except Exception as e:
+            logger.error(f"Failed to pin Bilibili comment {rpid} on av{oid}: {e}")
+            return {"success": False, "message": str(e)}
+
+    def post_and_top_comment(self, oid: int, message: str) -> Dict[str, Any]:
+        """
+        原子化复合动作：发表一级主评论并自动将其置顶
+        :param oid: 稿件目标 ID (aid)
+        :param message: 评论正文
+        :return: {"success": bool, "rpid": int, "top_success": bool}
+        """
+        add_res = self.add_top_level_comment(oid, message)
+        if not add_res.get("success"):
+            return add_res
+        
+        rpid = add_res.get("rpid")
+        if not rpid:
+            return add_res
+        top_res = self.top_comment(oid, int(rpid), action=1)
+        return {
+            "success": True,
+            "rpid": rpid,
+            "top_success": top_res.get("success", False),
+            "message": "Comment posted and pinned successfully" if top_res.get("success") else "Comment posted, top pending"
+        }
+
     def reply_comment(self, oid: int, rpid: int, message: str, root_id: int = 0) -> Dict[str, Any]:
         """
         向指定评论发表回复

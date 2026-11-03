@@ -83,6 +83,18 @@ class BilibiliProvider(BaseSocialProvider):
                         real_data = json.loads(p.stdout.strip())
                         real_upload_res = real_data
                         logger.info(f"Real Bilibili upload successful: {real_data}")
+                        
+                        # 核心新增：自动发表置顶评论闭环 (Pinned Seed Comment)
+                        aid = real_data.get("aid")
+                        if aid:
+                            try:
+                                from .bilibili_comment import BilibiliCommentClient
+                                c_client = BilibiliCommentClient(cookie_file)
+                                seed_msg = f"📌 官方项目与提示词已整理：\n- 体验直通：见视频简介与文档说明\n\n💬 极客交流：\n{content_text[:120]}\n\n欢迎在弹幕与评论区交流探讨细节～"
+                                pin_res = c_client.post_and_top_comment(int(aid), seed_msg)
+                                logger.info(f"Bilibili automatic pinned comment result: {pin_res}")
+                            except Exception as ce:
+                                logger.warning(f"Failed to post automatic pinned comment: {ce}")
             except Exception as e:
                 logger.warning(f"Real upload attempt failed, falling back to draft staging: {e}")
 

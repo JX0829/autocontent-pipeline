@@ -416,12 +416,37 @@ export const RemotionRoot: React.FC = () => {
         calculateMetadata={calculateVideoMetadata}
         defaultProps={defaultMockProps}
       />
+      <Composition
+        id="GeekHorizontalVideo"
+        component={GeekShortVideo}
+        durationInFrames={300}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={calculateVideoMetadata}
+        defaultProps={{
+          ...defaultMockProps,
+          width: 1920,
+          height: 1080,
+        }}
+      />
       <Still
         id="CoverStill"
         component={CoverStill}
         width={1080}
         height={1920}
         defaultProps={defaultMockProps}
+      />
+      <Still
+        id="CoverHorizontalStill"
+        component={CoverStill}
+        width={1920}
+        height={1080}
+        defaultProps={{
+          ...defaultMockProps,
+          width: 1920,
+          height: 1080,
+        }}
       />
       <Still
         id="XhsCardStill"

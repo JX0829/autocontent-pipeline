@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill } from 'remotion';
+import { AbsoluteFill, useVideoConfig } from 'remotion';
 import { useTemplate } from '../templates/context';
 
 export interface SafeAreaContainerProps {
@@ -16,6 +16,8 @@ export const SafeAreaContainer: React.FC<SafeAreaContainerProps> = ({
   showDebugBorder = false,
 }) => {
   const { id, tokens } = useTemplate();
+  const { width, height } = useVideoConfig();
+  const isHorizontal = width > height;
 
   const getPatternStyle = (): React.CSSProperties => {
     if (tokens.patternType === 'paper_grid' || tokens.patternType === 'linear_grid') {
@@ -105,10 +107,10 @@ export const SafeAreaContainer: React.FC<SafeAreaContainerProps> = ({
       <div
         style={{
           position: 'absolute',
-          left: 96,
-          top: 214,
-          width: 888,
-          height: 1326,
+          left: isHorizontal ? 260 : 96,
+          top: isHorizontal ? 100 : 214,
+          width: isHorizontal ? 1400 : 888,
+          height: isHorizontal ? 880 : 1326,
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'flex-start',
