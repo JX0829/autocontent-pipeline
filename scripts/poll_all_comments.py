@@ -40,6 +40,32 @@ def run():
     except Exception as e:
         logger.error(f"Xiaohongshu comment guard failed: {e}")
 
+    # 3. 运行 B 站评论守护（官方 REST API 直连）
+    try:
+        from scripts.poll_bilibili_comments import poll_and_reply_bilibili_comments
+        bili_records = poll_and_reply_bilibili_comments(dry_run=False)
+        if bili_records:
+            all_replied.extend(bili_records)
+    except Exception as e:
+        logger.error(f"Bilibili comment guard failed: {e}")
+
+    # 4. 运行微信视频号评论守护（方案 A: 人机协同建议拟写 + 飞书卡片推送到手机复制）
+    try:
+        from src.platform_policy import get_platform_policy
+        channels_policy = get_platform_policy("channels")
+        ch_interaction = channels_policy.get("interaction_policy", {})
+
+        if ch_interaction.get("enable_background_polling", False):
+            from scripts.poll_channels_comments import poll_and_reply_channels_comments
+            # 方案 A 严格以 dry_run=True (拟写待办模式) 运行，不向视频号自动化写入
+            ch_records = poll_and_reply_channels_comments(dry_run=True)
+            if ch_records:
+                all_replied.extend(ch_records)
+        else:
+            logger.info("WeChat Channels polling is currently DISABLED by platform policy.")
+    except Exception as e:
+        logger.error(f"WeChat Channels comment guard failed: {e}")
+
     logger.info(f"=== Unified Comment Guard Cycle Completed. Total replied: {len(all_replied)} ===")
 
     # 如果有新产生的回复，自动向飞书推送互动报告卡片
