@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import logging
 from typing import Dict, Any, Optional
@@ -94,7 +95,15 @@ class FeishuApprovalService:
             logger.error(f"Video file does not exist: {video_path}")
             return None
 
-        fname = file_name or os.path.basename(video_path)
+        # 必须显式加上具备唯一性与辨识度的时间戳与任务特征，杜绝手机端和桌面端以相同文件名本地命中旧缓存
+        if not file_name:
+            base_pure = os.path.basename(video_path)
+            name_part, ext = os.path.splitext(base_pure)
+            # 提取上层目录任务名以做物理隔离
+            parent_task = os.path.basename(os.path.dirname(video_path))
+            fname = f"{parent_task}_{name_part}_{int(time.time())}{ext}"
+        else:
+            fname = file_name
         try:
             # 1. 优先作为 stream 文件上传并发送标准 file 消息（各端 100% 稳定可直接点开全屏播放）
             with open(video_path, "rb") as f:
