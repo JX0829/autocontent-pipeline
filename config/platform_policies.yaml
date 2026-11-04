@@ -39,8 +39,8 @@ platforms:
       filter_ai_keywords: false
       declare_aigc: true
     interaction_policy:
-      reply_mode: "manual_approval"
-      allow_direct_api_reply: false
+      reply_mode: "auto_direct_reply"       # B站平台：开启 AI 审查并通过官方 REST API 自动直发回复
+      allow_direct_api_reply: true
       enable_background_polling: true
 
   channels:
