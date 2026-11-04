@@ -68,10 +68,10 @@ async def fetch_channels_unreplied_comments() -> List[Dict[str, Any]]:
                 viewport={"width": 1280, "height": 900}
             )
             page = await context.new_page()
-            url = "https://channels.weixin.qq.com/platform/comment"
+            url = "https://channels.weixin.qq.com/platform/interaction/comment"
             logger.info(f"Navigating to WeChat Channels comment page: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
-            await asyncio.sleep(4)
+            await page.goto(url, wait_until="commit", timeout=25000)
+            await asyncio.sleep(6)
 
             # 校验登录态是否仍然有效
             if "login" in page.url:
@@ -79,8 +79,9 @@ async def fetch_channels_unreplied_comments() -> List[Dict[str, Any]]:
                 await browser.close()
                 return []
 
-            # 尝试提取页面评论卡片（容错 selector）
-            comment_nodes = await page.query_selector_all(".comment-item, .weui-desktop-table tr, .comment-cell")
+            # 抓取页面上的未回复评论列表或微前端卡片
+            # 容错扫描所有 frame 和 DOM
+            comment_nodes = await page.query_selector_all(".comment-item, .weui-desktop-table tr, .comment-cell, tr, [class*='comment']")
             logger.info(f"Found {len(comment_nodes)} raw comment items on page.")
 
             # 若未找到具体 DOM 或当前暂无未读评论，记录安全日志
