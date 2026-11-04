@@ -1,11 +1,15 @@
 import os
 import re
 import math
+import asyncio
+import logging
 import edge_tts
 from mutagen.mp3 import MP3
 from ..schemas import DraftScriptPayload, AlignedRenderPayload, AlignedSceneItem, SubtitleItem
 from ..templates_manager import TemplateManager
 from ..platform_policy import get_footer_callout
+
+logger = logging.getLogger(__name__)
 
 def sanitize_narration_guardrail(text: str, is_tail: bool = False) -> str:
     """
@@ -72,9 +76,19 @@ class TTSAligner:
             is_tail_scene = (idx == total_scene_count - 1)
             clean_narration = sanitize_narration_guardrail(scene.segment_narration, is_tail=is_tail_scene)
 
-            # 调用 edge-tts 生成音频文件
-            communicate = edge_tts.Communicate(clean_narration, self.voice, rate=self.rate)
-            await communicate.save(mp3_abs_path)
+            # 调用 edge-tts 生成音频文件，增加重试机制应对微软服务偶发 503 握手失败
+            saved = False
+            for retry in range(4):
+                try:
+                    communicate = edge_tts.Communicate(clean_narration, self.voice, rate=self.rate)
+                    await communicate.save(mp3_abs_path)
+                    saved = True
+                    break
+                except Exception as e:
+                    logger.warning(f"[TTSAligner] edge_tts retry {retry+1}/4 failed: {e}")
+                    await asyncio.sleep(2 * (retry + 1))
+            if not saved:
+                raise RuntimeError(f"Failed to generate TTS after 4 retries for scene {idx}")
 
             # mutagen 获取精确时长
             audio = MP3(mp3_abs_path)

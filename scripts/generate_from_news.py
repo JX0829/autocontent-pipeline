@@ -63,11 +63,11 @@ NEWS_TASKS = [
             },
             {
                 "scene_index": 3,
-                "segment_narration": "生命科学彻底迎来属于自己的GPT时刻，赶紧点赞收藏，回复暗号获取开源地址！",
+                "segment_narration": "生命科学彻底迎来属于自己的GPT时刻，欢迎在评论区交流讨论～",
                 "visual_type": "ui_card",
                 "stat_items": [
                     {"label": "开源协议", "value": "Apache-2.0 完全商用"},
-                    {"label": "获取方式", "value": "主页置顶自取源码"}
+                    {"label": "获取方式", "value": "GitHub 开源仓库"}
                 ],
                 "highlight_text": "AI重塑生命科学",
                 "sfx_cue": "glitch"

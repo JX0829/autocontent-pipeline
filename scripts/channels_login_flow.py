@@ -30,15 +30,20 @@ CHANNELS_LOGIN_URL = "https://channels.weixin.qq.com/login.html"
 async def main():
     print("🚀 Starting Playwright for WeChat Channels login flow...")
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
+        # 指定系统 Chrome，杜绝纯原生 Chromium 被微信风控拦截扫码
+        executable_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        launch_kwargs = {
+            "headless": True,
+            "args": [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+                "--disable-blink-features=AutomationControlled"
             ]
-        )
+        }
+        if os.path.exists(executable_path):
+            launch_kwargs["executable_path"] = executable_path
+
+        browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800}
         )

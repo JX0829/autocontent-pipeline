@@ -96,36 +96,38 @@ class FeishuApprovalService:
 
         fname = file_name or os.path.basename(video_path)
         try:
+            # 1. 优先作为 stream 文件上传并发送标准 file 消息（各端 100% 稳定可直接点开全屏播放）
             with open(video_path, "rb") as f:
                 file_req = CreateFileRequest.builder().request_body(
                     CreateFileRequestBody.builder()
-                    .file_type("mp4")
+                    .file_type("stream")
                     .file_name(fname)
                     .file(f)
                     .build()
                 ).build()
                 resp = self.client.im.v1.file.create(file_req)
-                if not resp.success():
-                    logger.error(f"Failed to upload video to Feishu: code={resp.code}, msg={resp.msg}")
+                if not resp.success() or not resp.data:
+                    logger.error(f"Failed to upload video stream to Feishu: code={resp.code}, msg={resp.msg}")
                     return None
                 file_key = resp.data.file_key
 
-            msg_req = CreateMessageRequest.builder() \
+            file_msg_req = CreateMessageRequest.builder() \
                 .receive_id_type(receive_id_type) \
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(receive_id)
-                    .msg_type("media")
+                    .msg_type("file")
                     .content(json.dumps({"file_key": file_key}))
                     .build()
                 ).build()
-            m_resp = self.client.im.v1.message.create(msg_req)
-            if not m_resp.success():
-                logger.error(f"Failed to send video media message: code={m_resp.code}, msg={m_resp.msg}")
-                return None
-            video_msg_id = m_resp.data.message_id
-            logger.info(f"Video media sent to Feishu successfully, message_id={video_msg_id}")
-            return video_msg_id
+            f_resp = self.client.im.v1.message.create(file_msg_req)
+            if f_resp.success() and f_resp.data:
+                video_msg_id = f_resp.data.message_id
+                logger.info(f"Video file sent to Feishu successfully, message_id={video_msg_id}")
+                return video_msg_id
+
+            logger.error(f"Failed to send video file message: code={f_resp.code}, msg={f_resp.msg}")
+            return None
         except Exception as e:
             logger.exception(f"Error in upload_and_send_video: {e}")
             return None

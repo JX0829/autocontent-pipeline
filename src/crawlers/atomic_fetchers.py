@@ -40,7 +40,7 @@ def translate_to_zh(text: str) -> str:
         query_text = clean_key[:300]
         url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=" + urllib.parse.quote(query_text)
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             res = "".join([part[0] for part in data[0] if part[0]])
             final_res = res.strip() if res else clean_key
@@ -377,7 +377,10 @@ def fetch_arxiv_ai_papers(
     """
     单一信源原子函数：只负责抓取 arXiv 最新提交的计算机视觉、大模型与自然语言预印本 (cs.AI, cs.CL)
     """
-    if categories is None:
+    if isinstance(categories, int):
+        limit = categories
+        categories = ["cs.AI", "cs.CL"]
+    elif categories is None:
         categories = ["cs.AI", "cs.CL"]
     items: List[Dict[str, Any]] = []
     cat_query = "+OR+".join([f"cat:{c}" for c in categories])
@@ -503,7 +506,10 @@ def fetch_reddit_ai_hot(
     """
     单一信源原子函数：专攻全球顶级开源大模型与端侧推理社区 (r/LocalLLaMA, r/MachineLearning)
     """
-    if subreddits is None:
+    if isinstance(subreddits, int):
+        limit = subreddits
+        subreddits = ["LocalLLaMA", "MachineLearning"]
+    elif subreddits is None:
         subreddits = ["LocalLLaMA", "MachineLearning"]
     return fetch_reddit_tech(subreddits=subreddits, limit=limit, timeout_sec=timeout_sec)
 

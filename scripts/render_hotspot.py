@@ -34,9 +34,10 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
     with open(script_path, "r", encoding="utf-8") as f:
         script_data = json.load(f)
 
-    print("\n[1/4] 执行出厂敏感词检查...")
+    print("\n[1/4] 执行出厂敏感词与合规门禁检查...")
     dfa = DFAFilter(os.path.join(PROJECT_ROOT, "config", "sensitive_words.txt"))
-    for scene in script_data.get("scenes", []):
+    scenes = script_data.get("scenes", [])
+    for idx, scene in enumerate(scenes):
         is_hit, word = dfa.contains_sensitive(scene.get("segment_narration", ""))
         if is_hit:
             raise ValueError(f"台词命中敏感词: {word}")
@@ -44,7 +45,12 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
             is_hit_c, word_c = dfa.contains_sensitive(scene["code_snippet"])
             if is_hit_c:
                 raise ValueError(f"代码片段命中敏感词: {word_c}")
-    print("✅ 敏感词出厂审查 100% 通过！")
+        # 强制检查尾部分镜：严禁导流词，尾部分镜必须是合规结尾
+        if idx == len(scenes) - 1:
+            for forbidden_word in ["暗号", "私信", "主页置顶", "粉丝群", "领取", "求源码", "领源码", "加群"]:
+                if forbidden_word in scene.get("segment_narration", ""):
+                    raise ValueError(f"结尾台词违规命中引流话术: '{forbidden_word}'！结尾必须使用纯净的'欢迎在评论区交流讨论～'")
+    print("✅ 敏感词与结尾合规审查 100% 通过！")
 
     draft_payload = DraftScriptPayload(**script_data)
     db.create_task(

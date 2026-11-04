@@ -46,15 +46,22 @@ class BilibiliCommentClient:
     def is_available(self) -> bool:
         return bool(self.csrf and self.cookie_str)
 
-    def fetch_latest_replies(self) -> List[Dict[str, Any]]:
+    def fetch_latest_replies(self, recent_oids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """
-        获取创作者收到的最新评论/回帖 (msgfeed/reply)
-        :return: 结构化评论列表
+        获取创作者收到的最新评论/回帖：
+        双源聚合策略：
+        1. 优先读取主消息信箱 (/x/msgfeed/reply)
+        2. 补充主动抓取活跃稿件的一级直属评论 (/x/v2/reply/main)，杜绝信箱缓存延迟漏单
+        :return: 结构化去重评论列表
         """
         if not self.is_available():
             logger.warning("Bilibili cookies or CSRF missing, cannot fetch comments.")
             return []
 
+        results: List[Dict[str, Any]] = []
+        seen_rpids = set()
+
+        # Source 1: 全局消息中心通知
         url = "https://api.bilibili.com/x/msgfeed/reply"
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -65,49 +72,69 @@ class BilibiliCommentClient:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=6) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                if data.get("code") != 0:
-                    logger.warning(f"Bilibili msgfeed API returned code {data.get('code')}: {data.get('message')}")
-                    return []
-
-                raw_items = data.get("data", {}).get("items", [])
-                results: List[Dict[str, Any]] = []
-                for entry in raw_items:
-                    item = entry.get("item", {})
-                    user = entry.get("user", {})
-
-                    event_id = str(entry.get("id"))
-                    oid = item.get("subject_id")
-                    rpid = item.get("source_id")
-                    root_id = item.get("root_id", 0)
-                    business_id = item.get("business_id", 1) # 1 为视频稿件
-                    comment_text = (item.get("source_content") or "").strip()
-                    feed_title = item.get("title") or "B站视频作品"
-                    feed_url = item.get("uri") or f"https://www.bilibili.com/video/av{oid}"
-                    user_name = user.get("nickname") or "B站粉丝"
-                    user_mid = user.get("mid")
-                    reply_time = entry.get("reply_time", 0)
-
-                    if not comment_text or not oid or not rpid:
-                        continue
-
-                    results.append({
-                        "event_id": event_id,
-                        "oid": oid,
-                        "rpid": rpid,
-                        "root_id": root_id,
-                        "business_id": business_id,
-                        "comment": comment_text,
-                        "user": user_name,
-                        "user_mid": user_mid,
-                        "feed_title": feed_title,
-                        "feed_url": feed_url,
-                        "reply_time": reply_time,
-                        "platform": "bilibili"
-                    })
-                return results
+                if data.get("code") == 0:
+                    raw_items = data.get("data", {}).get("items", [])
+                    for entry in raw_items:
+                        item = entry.get("item", {})
+                        user = entry.get("user", {})
+                        rpid = item.get("source_id")
+                        oid = item.get("subject_id")
+                        comment_text = (item.get("source_content") or "").strip()
+                        if rpid and oid and comment_text and rpid not in seen_rpids:
+                            seen_rpids.add(rpid)
+                            results.append({
+                                "event_id": str(entry.get("id")),
+                                "oid": oid,
+                                "rpid": rpid,
+                                "root_id": item.get("root_id", 0),
+                                "business_id": item.get("business_id", 1),
+                                "comment": comment_text,
+                                "user": user.get("nickname") or "B站粉丝",
+                                "user_mid": user.get("mid"),
+                                "feed_title": item.get("title") or "B站视频作品",
+                                "feed_url": item.get("uri") or f"https://www.bilibili.com/video/av{oid}",
+                                "reply_time": entry.get("reply_time", 0),
+                                "platform": "bilibili"
+                            })
         except Exception as e:
-            logger.error(f"Error fetching Bilibili replies: {e}")
-            return []
+            logger.error(f"Error fetching msgfeed replies: {e}")
+
+        # Source 2: 活跃稿件主动巡检直属评论
+        target_oids = recent_oids or [117556694223580]
+        for aid in target_oids:
+            try:
+                main_url = f"https://api.bilibili.com/x/v2/reply/main?oid={aid}&type=1&mode=3&ps=20"
+                main_req = urllib.request.Request(main_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+                    "Cookie": self.cookie_str,
+                    "Referer": f"https://www.bilibili.com/video/av{aid}"
+                })
+                with urllib.request.urlopen(main_req, timeout=6) as resp:
+                    main_data = json.loads(resp.read().decode("utf-8"))
+                    if main_data.get("code") == 0:
+                        rep_list = main_data.get("data", {}).get("replies") or []
+                        for r in rep_list:
+                            rpid = r.get("rpid")
+                            if rpid and rpid not in seen_rpids:
+                                seen_rpids.add(rpid)
+                                results.append({
+                                    "event_id": f"main_{rpid}",
+                                    "oid": aid,
+                                    "rpid": rpid,
+                                    "root_id": rpid,
+                                    "business_id": 1,
+                                    "comment": r.get("content", {}).get("message", ""),
+                                    "user": r.get("member", {}).get("uname") or "B站粉丝",
+                                    "user_mid": r.get("member", {}).get("mid"),
+                                    "feed_title": "B站活跃视频",
+                                    "feed_url": f"https://www.bilibili.com/video/av{aid}",
+                                    "reply_time": r.get("ctime", 0),
+                                    "platform": "bilibili"
+                                })
+            except Exception as e:
+                logger.error(f"Error checking active video comments for oid {aid}: {e}")
+
+        return results
 
     def add_top_level_comment(self, oid: int, message: str) -> Dict[str, Any]:
         """

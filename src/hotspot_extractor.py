@@ -45,14 +45,14 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
 6. hook_narration: 黄金前3秒抓人吸睛口播（严禁超过30字！必须极其简练抓人，不超过30字）
 7. fact_summary_150: 供评论区智能防护沙箱使用的客观核心事实摘要（不超过150字）
-8. resource_keyword: 选题英文标识或项目简称（如 gpuunlock, llmd, markitdown 等，用于任务标识与目录命名，不超过10字）
+8. resource_keyword: 选题英文标识或项目简称（从输入项目中提取英文标识，如 t3code, browser 等，用于任务标识与目录命名，不超过10字）
 9. scenes: 严格包含 3 到 4 个分镜场景（每个分镜包含 scene_index, segment_narration, visual_type, highlight_text, sfx_cue）：
    - scene_index: 0, 1, 2, 3
    - segment_narration: 该分镜的中文旁白（自然流畅，单句不要过长）
    - visual_type: 必须是 "terminal_code"（终端代码打字机）、"ui_card"（特性卡片）、"stat_chart"（指标数据卡片）、"media_showcase"（媒体展示）之一
    - code_snippet: 当 visual_type 为 terminal_code 时提供真实的代码/命令行调用（其余类型设为 null）。必须严格遵守外部导流防护规则与合规底线：
      * 【绝对红线·严禁外部链接与导流】：代码片段、终端命令、分镜旁白（segment_narration）、口播（hook_narration）及所有文字中【严禁出现任何完整 URL、域名或外链】（如包含 http://, https://, github.com 等完整链接）。小红书与抖音 OCR 会检测视频画面中的外链导致严重限流！展示克隆或安装命令时，只能写项目名、包名或搜索关键词，例如必须写 `pip install deepinfer` 或 `gh repo clone deepseek-ai/DeepInfer`（不带 https://github.com），或者直接写 `cd deepinfer && pip install -e .`。
-     * 【禁止导流暗号话术】：旁白与文案中【严禁使用“暗号”、“私信”、“主页”、“粉丝群”等诱导互动词汇】（平台会直接判定违规限流/封禁），如果需要提及资源获取，统一使用“在 GitHub 搜索【项目名】查看”或“搜索【关键词】查看”。
+     * 【禁止导流暗号话术·最高风控红线】：旁白、分镜台词（segment_narration）、口播（hook_narration）及文案中【严禁使用“暗号”、“私信”、“主页置顶”、“粉丝群”、“求源码/领取完整论文”等任何导流诱导互动词汇】（平台会直接判定违规限流/封禁！）。视频最后一个分镜（结尾）以及文案末尾统一且只能使用去AI化的纯净结尾，如：“欢迎在评论区交流讨论～”或“欢迎在评论区分享你的看法～”，一律禁止任何站外或私信引流诱导！
      * 【敏感拦截词过滤】：严禁在代码或台词中出现任何敏感拦截词汇或变体，包括：'api_key'、'apikey'、'sk-'、'token'、'password'、'prompt injection'、'prompt注入'、'越狱'、'jailbreak'、'system prompt'、'系统提示' 等（哪怕在注释或模拟输出中也会100%触发本地DFA安全检查报错中断！），展示客户端初始化必须写 `client = OpenAI()`，安全检测可使用“恶意指令”、“指令投毒”、“安全漏洞”代替！
    - stat_items: 当 visual_type 为 ui_card 或 stat_chart 时提供 2~3 个结构化指标 [{"label": "...", "value": "..."}]（其余类型设为 null）
    - highlight_text: 分镜顶部醒目的短标题徽章（不超过16字）
@@ -147,7 +147,7 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
         unique_excludes = list(dict.fromkeys(exclude_items))[:20]
         exclude_prompt = "\n\n【🚨 选题排他黑名单（以下主题在近期已制作过短视频，严禁再次挑选重复话题！必须挑选列表中全新的增量热点）：】\n" + "\n".join([f"- {t}" for t in unique_excludes])
 
-    prompt = f"以下是本次全网监控提炼出的最新热点资讯列表：\n\n{news_text}{exclude_prompt}\n\n请严格挑选出其中最重磅的【一条最新且未制作过的科技热点】，提炼并生成标准的 DraftScriptPayload JSON。"
+    prompt = f"以下是本次全网监控提炼出的最新热点资讯列表：\n\n{news_text}{exclude_prompt}\n\n【🚨 核心指令】：请严格从上方提供的资讯列表中提取出对应的项目或事件，提炼并生成标准的 DraftScriptPayload JSON（必须 100% 忠实于上方输入内容，绝对严禁脱离输入文本自行挑选或编造不在文本里的其它技术！）。"
 
     logger.info("Calling LLM to pick top tech hotspot and generate script payload...")
     

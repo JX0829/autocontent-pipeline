@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -23,7 +24,7 @@ TASK_DATA = {
     "theme": "tech-github",
     "entity_key": "gh:vercel-labs/agent-desktop",
     "source_url": "https://github.com/vercel-labs/agent-desktop",
-    "title": "告别截图瞎猜！Vercel开源Agent桌面操作底座",
+    "title": "告别截图瞎猜！Vercel开源Agent桌面底座",
     "cover_main_text": "Vercel开源Agent桌面底座",
     "cover_sub_text": "告别像素盲猜",
     "hook_narration": "还在用截图识别盲猜坐标操作电脑？Vercel刚刚开源桌面操作内核，彻底告别像素盲区！",
@@ -69,7 +70,7 @@ TASK_DATA = {
             "visual_type": "ui_card",
             "stat_items": [
                 {"label": "项目开源", "value": "vercel-labs/agent-desktop"},
-                {"label": "获取方式", "value": "评论区交流讨论"}
+                {"label": "互动交流", "value": "欢迎在评论区交流"}
             ],
             "highlight_text": "下一代智能体操作基座",
             "sfx_cue": "glitch"
@@ -97,7 +98,12 @@ async def render_agent_desktop():
     renderer_dir = PROJECT_ROOT / 'renderer'
     renderer_public_dir = str(renderer_dir / 'public')
     
-    print(f"[1/3] 合成语音并对齐字级时间戳: {task_id}...")
+    # 渲染前物理清空缓存，杜绝资产污染
+    shutil.rmtree(renderer_dir / '.cache', ignore_errors=True)
+    shutil.rmtree(renderer_dir / '.remotion', ignore_errors=True)
+    print(f"[0/4] 物理清空 Remotion 静态缓存完成")
+    
+    print(f"[1/4] 合成语音并对齐字级时间戳: {task_id}...")
     aligner = TTSAligner(voice='zh-CN-YunxiNeural', rate='+10%')
     aligned_payload = await aligner.align_draft(payload, task_id, renderer_public_dir)
     
@@ -111,7 +117,7 @@ async def render_agent_desktop():
     cover_out = str(output_dir / 'cover.png')
     props_rel_path = f'./public/tasks/{task_id}/aligned_render.json'
     
-    print(f"[2/3] Remotion 渲染短视频成片...")
+    print(f"[2/4] Remotion 渲染短视频成片...")
     cmd_video = [
         'npx', 'remotion', 'render', 'src/index.ts', 'GeekShortVideo', video_out,
         f'--props={props_rel_path}',
@@ -125,12 +131,16 @@ async def render_agent_desktop():
     ]
     subprocess.check_call(cmd_cover, cwd=renderer_dir)
     
+    # 出厂 ffmpeg 抽帧核验
+    frame_check = str(output_dir / 'frame_03s.png')
+    subprocess.run(['ffmpeg', '-y', '-ss', '00:00:03', '-i', video_out, '-vframes', '1', frame_check], capture_output=True)
+    
     db.update_task_status(task_id, 'WAITING_APPROVAL', video_path=video_out, cover_path=cover_out)
     video_size_mb = round(os.path.getsize(video_out) / (1024 * 1024), 2)
     total_sec = round(aligned_payload.total_duration_in_frames / aligned_payload.fps, 1)
     print(f"成片成功: {video_out} ({video_size_mb} MB, {total_sec}s)")
     
-    print(f"[3/3] 推送飞书原片与审批卡片...")
+    print(f"[3/4] 推送飞书原片与审批卡片...")
     feishu = FeishuApprovalService()
     chat_id = os.getenv('FEISHU_DEFAULT_CHAT_ID', 'oc_c3e01371d3bc916ef3f2af8b904eb785')
     rec_type = 'chat_id'
@@ -138,6 +148,8 @@ async def render_agent_desktop():
     v_msg_id = feishu.upload_and_send_video(receive_id=chat_id, receive_id_type=rec_type, video_path=video_out)
     print(f"飞书原片推送成功: {v_msg_id}")
     
+    print(f"[4/4] 延迟 1 秒下发审批交互卡片...")
+    time.sleep(1)
     card = FeishuCardBuilder.build_approval_card(
         task_id=task_id,
         title=TASK_DATA['title'],

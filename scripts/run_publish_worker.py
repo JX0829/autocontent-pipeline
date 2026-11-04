@@ -13,6 +13,7 @@ import sys
 import json
 import logging
 import argparse
+from typing import Optional, Dict, Any
 import yaml
 from pathlib import Path
 from dotenv import load_dotenv
@@ -36,13 +37,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PublishWorker")
 
-def notify_feishu(message: str):
+def notify_feishu(message: str, post_payload: Optional[dict] = None):
     """向飞书审批会话主动播报发布结果通知"""
     try:
         svc = FeishuApprovalService()
         target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_bc831d683c9b59369bc86ee1561ed226")
         rec_type = "open_id" if target.startswith("ou_") else "chat_id"
-        svc.send_text_message(receive_id=target, receive_id_type=rec_type, text=message)
+        if post_payload:
+            import lark_oapi as lark
+            from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+            req = CreateMessageRequest.builder() \
+                .receive_id_type(rec_type) \
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(target)
+                    .msg_type("post")
+                    .content(json.dumps(post_payload, ensure_ascii=False))
+                    .build()
+                ).build()
+            svc.client.im.v1.message.create(req)
+        else:
+            svc.send_text_message(receive_id=target, receive_id_type=rec_type, text=message)
     except Exception as e:
         logger.warning(f"Failed to send feishu publish notification: {e}")
 
@@ -91,10 +106,13 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     if bili_account and bili_account.get("enabled", True):
         logger.info(f"Dispatching task '{task_id}' to Bilibili ({bili_account.get('publish_mode', 'draft')})...")
         try:
+            # B站优先使用 16:9 横版视频与宽屏封面
+            bili_video = str(task.get("video_landscape_path") or video_path or "")
+            bili_cover = str(task.get("cover_landscape_path") or cover_path or "")
             bili_provider = BilibiliProvider(bili_account)
             bili_res = bili_provider.save_draft(
-                video_path=video_path,
-                cover_path=cover_path,
+                video_path=bili_video,
+                cover_path=bili_cover,
                 title=title,
                 topics=topics,
                 content_text=content_text,
@@ -102,7 +120,18 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
             )
             if bili_res.get("success"):
                 draft_id = bili_res.get("draft_id")
-                dispatch_results.append(f"📺 **B站 (私密草稿)**: ✅ 上传成功 (`{draft_id}`)")
+                dispatch_results.append(f"📺 **B站 (16:9横版+置顶评论)**: ✅ 上传成功 (`{draft_id}`)")
+                
+                # 触发自动发表置顶评论
+                try:
+                    aid = bili_res.get("aid")
+                    if aid:
+                        from src.providers.bilibili_comment import BilibiliCommentClient
+                        b_client = BilibiliCommentClient()
+                        seed_msg = f"📌 项目开源地址与启动命令已整理在视频简介！\\n{content_text}\\n欢迎在弹幕与评论区交流探讨～"
+                        b_client.post_and_top_comment(oid=aid, message=seed_msg)
+                except Exception as ce:
+                    logger.warning(f"Failed to post top comment to Bilibili: {ce}")
             else:
                 dispatch_results.append(f"📺 **B站**: ⚠️ {bili_res.get('message')}")
         except Exception as e:
@@ -124,7 +153,7 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
             )
             if channels_res.get("success"):
                 draft_id = channels_res.get("draft_id")
-                dispatch_results.append(f"📲 **微信视频号 (公开分发)**: ✅ 已就绪 (`{draft_id}`)")
+                dispatch_results.append(f"📲 **微信视频号 (手机原生发布素材)**: ✅ 9:16 原片与纯净文案已备齐")
             else:
                 dispatch_results.append(f"📲 **微信视频号**: ⚠️ {channels_res.get('message')}")
         except Exception as e:
@@ -134,14 +163,21 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     try:
         clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
         short_title = title[:20]
-        material_msg = (
-            f"📱 【手机端发帖纯净素材】\n\n"
-            f"{short_title}\n\n"
-            f"{content_text}\n\n"
-            f"💡 欢迎在评论区交流讨论～\n\n"
-            f"{clean_tags}"
-        )
-        notify_feishu(material_msg)
+        full_body = f"{content_text}\n\n💡 欢迎在评论区交流讨论～\n\n{clean_tags}"
+        
+        # 按照标题与正文分两个独立代码块，方便手机端飞书一键轻触复制
+        post_payload = {
+            "zh_cn": {
+                "title": f"📱 【手机端发帖纯净素材】(任务: {task_id})",
+                "content": [
+                    [{"tag": "text", "text": "📌 标题（<=20字，点击代码块一键复制）："}],
+                    [{"tag": "code_block", "language": "plaintext", "text": short_title}],
+                    [{"tag": "text", "text": "\n📝 正文内容与标签（点击代码块一键复制）："}],
+                    [{"tag": "code_block", "language": "plaintext", "text": full_body}],
+                ]
+            }
+        }
+        notify_feishu("", post_payload=post_payload)
         dispatch_results.append(f"📕 **小红书 (手机发帖素材)**: ✅ 纯净文案已推送到飞书私聊")
     except Exception as e:
         dispatch_results.append(f"📕 **小红书**: ❌ 素材推送失败 ({e})")
@@ -152,7 +188,24 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
 
     # 5. 向飞书播报整体分发汇总卡片
     summary_msg = f"🎉 **任务 `{task_id}` 动态多平台分发执行完毕**:\n\n" + "\n".join(dispatch_results)
-    notify_feishu(summary_msg)
+    
+    # 整合手机端发帖纯净素材：将【标题】与【正文内容】分别分两个独立代码块，方便手机端飞书一键轻触复制
+    clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
+    short_title = title[:20]
+    full_body = f"{content_text}\n\n💡 欢迎在评论区交流讨论～\n\n{clean_tags}"
+    
+    summary_post_payload = {
+        "zh_cn": {
+            "title": f"🎉 任务 `{task_id}` 发布完成汇报 & 📱 手机端纯净素材",
+            "content": [
+                [{"tag": "text", "text": summary_msg + "\n\n────────────────\n📱 【手机端发帖纯净素材】\n\n📌 标题（<=20字，点击代码块一键复制）："}],
+                [{"tag": "code_block", "language": "plaintext", "text": short_title}],
+                [{"tag": "text", "text": "\n📝 正文内容与标签（点击代码块一键复制）："}],
+                [{"tag": "code_block", "language": "plaintext", "text": full_body}],
+            ]
+        }
+    }
+    notify_feishu("", post_payload=summary_post_payload)
     return True
 def main():
     parser = argparse.ArgumentParser(description="草稿箱上传与发布 Worker")

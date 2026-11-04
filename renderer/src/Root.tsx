@@ -1,3 +1,5 @@
+import { BilibiliLandscapeVideo } from './components/BilibiliLandscapeVideo';
+import { BilibiliLandscapeCover } from './components/BilibiliLandscapeCover';
 import React from 'react';
 import {
   Composition,
@@ -15,6 +17,18 @@ import { UiCardView } from './components/UiCardView';
 import { StatChartView } from './components/StatChartView';
 import { MediaShowcaseView } from './components/MediaShowcaseView';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
+
+
+const calculateLandscapeMetadata: CalculateMetadataFunction<AlignedRenderPayload> = async ({
+  props,
+}) => {
+  return {
+    durationInFrames: props.total_duration_in_frames || 900,
+    fps: props.fps || 30,
+    width: 1920,
+    height: 1080,
+  };
+};
 
 const calculateVideoMetadata: CalculateMetadataFunction<AlignedRenderPayload> = async ({
   props,
@@ -403,9 +417,28 @@ const defaultMockProps: AlignedRenderPayload = {
   scenes: [],
 };
 
+
+const BilibiliCoverWrapper: React.FC<AlignedRenderPayload> = (props) => {
+  return (
+    <TemplateProvider templateId={props.template_id} theme={props.theme}>
+      <BilibiliLandscapeCover {...props} />
+    </TemplateProvider>
+  );
+};
+
 export const RemotionRoot: React.FC = () => {
   return (
     <>
+            <Composition
+        id="BilibiliLandscapeVideo"
+        component={BilibiliLandscapeVideo}
+        durationInFrames={900}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={calculateLandscapeMetadata}
+        defaultProps={defaultMockProps}
+      />
       <Composition
         id="GeekShortVideo"
         component={GeekShortVideo}
@@ -429,6 +462,13 @@ export const RemotionRoot: React.FC = () => {
           width: 1920,
           height: 1080,
         }}
+      />
+            <Still
+        id="BilibiliCoverStill"
+        component={BilibiliCoverWrapper}
+        width={1920}
+        height={1080}
+        defaultProps={defaultMockProps}
       />
       <Still
         id="CoverStill"

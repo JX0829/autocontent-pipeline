@@ -48,6 +48,10 @@ class PipelineDB:
                 cur.execute("ALTER TABLE content_tasks ADD COLUMN seed_comment_text TEXT;")
             if "seed_comment_at" not in columns:
                 cur.execute("ALTER TABLE content_tasks ADD COLUMN seed_comment_at DATETIME;")
+            if "video_landscape_path" not in columns:
+                cur.execute("ALTER TABLE content_tasks ADD COLUMN video_landscape_path TEXT;")
+            if "cover_landscape_path" not in columns:
+                cur.execute("ALTER TABLE content_tasks ADD COLUMN cover_landscape_path TEXT;")
             cur.execute("""
             CREATE TABLE IF NOT EXISTS blacklisted_entities (
                 entity_key TEXT PRIMARY KEY,
