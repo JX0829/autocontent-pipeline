@@ -107,13 +107,15 @@ def poll_and_reply_bilibili_comments(dry_run: bool = False) -> list:
             funnel_res = {"action": "DROP", "reply": "", "reason": f"Funnel exception: {e}"}
 
         action = funnel_res.get("action")
+        classification = funnel_res.get("classification")
         reply_content = (funnel_res.get("reply") or "").strip()
 
-        # 3. 执行回复或转人工建议
+        # 3. 执行回复或转人工建议 (兼容 action 与 classification A/B)
         final_reply = reply_content
         send_success = False
 
-        if action in ["AUTO_REPLY", "CONVERT_RESOURCE"] and final_reply and oid and rpid:
+        is_allowed = (action in ["AUTO_REPLY", "CONVERT_RESOURCE"]) or (classification in ["A", "B"])
+        if is_allowed and final_reply and oid and rpid:
             if not dry_run:
                 resp = client.reply_comment(
                     oid=int(oid),
@@ -123,6 +125,9 @@ def poll_and_reply_bilibili_comments(dry_run: bool = False) -> list:
                 )
                 send_success = resp.get("success", False)
                 logger.info(f"Live reply result for rpid {rpid}: success={send_success}")
+                if not send_success:
+                    logger.error(f"Failed to send reply to Bilibili for rpid {rpid}: {resp}")
+                    continue
             else:
                 send_success = True
                 logger.info(f"[Dry-Run] Generated suggested reply: '{final_reply}'")
