@@ -20,6 +20,22 @@ def sanitize_narration_guardrail(text: str, is_tail: bool = False) -> str:
         return ""
     cleaned = text
     # 违规导流模式拦截与清洗
+    # 2. 彻底清洗与置换推特/X/外网等国内敏感词汇
+    replacements = [
+        (r"(?i)twitter", "前沿开源社区"),
+        (r"推特", "全网技术圈"),
+        (r"推上", "技术圈"),
+        (r"推友", "全球开发者"),
+        (r"X平台", "海外开源社区"),
+        (r"x\.com", "开源主页"),
+        (r"外网", "全球技术社区"),
+        (r"外媒报道", "最新技术资讯"),
+        (r"无审查", "性能极限优化"),
+        (r"uncensored", "开源完全可控")
+    ]
+    for pattern, target in replacements:
+        cleaned = re.sub(pattern, target, cleaned)
+
     patterns = [
         r"回复暗号[^\s，。！!？?]*",
         r"私信我?[^\s，。！!？?]*",
@@ -30,7 +46,10 @@ def sanitize_narration_guardrail(text: str, is_tail: bool = False) -> str:
         r"暗号",
         r"加群",
         r"求源码",
-        r"领源码"
+        r"领源码",
+        r"后台[私踢]我[^\s，。！!？?]*",
+        r"领[配置工具福利资料源码]+[^\s，。！!？?]*",
+        r"留邮箱[^\s，。！!？?]*"
     ]
     for p in patterns:
         cleaned = re.sub(p, "", cleaned)
