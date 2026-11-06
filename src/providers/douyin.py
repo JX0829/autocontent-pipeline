@@ -43,7 +43,12 @@ class DouyinProvider(BaseSocialProvider):
         state_file = os.path.join(os.path.abspath(self.profile_path), "storage_state.json")
         storage_state = state_file if os.path.exists(state_file) else None
 
+        # 优先使用原生 Google Chrome，避免 headless shell 缓存丢失
+        chrome_app = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        exec_path = chrome_app if os.path.exists(chrome_app) else None
+
         browser = p.chromium.launch(
+            executable_path=exec_path,
             headless=headless,
             proxy=proxy,
             args=launch_args
@@ -114,22 +119,35 @@ class DouyinProvider(BaseSocialProvider):
                         "message": "抖音账号登录态已失效或未初始化，请先运行 scripts/login_douyin.py 扫码登录"
                     }
 
-                # 1. 查找视频上传 input 并触发文件选择
-                upload_input = page.locator('input[type="file"]')
-                if upload_input.count() == 0:
-                    upload_input = page.locator('xpath=//input[@type="file"]')
-                
-                if upload_input.count() == 0:
-                    browser.close()
-                    return {"success": False, "error": "UPLOAD_INPUT_NOT_FOUND", "message": "未在上传页找到 file input 元素"}
-
+                # 1. 触发文件选择（兼容 input[type="file"] 与新版 SPA 点击上传）
                 logger.info(f"Uploading video file: {video_path}")
-                upload_input.set_input_files(os.path.abspath(video_path))
+                try:
+                    upload_input = page.locator('input[type="file"]').first
+                    if upload_input.count() > 0:
+                        upload_input.set_input_files(os.path.abspath(video_path))
+                    else:
+                        with page.expect_file_chooser(timeout=10000) as fc_info:
+                            page.locator("text=点击上传, .semi-upload-drag-area").first.click()
+                        fc_info.value.set_files(os.path.abspath(video_path))
+                except Exception as fe:
+                    logger.warning(f"Fallback to file_chooser on click: {fe}")
+                    with page.expect_file_chooser(timeout=15000) as fc_info:
+                        page.locator("text=点击上传, .semi-upload-drag-area").first.click()
+                    fc_info.value.set_files(os.path.abspath(video_path))
 
                 # 2. 等待上传进度与表单页面渲染
                 logger.info("Waiting for video upload processing...")
                 page.wait_for_selector('div[contenteditable="true"], input[placeholder*="标题"], textarea', timeout=60000)
-                time.sleep(5)
+                time.sleep(3)
+
+                # 关闭可能的提示引导浮层
+                try:
+                    for guide in page.locator('button:has-text("我知道了"), button:has-text("下一步")').all():
+                        if guide.is_visible():
+                            guide.click()
+                            time.sleep(1)
+                except Exception:
+                    pass
 
                 # 3. 构造文案与话题标签
                 topic_tags = " ".join([f"#{t.strip('#')}" for t in topics])
@@ -178,13 +196,30 @@ class DouyinProvider(BaseSocialProvider):
                     private_label.click()
                     time.sleep(2)
 
-                    # 点击底部发布按钮提交私密视频
-                    publish_btn = page.locator('button:has-text("发布"):not(:has-text("作品发布"))').first
-                    if publish_btn.count() == 0:
+                    # 等待视频完成上传与校验
+                    logger.info("Waiting for video upload to finish on page...")
+                    try:
+                        page.wait_for_selector("text=上传成功", timeout=60000)
+                        logger.info("Detected '上传成功' text signal")
+                    except Exception:
+                        logger.warning("Upload success text signal timeout, continuing with button checks")
+
+                    # 点击底部发布按钮提交私密视频 (精确定位底部主发布按钮)
+                    publish_btn = None
+                    for b in page.locator('button:has-text("发布")').all():
+                        t = b.inner_text().strip()
+                        if t == "发布" and b.is_visible() and b.is_enabled():
+                            publish_btn = b
+                            break
+
+                    if not publish_btn:
+                        publish_btn = page.locator('button:has-text("发布"):not(:has-text("作品发布"))').last
+
+                    if not publish_btn or publish_btn.count() == 0:
                         logger.error("PUBLISH_BUTTON_NOT_FOUND")
                         browser.close()
-                        return {"success": False, "error": "PUBLISH_BUTTON_NOT_FOUND", "message": "未找到发布按钮"}
-                    
+                        return {"success": False, "error": "PUBLISH_BUTTON_NOT_FOUND", "message": "未找到有效发布按钮"}
+
                     logger.info("Clicking publish button for private video...")
                     publish_btn.click()
                     
