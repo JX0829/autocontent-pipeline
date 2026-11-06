@@ -30,6 +30,7 @@ from src.providers.xiaohongshu import XiaohongshuProvider
 from src.providers.bilibili import BilibiliProvider
 from src.providers.channels_cdp import ChannelsCDPProvider
 from src.feishu.approval_service import FeishuApprovalService
+from src.utils.text_sanitizer import ensure_clean_short_title
 
 logging.basicConfig(
     level=logging.INFO,
@@ -185,7 +186,7 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     # 4. 手机发帖专例文案推送（针对小红书 7 天避险冷冻期 & 手机发布）
     try:
         clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
-        short_title = title[:20]
+        short_title = ensure_clean_short_title(title, max_chars=30)
         full_body = f"{content_text}\n\n💡 欢迎在评论区交流讨论～\n\n{clean_tags}"
         
         # 按照标题与正文分两个独立代码块，方便手机端飞书一键轻触复制
@@ -214,7 +215,7 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     
     # 整合手机端发帖纯净素材：将【标题】与【正文内容】分别分两个独立代码块，方便手机端飞书一键轻触复制
     clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
-    short_title = title[:20]
+    short_title = ensure_clean_short_title(title, max_chars=30)
     full_body = f"{content_text}\n\n💡 欢迎在评论区交流讨论～\n\n{clean_tags}"
     
     summary_post_payload = {
