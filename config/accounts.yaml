@@ -11,7 +11,7 @@ accounts:
     declare_aigc: true
     max_daily_tasks: 4
     private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，评论区AI已接入，欢迎交流～"
-    enabled: false
+    enabled: true
 
   - id: "douyin-news-fast"
     platform: "douyin"

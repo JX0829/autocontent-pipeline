@@ -159,7 +159,30 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
         except Exception as e:
             dispatch_results.append(f"📲 **微信视频号**: ❌ 异常 ({e})")
 
-    # 3. 手机发帖专例文案推送（针对小红书 7 天避险冷冻期 & 手机发布）
+    # 3. 抖音分发（若启用 douyin-tech-main，默认发布为仅自己可见）
+    douyin_account = accounts_map.get("douyin-tech-main")
+    if douyin_account and douyin_account.get("enabled", True):
+        logger.info(f"Dispatching task '{task_id}' to Douyin ({douyin_account.get('publish_mode', 'private_publish')})...")
+        try:
+            from src.providers.douyin import DouyinProvider
+            dy_provider = DouyinProvider(douyin_account)
+            dy_res = dy_provider.save_draft(
+                video_path=video_path or "",
+                cover_path=cover_path or "",
+                title=title,
+                topics=topics,
+                content_text=content_text,
+                declare_aigc=douyin_account.get("declare_aigc", True)
+            )
+            if dy_res.get("success"):
+                draft_id = dy_res.get("draft_id", "private_ok")
+                dispatch_results.append(f"🎵 **抖音 (私密作品·仅自己可见)**: ✅ 视频已直传并保存 (ID: {draft_id})")
+            else:
+                dispatch_results.append(f"🎵 **抖音**: ⚠️ {dy_res.get('message')}")
+        except Exception as e:
+            dispatch_results.append(f"🎵 **抖音**: ❌ 异常 ({e})")
+
+    # 4. 手机发帖专例文案推送（针对小红书 7 天避险冷冻期 & 手机发布）
     try:
         clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
         short_title = title[:20]
