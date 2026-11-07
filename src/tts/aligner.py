@@ -80,9 +80,13 @@ class TTSAligner:
         os.makedirs(task_audio_dir, exist_ok=True)
 
         aligned_scenes = []
-        current_time_sec = 0.0
-        current_frame = 0
+        # 前置 0.5 秒 (15 帧) 专属封面定格时间，确保各大平台及相册首帧稳妥抓取大标题
+        cover_head_sec = 0.5
         fps = 30
+        cover_head_frames = int(round(cover_head_sec * fps))
+
+        current_time_sec = cover_head_sec
+        current_frame = cover_head_frames
         pause_tail_sec = 0.25  # 句尾留白呼吸感
 
         total_scene_count = len(draft.scenes)

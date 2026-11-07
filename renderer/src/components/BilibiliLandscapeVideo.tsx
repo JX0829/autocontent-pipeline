@@ -289,8 +289,8 @@ const BilibiliLandscapeVideoInner: React.FC<AlignedRenderPayload> = (props) => {
         <Audio src={staticFile(props.bgm_src)} volume={0.06} loop />
       )}
 
-      {/* 关键帧作为封面：第 0 帧渲染 16:9 高清横屏封面海报（定格 1 帧），确保 B站、相册或播放器首帧默认直接展现宽屏大画幅海报 */}
-      <Sequence from={0} durationInFrames={1}>
+      {/* 关键帧作为封面：前 0.5 秒 (15 帧) 渲染 16:9 高清横屏封面海报，确保 B站、相册或播放器首帧默认直接展现宽屏大画幅海报 */}
+      <Sequence from={0} durationInFrames={15}>
         <BilibiliLandscapeCover {...props} />
       </Sequence>
 

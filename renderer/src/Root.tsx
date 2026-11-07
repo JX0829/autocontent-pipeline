@@ -134,8 +134,8 @@ export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
           </Sequence>
         ))}
 
-        {/* 关键帧作为封面：第 0 帧渲染高清封面海报（定格 1 帧），确保抖音和本地相册默认直接提取该图作为封面 */}
-        <Sequence from={0} durationInFrames={1}>
+        {/* 关键帧作为封面：前 0.5 秒 (15 帧) 渲染高清封面海报，确保各大平台和本地相册默认稳妥抓取大标题封面 */}
+        <Sequence from={0} durationInFrames={15}>
           <CoverStillInner {...props} />
         </Sequence>
 
