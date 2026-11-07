@@ -77,32 +77,26 @@ def poll_and_reply_live_comments():
 
         # 分析整段文本结构：每条视频通常由三行组成：[标题, '发布于...', '评论数']
         lines = [l.strip() for l in dialog.inner_text().split("\n") if l.strip()]
+        # 结构化解析弹窗中每个作品卡片，彻底避免换行错位
+        cards = page.locator("div[role='dialog'] >> text=发布于").all()
         target_indices = []
-        video_idx = 0
 
-        for i, l in enumerate(lines):
-            if "发布于" in l and i + 1 < len(lines):
-                cnt_str = lines[i + 1]
-                title = lines[i - 1] if i > 0 else f"视频_{video_idx}"
-                if cnt_str.isdigit() and int(cnt_str) > 0:
-                    target_indices.append({
-                        "idx": video_idx,
-                        "title": title,
-                        "count": int(cnt_str)
-                    })
-                video_idx += 1
+        for idx, c in enumerate(cards):
+            row_el = c.locator('xpath=../../..')
+            row_lines = [l.strip() for l in row_el.inner_text().split("\n") if l.strip()]
+            v_title = row_lines[0] if row_lines else f"视频_{idx}"
+            last_line = row_lines[-1] if row_lines else "0"
+            cnt = int(last_line) if last_line.isdigit() else 0
+            if cnt > 0:
+                target_indices.append({
+                    "idx": idx,
+                    "title": v_title,
+                    "count": cnt
+                })
 
         logger.info(f"Identified {len(target_indices)} video(s) with active comments: {[t['title'][:20] for t in target_indices]}")
 
-        # 关闭弹窗
-        close_btn = dialog.locator("button[aria-label='Close'], [class*='close']").first
-        if close_btn.count() > 0:
-            close_btn.click(force=True)
-            page.wait_for_timeout(1000)
-        else:
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(1000)
-
+        # 不关闭弹窗，直接在打开的弹窗中依次点击各作品卡片！
         total_processed = 0
         replied_records = []
 
@@ -112,46 +106,49 @@ def poll_and_reply_live_comments():
             v_title = target["title"]
             logger.info(f"--- Switching to video [{idx}]: '{v_title[:25]}' (expected {target['count']} comments) ---")
 
-            select_btn.scroll_into_view_if_needed()
-            select_btn.click(force=True)
-            page.wait_for_timeout(2000)
+            dialog_vis = page.locator("div[role='dialog']")
+            if dialog_vis.count() == 0 or not dialog_vis.first.is_visible():
+                select_btn = page.locator("button:has-text('选择作品'), span:has-text('选择作品')").first
+                select_btn.scroll_into_view_if_needed()
+                select_btn.click(force=True)
+                page.wait_for_selector("div[role='dialog']", timeout=10000)
+                page.wait_for_timeout(2000)
 
             # 获取弹窗中的对应卡片并点击
             pub_elements = page.locator("div[role='dialog'] >> text=发布于").all()
             if idx >= len(pub_elements):
-                logger.warning(f"Index {idx} out of range in dialog, skipping.")
+                logger.warning(f"Index {idx} out of range in dialog (found {len(pub_elements)}), skipping.")
                 page.keyboard.press("Escape")
+                page.wait_for_timeout(1000)
                 continue
 
             target_pub = pub_elements[idx]
-            target_card = target_pub.locator("xpath=../..")
+            target_card = target_pub.locator("xpath=../../..")
             target_card.scroll_into_view_if_needed()
             target_card.click(force=True)
-            page.wait_for_timeout(3500)
+            page.wait_for_timeout(4000)
 
-            # 抓取当前视频下的评论容器
-            comment_containers = page.locator('div[class*="container-"]').all()
+            # 抓取当前视频下的评论容器：精准定位包含“回复”按钮的评论条目
+            reply_buttons = page.locator('text="回复"').all()
             extracted_comments = []
 
-            for c_el in comment_containers:
+            for r_btn in reply_buttons:
                 try:
+                    c_el = r_btn.locator('xpath=../../..')
                     txt = c_el.inner_text().strip()
-                    if "回复" in txt and ("刚刚" in txt or "前" in txt or "202" in txt):
-                        c_lines = [cl.strip() for cl in txt.split("\n") if cl.strip()]
-                        if len(c_lines) >= 3:
-                            user_name = c_lines[0]
-                            comment_text = c_lines[2]
-                            if comment_text not in ["回复", "删除", "举报", "置顶", "全部评论", "选择作品"]:
-                                reply_btn = c_el.locator('text="回复"').first
-                                extracted_comments.append({
-                                    "user": user_name,
-                                    "text": comment_text,
-                                    "reply_btn": reply_btn,
-                                    "container": c_el
-                                })
+                    c_lines = [cl.strip() for cl in txt.split("\n") if cl.strip()]
+                    if len(c_lines) >= 3:
+                        user_name = c_lines[0]
+                        comment_text = c_lines[2]
+                        if comment_text not in ["回复", "删除", "举报", "置顶", "全部评论", "选择作品"]:
+                            extracted_comments.append({
+                                "user": user_name,
+                                "text": comment_text,
+                                "reply_btn": r_btn,
+                                "container": c_el
+                            })
                 except Exception:
                     pass
-
             logger.info(f"Found {len(extracted_comments)} comment element(s) under '{v_title[:20]}'")
 
             fact_summary = v_title
