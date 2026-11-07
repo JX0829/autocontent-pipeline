@@ -1,6 +1,8 @@
+import os
 import sys
 import logging
 from pathlib import Path
+from typing import List, Dict, Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -8,70 +10,97 @@ sys.path.insert(0, str(PROJECT_ROOT))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("AllCommentGuard")
 
-def run():
-    logger.info("=== Starting Unified Comment Guard Cycle (Douyin + Xiaohongshu) ===")
-    
-    all_replied = []
+class BaseCommentRunner:
+    """平台巡检独立运行器基类"""
+    def __init__(self, platform_name: str):
+        self.platform_name = platform_name
 
-    # 1. 运行抖音守护
-    try:
+    def run(self) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+class DouyinRunner(BaseCommentRunner):
+    def __init__(self):
+        super().__init__("抖音")
+
+    def run(self) -> List[Dict[str, Any]]:
         from scripts.poll_douyin_comments import poll_and_reply_live_comments
-        dy_records = poll_and_reply_live_comments()
-        if dy_records:
-            all_replied.extend(dy_records)
-    except Exception as e:
-        logger.error(f"Douyin comment guard failed: {e}")
+        return poll_and_reply_live_comments() or []
 
-    # 2. 运行小红书守护（根据多平台策略中心控制）
-    try:
+class XiaohongshuRunner(BaseCommentRunner):
+    def __init__(self):
+        super().__init__("小红书")
+
+    def run(self) -> List[Dict[str, Any]]:
         from src.platform_policy import get_platform_policy
         xhs_policy = get_platform_policy("xiaohongshu")
         interaction_policy = xhs_policy.get("interaction_policy", {})
 
         if interaction_policy.get("enable_background_polling", False):
             from scripts.poll_xhs_comments import poll_and_reply_xhs_comments
-            # 若策略为 manual_approval，则强制 dry_run=True（只产出建议话术与日志，不调用直接写入）
+            # 严格按照 manual_approval 模式运行（只产生建议回复供复制，绝不直接写入）
             is_dry_run = (interaction_policy.get("reply_mode") == "manual_approval")
-            xhs_records = poll_and_reply_xhs_comments(dry_run=is_dry_run)
-            if xhs_records:
-                all_replied.extend(xhs_records)
+            return poll_and_reply_xhs_comments(dry_run=is_dry_run) or []
         else:
-            logger.info("Xiaohongshu polling is currently DISABLED by platform policy (safe/standby mode).")
-    except Exception as e:
-        logger.error(f"Xiaohongshu comment guard failed: {e}")
+            logger.info("Xiaohongshu polling is currently DISABLED by platform policy.")
+            return []
 
-    # 3. 运行 B 站评论守护（官方 REST API 直连）
-    try:
+class BilibiliRunner(BaseCommentRunner):
+    def __init__(self):
+        super().__init__("哔哩哔哩")
+
+    def run(self) -> List[Dict[str, Any]]:
         from scripts.poll_bilibili_comments import poll_and_reply_bilibili_comments
-        bili_records = poll_and_reply_bilibili_comments(dry_run=False)
-        if bili_records:
-            all_replied.extend(bili_records)
-    except Exception as e:
-        logger.error(f"Bilibili comment guard failed: {e}")
+        return poll_and_reply_bilibili_comments(dry_run=False) or []
 
-    # 4. 运行微信视频号评论守护（方案 A: 人机协同建议拟写 + 飞书卡片推送到手机复制）
-    try:
+class ChannelsRunner(BaseCommentRunner):
+    def __init__(self):
+        super().__init__("微信视频号")
+
+    def run(self) -> List[Dict[str, Any]]:
         from src.platform_policy import get_platform_policy
         channels_policy = get_platform_policy("channels")
         ch_interaction = channels_policy.get("interaction_policy", {})
 
         if ch_interaction.get("enable_background_polling", False):
             from scripts.poll_channels_comments import poll_and_reply_channels_comments
-            # 方案 A 严格以 dry_run=True (拟写待办模式) 运行，不向视频号自动化写入
-            ch_records = poll_and_reply_channels_comments(dry_run=True)
-            if ch_records:
-                all_replied.extend(ch_records)
+            # 方案 A 严格以 dry_run=True (建议拟写待办模式) 运行
+            return poll_and_reply_channels_comments(dry_run=True) or []
         else:
             logger.info("WeChat Channels polling is currently DISABLED by platform policy.")
-    except Exception as e:
-        logger.error(f"WeChat Channels comment guard failed: {e}")
+            return []
 
-    logger.info(f"=== Unified Comment Guard Cycle Completed. Total replied: {len(all_replied)} ===")
+def run():
+    logger.info("=== Starting Decoupled Comment Guard Cycle (All Platforms) ===")
+    
+    runners: List[BaseCommentRunner] = [
+        DouyinRunner(),
+        XiaohongshuRunner(),
+        BilibiliRunner(),
+        ChannelsRunner()
+    ]
 
-    # 如果有新产生的回复，自动向飞书推送互动报告卡片
+    all_replied = []
+    platform_stats = {}
+
+    # 核心解耦循环：单平台故障绝对隔离，绝不波及后续平台
+    for runner in runners:
+        p_name = runner.platform_name
+        logger.info(f"--- Running isolated runner: {p_name} ---")
+        try:
+            records = runner.run()
+            count = len(records)
+            all_replied.extend(records)
+            platform_stats[p_name] = {"status": "SUCCESS", "count": count}
+            logger.info(f"Runner [{p_name}] finished successfully. Handled: {count}")
+        except Exception as e:
+            logger.error(f"Runner [{p_name}] encountered isolated error: {e}", exc_info=True)
+            platform_stats[p_name] = {"status": "ERROR", "error": str(e), "count": 0}
+
+    logger.info(f"=== Comment Guard Cycle Finished. Summary: {platform_stats} | Total Replied: {len(all_replied)} ===")
+
+    # 若有互动产生，向飞书会话推送统一卡片
     if all_replied:
         try:
-            import os
             from src.feishu.approval_service import FeishuApprovalService
             service = FeishuApprovalService()
             target = os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_bc831d683c9b59369bc86ee1561ed226")
@@ -98,7 +127,7 @@ def run():
 
             card_title = f"💬 评论区互动报告（新增 {len(all_replied)} 条"
             if manual_count > 0:
-                card_title += f"，含 {manual_count} 条待手动回复）"
+                card_title += f"，含 {manual_count} 条待手机端复制）"
             else:
                 card_title += "）"
 
@@ -111,7 +140,7 @@ def run():
                 "elements": elements
             }
             msg_id = service.send_approval_card(receive_id=target, receive_id_type=rec_type, card_content=card_content)
-            logger.info(f"Dispatched comment guard report to Feishu, msg_id={msg_id}")
+            logger.info(f"Dispatched decoupled comment guard report to Feishu, msg_id={msg_id}")
         except Exception as e:
             logger.error(f"Failed to push comment report to Feishu: {e}")
 
