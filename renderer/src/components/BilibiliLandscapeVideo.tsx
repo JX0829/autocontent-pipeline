@@ -6,6 +6,7 @@ import { LandscapeTerminalCodeView } from './LandscapeTerminalCodeView';
 import { LandscapeUiCardView } from './LandscapeUiCardView';
 import { LandscapeStatChartView } from './LandscapeStatChartView';
 import { SubtitleOverlay } from './SubtitleOverlay';
+import { BilibiliLandscapeCover } from './BilibiliLandscapeCover';
 
 const LandscapeSceneContent: React.FC<{
   scene: AlignedSceneItem;
@@ -287,6 +288,11 @@ const BilibiliLandscapeVideoInner: React.FC<AlignedRenderPayload> = (props) => {
       {props.bgm_src && (
         <Audio src={staticFile(props.bgm_src)} volume={0.06} loop />
       )}
+
+      {/* 关键帧作为封面：第 0 帧渲染 16:9 高清横屏封面海报（定格 1 帧），确保 B站、相册或播放器首帧默认直接展现宽屏大画幅海报 */}
+      <Sequence from={0} durationInFrames={1}>
+        <BilibiliLandscapeCover {...props} />
+      </Sequence>
 
       {/* 横屏各分镜渲染 */}
       {props.scenes.map((scene) => (
