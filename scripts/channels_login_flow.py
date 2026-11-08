@@ -91,10 +91,10 @@ async def main():
         # 输出原生飞书媒体标记供系统内联展现
         print(f"MEDIA:{QR_PATH}")
 
-        print("Waiting for user to scan QR Code (timeout 300s)...")
+        print("Waiting for user to scan QR Code (timeout 600s)...")
         start_time = time.time()
         logged_in = False
-        while time.time() - start_time < 300:
+        while time.time() - start_time < 600:
             current_url = page.url
             if "channels.weixin.qq.com/platform" in current_url or "channels.weixin.qq.com/creator" in current_url:
                 logged_in = True
