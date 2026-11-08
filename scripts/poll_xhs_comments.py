@@ -146,8 +146,10 @@ def check_and_seed_empty_comments(provider: XiaohongshuCDPProvider, db: Pipeline
 def poll_and_reply_xhs_comments(dry_run: bool = False):
     logger.info("Starting live Xiaohongshu comment poll and guard cycle via CDP...")
     provider = XiaohongshuCDPProvider()
+    # 自愈：9222 空置则按需自动拉起，并回灌已落盘登录态
+    provider.ensure_ready(headless=True)
     if not provider.check_login_status():
-        logger.warning("Xiaohongshu is NOT logged in inside Brave (port 9222).")
+        logger.warning("Xiaohongshu is NOT logged in (port 9222). 需要先执行 scripts/xhs_cdp_login.py 扫码登录一次。")
         return []
 
     db = PipelineDB(str(PROJECT_ROOT / "data" / "pipeline_state.db"))

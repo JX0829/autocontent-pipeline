@@ -13,23 +13,69 @@ class XiaohongshuCDPProvider:
     通过常驻真实 Brave 浏览器 (CDP 9222 端口) 接入小红书。
     零自动化指纹 WAF 风险，持久免登，用于评论拉取、智能回复与冷启动种草。
     """
-    def __init__(self, cdp_url: str = "http://127.0.0.1:9222", profile_id: str = "637067b5000000001f015e4a"):
+    def __init__(self, cdp_url: str = "http://127.0.0.1:9222", profile_id: str = "637067b5000000001f015e4a",
+                 profile_dir: str = "data/browser_profiles/xhs-cdp"):
         self.cdp_url = cdp_url
         self.profile_id = profile_id
+        self.profile_dir = profile_dir
+
+    def ensure_ready(self, headless: bool = True) -> bool:
+        """
+        自愈入口：
+        1) 9222 空置则按需自动拉起专用浏览器；
+        2) 有落盘 storage_state 则回灌 cookies，实现免扫码恢复。
+        """
+        from src.providers import browser_session as bs
+
+        if not bs.ensure_cdp(self.cdp_url, self.profile_dir, headless=headless):
+            return False
+        # 仅当当前会话缺失登录态时才回灌已固化状态，避免污染已有活会话
+        if not bs.has_session_cookie(self.cdp_url, "web_session"):
+            bs.restore_cookies(self.cdp_url, self.profile_dir)
+        return True
+
+    def persist_login_state(self) -> bool:
+        """登录成功后把 storage_state 固化落盘"""
+        from src.providers import browser_session as bs
+        return bs.persist_storage_state(self.cdp_url, self.profile_dir)
 
     def check_login_status(self) -> bool:
-        """检查 Brave 浏览器中是否已登录小红书"""
+        """检查浏览器中是否已登录小红书：cookie 存在 + 受保护页面不跳登录页双重校验"""
+        has_session = False
         try:
             with sync_playwright() as p:
                 browser = p.chromium.connect_over_cdp(self.cdp_url)
                 context = browser.contexts[0]
                 cookies = context.cookies()
                 has_session = any(c['name'] == 'web_session' and len(c['value']) > 10 for c in cookies)
+
+                # 二次校验：cookie 可能存在但已失效，访问受保护页面看是否被踢回登录页
+                if has_session:
+                    probe = context.new_page()
+                    try:
+                        probe.goto("https://www.xiaohongshu.com/notification",
+                                   wait_until="domcontentloaded", timeout=25000)
+                        probe.wait_for_timeout(2500)
+                        if "/login" in (probe.url or ""):
+                            logger.warning("web_session cookie 存在但已失效（受保护页被重定向到登录页）")
+                            has_session = False
+                    except Exception as e:
+                        logger.warning(f"登录态二次校验异常，按未登录处理: {e}")
+                        has_session = False
+                    finally:
+                        try:
+                            probe.close()
+                        except Exception:
+                            pass
                 browser.close()
-                return has_session
         except Exception as e:
             logger.error(f"CDP check_login_status error: {e}")
             return False
+
+        # 登录态固化必须放在 sync_playwright 上下文之外，避免 Playwright 嵌套调用报错
+        if has_session:
+            self.persist_login_state()
+        return has_session
 
     def get_recent_notes(self, limit: int = 5) -> List[Dict[str, Any]]:
         """从个人主页直接读取近期笔记卡片信息"""
