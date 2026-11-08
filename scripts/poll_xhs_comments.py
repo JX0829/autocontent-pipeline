@@ -2,12 +2,15 @@ import os
 import sys
 import time
 import json
+import socket
 import sqlite3
 import logging
+import subprocess
 import yaml
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
@@ -224,7 +227,8 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
                         "feed_title": feed_title,
                         "user": user_name,
                         "comment": comment_text,
-                        "reply": reply_content
+                        "reply": reply_content,
+                        "reply_mode": "manual_approval"
                     })
                 else:
                     logger.warning(f"❌ Failed to reply to {user_name} on Xiaohongshu via CDP.")
@@ -237,7 +241,8 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
                 "feed_title": feed_title,
                 "user": user_name,
                 "comment": comment_text,
-                "reply": reply_content
+                "reply": reply_content,
+                "reply_mode": "manual_approval"
             })
 
         # 状态持久化入库

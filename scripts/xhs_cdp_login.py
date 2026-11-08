@@ -86,6 +86,17 @@ def main(wait_sec: int = 600) -> int:
 
         ctx.close()
 
+    # URL 轮询可能漏判（登录弹窗消失但 URL 未变），超时后做一次权威校验兜底
+    if not logged_in:
+        logger.info("URL 轮询未捕获跳转，执行 cookie + 受保护页权威校验...")
+        try:
+            from src.providers.xiaohongshu_cdp import XiaohongshuCDPProvider
+            if XiaohongshuCDPProvider(cdp_url=CDP_URL, profile_dir=PROFILE_DIR).check_login_status():
+                logged_in = True
+                logger.info("✅ 权威校验确认已登录（轮询漏判已兜底）")
+        except Exception as e:
+            logger.warning(f"权威校验异常: {e}")
+
     if logged_in:
         ok = bs.persist_storage_state(CDP_URL, PROFILE_DIR)
         sp = bs.state_path(PROFILE_DIR)
