@@ -117,20 +117,19 @@ async def render_horizontal_demo():
     cover_out = str(output_dir / 'cover_horizontal.png')
     props_rel_path = f'./public/tasks/{task_id}/aligned_render.json'
     
-    print(f"[2/3] Remotion 渲染 16:9 横屏短视频成片...")
-    cmd_video = [
-        'npx', 'remotion', 'render', 'src/index.ts', 'GeekHorizontalVideo', video_out,
-        f'--props={props_rel_path}',
-        '--codec=h264', '--crf=18', '--pixel-format=yuv420p'
-    ]
-    subprocess.check_call(cmd_video, cwd=renderer_dir)
-    
-    cmd_cover = [
-        'npx', 'remotion', 'still', 'src/index.ts', 'CoverHorizontalStill', cover_out,
-        f'--props={props_rel_path}', '--image-format=png'
-    ]
-    subprocess.check_call(cmd_cover, cwd=renderer_dir)
-    
+    # 横屏统一走权威入口 render_landscape_bilibili（BilibiliLandscapeVideo + BilibiliCoverStill + 三项出厂断言）
+    print(f"[2/3] 通过统一入口渲染 16:9 横屏短视频成片与封面...")
+    from scripts.render_landscape_bilibili import render_landscape
+    _lr = render_landscape(
+        task_id=task_id,
+        props_rel=props_rel_path,
+        output_dir=str(Path(video_out).parent),
+        update_db=False,
+        verbose=True,
+    )
+    video_out = _lr["video"]
+    cover_out = _lr["cover"]
+
     db.update_task_status(task_id, 'WAITING_APPROVAL', video_path=video_out, cover_path=cover_out)
     video_size_mb = round(os.path.getsize(video_out) / (1024 * 1024), 2)
     total_sec = round(aligned_payload.total_duration_in_frames / aligned_payload.fps, 1)
