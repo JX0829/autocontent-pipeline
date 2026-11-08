@@ -50,25 +50,51 @@ async def main():
         page = await context.new_page()
 
         print(f"Navigating to {CHANNELS_LOGIN_URL}...")
-        await page.goto(CHANNELS_LOGIN_URL, wait_until="networkidle")
-        await asyncio.sleep(2)
+        await page.goto(CHANNELS_LOGIN_URL, wait_until="domcontentloaded")
+        await asyncio.sleep(5)
 
-        # 尝试寻找二维码元素或者直接对登录框/页面截屏
-        qr_elem = await page.query_selector(".qrcode-img, .login__type__qrcode__img, img[src*='qrcode'], .qrcode, .login-qrcode-wrap img")
-        if qr_elem:
-            await qr_elem.screenshot(path=str(QR_PATH))
+        # 视频号登录二维码真实宿主：open.weixin.qq.com/connect/qrconnect 的 iframe
+        qr_target = None
+        for _ in range(10):
+            for e in await page.query_selector_all("iframe"):
+                try:
+                    src = await e.evaluate("el => el.src || ''")
+                except Exception:
+                    continue
+                if "qrconnect" in src:
+                    qr_target = e
+                    break
+            if qr_target:
+                break
+            await asyncio.sleep(1)
+
+        if qr_target is None:
+            # 兜底：旧版内联二维码元素
+            qr_target = await page.query_selector(
+                ".qrcode-img, .login__type__qrcode__img, img[src*='qrcode'], .qrcode, .login-qrcode-wrap img"
+            )
+
+        if qr_target is not None:
+            await qr_target.screenshot(path=str(QR_PATH))
+            # 放大 2 倍提升手机扫码识别率
+            try:
+                from PIL import Image
+                im = Image.open(QR_PATH)
+                im.resize((im.width * 2, im.height * 2), Image.LANCZOS).save(QR_PATH)
+            except Exception as e:
+                print(f"⚠️ QR upscale skipped: {e}")
             print(f"✅ QR Code element captured to: {QR_PATH}")
         else:
             await page.screenshot(path=str(QR_PATH))
-            print(f"✅ Full page screenshot captured to: {QR_PATH}")
+            print(f"⚠️ QR element not found, full page screenshot: {QR_PATH}")
 
         # 输出原生飞书媒体标记供系统内联展现
         print(f"MEDIA:{QR_PATH}")
 
-        print("Waiting for user to scan QR Code (timeout 180s)...")
+        print("Waiting for user to scan QR Code (timeout 300s)...")
         start_time = time.time()
         logged_in = False
-        while time.time() - start_time < 180:
+        while time.time() - start_time < 300:
             current_url = page.url
             if "channels.weixin.qq.com/platform" in current_url or "channels.weixin.qq.com/creator" in current_url:
                 logged_in = True

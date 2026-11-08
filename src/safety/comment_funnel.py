@@ -154,7 +154,7 @@ class CommentSafetyFunnel:
                     {"role": "user", "content": system_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=5,
+                max_tokens=1024,
                 extra_headers={"Connection": "close"}
             )
             raw_out = resp.choices[0].message.content.strip().upper()
@@ -217,7 +217,7 @@ class CommentSafetyFunnel:
                     {"role": "user", "content": system_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=100,
+                max_tokens=1024,
                 extra_headers={"Connection": "close"}
             )
             answer = resp.choices[0].message.content.strip().replace("\n", " ").strip('"\'')
@@ -256,7 +256,7 @@ class CommentSafetyFunnel:
                     {"role": "user", "content": system_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=120,
+                max_tokens=1024,
                 extra_headers={"Connection": "close"}
             )
             comment = resp.choices[0].message.content.strip().replace("\n", " ").strip('"\'')

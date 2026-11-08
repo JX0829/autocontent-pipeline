@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -132,21 +133,51 @@ def poll_and_reply_live_comments():
             reply_buttons = page.locator('text="回复"').all()
             extracted_comments = []
 
+            # 元信息噪音行（点赞数、时间戳、操作按钮、作者标识等），绝不作为评论正文
+            META_WORDS = {
+                "回复", "删除", "举报", "置顶", "取消置顶", "全部评论", "选择作品",
+                "作者", "作者赞过", "展开", "收起", "查看更多", "加载更多", "暂无更多评论",
+            }
+            TIME_PAT = re.compile(
+                r"^(\d+\s*(秒|分钟|小时|天|周|月|年)前|刚刚|昨天.*|前天.*|\d{1,2}-\d{1,2}.*|\d{4}-\d{2}-\d{2}.*|\d{4}年.*)$"
+            )
+
+            def _is_meta(line: str) -> bool:
+                if not line:
+                    return True
+                if line in META_WORDS:
+                    return True
+                if line.isdigit():          # 纯点赞数，如 0 / 12
+                    return True
+                if TIME_PAT.match(line):
+                    return True
+                return False
+
             for r_btn in reply_buttons:
                 try:
                     c_el = r_btn.locator('xpath=../../..')
                     txt = c_el.inner_text().strip()
                     c_lines = [cl.strip() for cl in txt.split("\n") if cl.strip()]
-                    if len(c_lines) >= 3:
-                        user_name = c_lines[0]
-                        comment_text = c_lines[2]
-                        if comment_text not in ["回复", "删除", "举报", "置顶", "全部评论", "选择作品"]:
-                            extracted_comments.append({
-                                "user": user_name,
-                                "text": comment_text,
-                                "reply_btn": r_btn,
-                                "container": c_el
-                            })
+                    if len(c_lines) < 2:
+                        continue
+                    user_name = c_lines[0]
+                    if _is_meta(user_name):
+                        continue
+                    # 在用户名之后，取第一条非元信息的真实内容作为评论正文
+                    body = ""
+                    for line in c_lines[1:]:
+                        if _is_meta(line):
+                            continue
+                        body = line
+                        break
+                    if not body:
+                        continue
+                    extracted_comments.append({
+                        "user": user_name,
+                        "text": body,
+                        "reply_btn": r_btn,
+                        "container": c_el
+                    })
                 except Exception:
                     pass
             logger.info(f"Found {len(extracted_comments)} comment element(s) under '{v_title[:20]}'")
