@@ -222,7 +222,7 @@
 | P1 | T1.8 投料通道实现 | ✅ DONE | 2026-11-09 | `7a89d0f` | 三载体 IDENTICAL True；重放被拦 |
 | P1 | T1.9 配置面收敛 | ✅ DONE | 2026-11-09 | `7a89d0f` | DEADKEY=0 UNDECLARED=0；缺键 EXIT=78 |
 | P1 | GATE-1 声明层与模型契约验收 | ✅ PASS | 2026-11-09 | `7a89d0f` | 7/7 检查全绿；可进 P2 |
-| P2 | T2.1 Hook 执行引擎 | ✅ DONE | 2026-11-09 | 待回填 | 22/22 自检通过；runner 警告 20→0 |
+| P2 | T2.1 Hook 执行引擎 | ✅ DONE | 2026-11-09 | `4dd146e` | 22/22 自检通过；runner 警告 20→0 |
 | P2 | T2.2 DB 三表迁移 | ⬜ PENDING | — | — | 依赖 T2.1 |
 | P2 | T2.3 发送台账 Hook | ⬜ PENDING | — | — | 依赖 T2.2 |
 | P2 | T2.4 内容/视觉指纹 Hook | ⬜ PENDING | — | — | QA#11 |
