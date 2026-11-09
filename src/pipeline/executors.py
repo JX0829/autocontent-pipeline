@@ -119,7 +119,7 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
 
 
 def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
-    """竖版：TTS 对齐 → GeekShortVideo / CoverStill / XhsCardStill。"""
+    """竖版：TTS 对齐 → GeekShortVideo / CoverStill / XhsCardStill（T4.1 props 隔离）。"""
     from src.schemas import DraftScriptPayload
     from src.tts.aligner import TTSAligner
 
@@ -127,12 +127,26 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
     voice = os.getenv("TTS_VOICE_TECH") or "zh-CN-YunxiNeural"
     rate = os.getenv("TTS_RATE") or "+10%"
     aligner = TTSAligner(voice=voice, rate=rate)
-    public_dir = RENDERER / "public"
-    aligned = asyncio.run(aligner.align_draft(payload, ctx.task_id, str(public_dir)))
 
-    props_path = public_dir / "tasks" / ctx.task_id / "aligned_render.json"
+    # T4.1：props（JSON + 分段音频）落在 {run_root}/props/，不再写 renderer/public/tasks/
+    props_dir = ctx.run_root / "props"
+    props_dir.mkdir(parents=True, exist_ok=True)
+    public_prefix = f"runs/{ctx.run_id}"
+
+    # Remotion 只能通过 public/ 提供静态资源 → 用软链把 run 隔离目录挂进 public。
+    # 并发跑两个 run 时各自指向自己的 props，天然无交集。
+    link = RENDERER / "public" / "runs" / ctx.run_id
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(props_dir, target_is_directory=True)
+
+    aligned = asyncio.run(aligner.align_draft(
+        payload, ctx.task_id, str(RENDERER / "public"),
+        props_dir=str(props_dir), public_prefix=public_prefix))
+
+    props_path = props_dir / "aligned_render.json"
     _write_json(props_path, aligned.model_dump())
-    rel_props = "./" + str(props_path.resolve().relative_to(RENDERER.resolve()))
 
     video = ctx.out("video.mp4")
     cover = ctx.out("cover.png")
@@ -141,11 +155,11 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
     xhs = xhs_dir / "card_0.png"
 
     _remotion("render", "src/index.ts", "GeekShortVideo", str(video),
-              f"--props={rel_props}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p")
+              f"--props={props_path.resolve()}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p")
     _remotion("still", "src/index.ts", "CoverStill", str(cover),
-              f"--props={rel_props}", "--image-format=png")
+              f"--props={props_path.resolve()}", "--image-format=png")
     _remotion("still", "src/index.ts", "XhsCardStill", str(xhs),
-              f"--props={rel_props}", "--image-format=png")
+              f"--props={props_path.resolve()}", "--image-format=png")
 
     return {"video": str(video), "cover": str(cover), "xhs_cards": str(xhs_dir),
             "props": str(props_path)}
@@ -154,26 +168,21 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
 def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
     """横版：复用 scripts/render_landscape.py（内置 landscape_guard 出厂校验）。
 
-    产物按 spec 规范名落到 run_root：`video_16_9.mp4` / `cover_16_9.png`
-    （render_landscape 自己产的是 `video_landscape_16_9.mp4` / `cover_landscape.png`，
-     这里复制成规范名，避免 T4.1/T4.4 的命名债扩散到新链路）。
+    T4.1：直接渲染到 run_root，产物名已是规范名 `video_16_9.mp4` / `cover_16_9.png`，
+    不再复制改名（命名统一后无中间态）。
     """
     from scripts.render_landscape import render_landscape
 
-    props = ctx.artifacts.get("props") or str(RENDERER / "public" / "tasks" / ctx.task_id / "aligned_render.json")
+    props = ctx.artifacts.get("props") or str(ctx.run_root / "props" / "aligned_render.json")
+    if not Path(props).exists():
+        props = str(RENDERER / "public" / "tasks" / ctx.task_id / "aligned_render.json")
     if not Path(props).exists():
         raise ExecutorError(f"横版 props 不存在: {props}（竖版 TTS 对齐未产出）")
 
-    raw_dir = ctx.run_root / ".landscape_raw"
-    info = render_landscape(ctx.task_id, props_json=props, out_dir=str(raw_dir),
+    info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""))
-
-    video_src = Path(info.get("video_path_generated") or raw_dir / "video_landscape_16_9.mp4")
-    cover_src = Path(info.get("cover_path") or raw_dir / "cover_landscape.png")
-    video = ctx.out("video_16_9.mp4")
-    cover = ctx.out("cover_16_9.png")
-    video.write_bytes(video_src.read_bytes())
-    cover.write_bytes(cover_src.read_bytes())
+    video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
+    cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
     return {"video_16_9": str(video), "cover_16_9": str(cover)}
 
 

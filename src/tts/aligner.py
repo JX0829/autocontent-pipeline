@@ -74,10 +74,19 @@ class TTSAligner:
         draft: DraftScriptPayload,
         task_id: str,
         output_base_dir: str,
-        template_override: str | None = None
+        template_override: str | None = None,
+        props_dir: str | None = None,
+        public_prefix: str | None = None,
     ) -> AlignedRenderPayload:
-        task_audio_dir = os.path.join(output_base_dir, "tasks", task_id)
+        """T4.1：props 与分段音频可落到 run 隔离目录。
+
+        :param props_dir:    音频/JSON 的物理落盘目录（默认 {output_base_dir}/tasks/{task_id}）
+        :param public_prefix: Remotion `staticFile()` 的相对前缀（默认 tasks/{task_id}）。
+                              props 在 run_root 时，由调用方把 public/<prefix> 软链到 props_dir。
+        """
+        task_audio_dir = props_dir or os.path.join(output_base_dir, "tasks", task_id)
         os.makedirs(task_audio_dir, exist_ok=True)
+        public_prefix = public_prefix or f"tasks/{task_id}"
 
         aligned_scenes = []
         # 前置 0.5 秒 (15 帧) 专属封面定格时间，确保各大平台及相册首帧稳妥抓取大标题
@@ -92,8 +101,8 @@ class TTSAligner:
         total_scene_count = len(draft.scenes)
         for scene in draft.scenes:
             idx = scene.scene_index
-            mp3_rel_path = f"tasks/{task_id}/scene_{idx}.mp3"
-            mp3_abs_path = os.path.join(output_base_dir, mp3_rel_path)
+            mp3_rel_path = f"{public_prefix}/scene_{idx}.mp3"
+            mp3_abs_path = os.path.join(task_audio_dir, f"scene_{idx}.mp3")
 
             # 严格经过最高风控门禁清洗
             is_tail_scene = (idx == total_scene_count - 1)

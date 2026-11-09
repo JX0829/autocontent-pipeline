@@ -57,14 +57,12 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
             raise LandscapeGuardError(
                 f"props 封面文案与期望不一致：props「{_cover_text}」≠ 期望「{expect_cover_text}」")
 
-    # Remotion 的 --props 需要相对 renderer 目录的路径
-    try:
-        rel_props = "./" + str(props_json.resolve().relative_to(RENDERER.resolve()))
-    except ValueError:
-        rel_props = str(props_json)
+    # T4.1：props 一律传绝对路径（props 可能落在 run_root 下，不再假设在 renderer/public）
+    rel_props = str(props_json.resolve())
 
-    video = out_dir / "video_landscape_16_9.mp4"
-    cover = out_dir / "cover_landscape.png"
+    # T4.1 / P-6：产物名与 pipeline.yaml 的 produces / dispatch.reads 对齐
+    video = out_dir / "video_16_9.mp4"
+    cover = out_dir / "cover_16_9.png"
 
     subprocess.check_call([
         "npx", "remotion", "render", "src/index.ts", VIDEO_COMPOSITION, str(video),

@@ -234,7 +234,7 @@
 | P3 | T3.3 废弃 resend 脚本 | ✅ DONE | 2026-11-09 | `cef5e4b` | 无 resend_*.py；归档区 6 个 .py |
 | P3 | T3.4 定时任务去模型依赖 | ✅ DONE | 2026-11-09 | `cef5e4b` | 7 job 全 pinned/script-only；2 个断流 job 已修 |
 | P3 | GATE-3 端到端不重发 | ✅ PASS | 2026-11-09 | `3f8a319` | `bash scripts/gate3.sh` 12/12 断言：A 首跑发 1 次 / B 幂等跳过 / C 台账拦截 | QA#7#10#12 |
-| P4 | T4.1 run_root 隔离 + 横版命名统一 | ⬜ PENDING | — | — | **必做；GATE-3 后第一优先** |
+| P4 | T4.1 run_root 隔离 + 横版命名统一 | ✅ DONE | 2026-11-09 | 待回填 | props 落 run_root + 软链供 Remotion；命名统一零残留 |
 | P4 | T4.2 去硬编码 | ⬜ PENDING | — | — | 依赖 T4.1 |
 | P4 | T4.3 状态机归位 | ⬜ PENDING | — | — | 依赖 T4.2 |
 | P4 | T4.4 横屏出厂治理 | ⬜ PENDING | — | — | QA#6#7，二次复发项 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**25/35**（P1、P2 完成 + T3.1–T3.4 完成 + GATE-3 PASS），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅；下一步 P4 隔离与解耦。
+**当前进度**：**26/35**（P1、P2 完成 + T3.1–T3.4 + GATE-3 + T4.1 完成），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅；下一步 P4 去硬编码（T4.2）。
 
 ---
 
@@ -1424,26 +1424,47 @@ for k,v in d['providers'].items():
 > **排期约束**：GATE-3 通过后**立即启动**，**T4.1 为 GATE-3 之后第一优先级任务**；原先"稳定运行 ≥3 天再启动"的建议作废（该建议等于把内聚缺口长期冻结）。
 
 #### T4.1 `run_root` 隔离 + 横版产物命名统一
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：GATE-3
-- **改动**：`src/tts/aligner.py`、`scripts/generate_from_news.py`、`scripts/render_landscape.py`
-- **执行**：
-  1. `aligned_render.json` 与分段音频改写到 `{run_root}/props/`；Remotion 改传绝对路径 props；`renderer/public/tasks/` 只读保留
-  2. **命名统一（P-6，v1.2）**：`scripts/render_landscape.py` 产物改名 —— `video_landscape_16_9.mp4` → `video_16_9.mp4`，`cover_landscape.png` → `cover_16_9.png`，与 `pipeline.yaml` 的 `produces` / `dispatch.reads` 对齐
-     ```python
-     video = out_dir / "video_16_9.mp4"      # 原 video_landscape_16_9.mp4
-     cover = out_dir / "cover_16_9.png"      # 原 cover_landscape.png
-     ```
-  3. 同步修改 `scripts/landscape_guard.py` 与 `scripts/render_landscape.py` 内的文件名引用，`grep` 确认零残留
-- **验收**：
-  ```bash
-  # 命名一致性（三处必须同名）
-  grep -rn "video_landscape_16_9\|cover_landscape" scripts/ src/ && echo "VIOLATION" || echo "OK: 命名已统一"
-  grep -n "video_16_9.mp4" pipeline.yaml scripts/render_landscape.py
-  # 并发隔离
+- **改动**：`src/tts/aligner.py`、`src/pipeline/executors.py`、`scripts/render_landscape.py`、`scripts/landscape_guard.py`
+- **1. props 隔离（实测）**：
+  - `aligned_render.json` 与 `scene_N.mp3` 落在 `{run_root}/props/`
+  - `renderer/public/runs/<run_id>` 是指向该目录的**软链**（Remotion 只能通过 public/ 供静态资源，
+    软链既满足隔离又不破坏 `staticFile()`）
+  - `audio_src` = `runs/<run_id>/scene_N.mp3`；`bgm_src` 仍为 `sfx/bgm_loop.wav`（public 根，不受影响）
+  - Remotion `--props` 改传**绝对路径**
+  - 实测：`run_root/props/` = `aligned_render.json + scene_0..3.mp3`；
+    `audio_src[0] = runs/20261109-183153-c1c2/scene_0.mp3`
+- **2. 命名统一（P-6）**：`render_landscape.py` 产物
+  `video_landscape_16_9.mp4 → video_16_9.mp4`、`cover_landscape.png → cover_16_9.png`，
+  与 `pipeline.yaml` 的 `produces` / `dispatch.reads` 对齐；`executors` 不再复制改名（直出）
+- **3. 引用同步**：`landscape_guard.py` 内文件名同步；`grep` 零残留
+  （仅剩 DB 列名 `video_landscape_path`/`cover_landscape_path`、`_deprecated/` 归档、
+  旧 `render_landscape_bilibili.py` —— 均非产物命名）
+- **验收（实测）**：
   ```
-- **预期输出**：`OK: 命名已统一`；两处均出现 `video_16_9.mp4`；并发启动 2 个不同 task，`diff` 两者 `props/` 无交集，两片均正常渲染
-- **回滚**：`git checkout` 三个文件
+  grep -rn "video_landscape_16_9|cover_landscape" scripts/ src/ pipeline.yaml   → 零命中（排除上述三类）
+  grep -n "video_16_9.mp4" pipeline.yaml scripts/render_landscape.py            → 两处均命中
+  ```
+- **端到端（真实渲染，EXIT=0）**：
+  ```
+  run_root: output/20261109/20261109-183153-c1c2
+    video.mp4       3.32 MB      cover.png       1.39 MB
+    video_16_9.mp4  3.03 MB      cover_16_9.png  1.19 MB
+  props/: aligned_render.json + scene_0..3.mp3（4 段音频）
+  renderer/public/runs/20261109-183153-c1c2 -> …/output/20261109/20261109-183153-c1c2/props
+  ```
+- **并发隔离（实测）**：两个 task 并发跑 TTS 对齐 →
+  ```
+  t41-a props: output/_t41_concurrent/t41-a/props（5 文件）
+  t41-b props: output/_t41_concurrent/t41-b/props（5 文件）
+  物理路径交集: 无
+  symlink 指向: 各自指向自己的 props
+  audio_src: runs/t41-a/scene_0.mp3  vs  runs/t41-b/scene_0.mp3
+  ```
+  （文件名天然同名，但落在不同 run 目录，互不覆盖）
+- **回归**：`hooks --selftest` 22/22 · GATE-1 PASS · GATE-2 PASS · 干跑 `DRY RUN OK`（执行体 7/7 已接）
+- **回滚**：`git checkout src/tts/aligner.py src/pipeline/executors.py scripts/render_landscape.py scripts/landscape_guard.py`
 
 #### T4.2 去硬编码
 - **状态**：⬜ PENDING
