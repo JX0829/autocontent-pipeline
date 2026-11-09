@@ -88,6 +88,21 @@ def selfcheck(requires: dict[str, Any]) -> list[RuntimeCheck]:
     ok = sys.version_info >= (3, 10)
     checks.append(RuntimeCheck("python", want, f"{cur} ({sys.executable})", ok))
 
+    # python 依赖：只查版本号会放过「解释器选错」——版本达标但包不在
+    # （实测：后台 shell 解析到 miniconda 3.13，python>=3.10 通过，import openai 失败）
+    dep_mods = requires.get("python_deps") or ["openai", "edge_tts", "lark_oapi"]
+    missing_deps: list[str] = []
+    for mod in dep_mods:
+        try:
+            __import__(mod)
+        except Exception as exc:  # noqa: BLE001 — 任何导入失败都算依赖不可用
+            missing_deps.append(f"{mod}({type(exc).__name__})")
+    checks.append(RuntimeCheck(
+        "python_deps", ", ".join(dep_mods),
+        "缺失: " + ", ".join(missing_deps) if missing_deps else f"全部可导入 ({sys.executable})",
+        not missing_deps,
+    ))
+
     # binaries
     for name in requires.get("binaries") or []:
         path = shutil.which(name)
@@ -160,14 +175,19 @@ def print_plan(cfg: dict[str, Any], start_index: int = 0) -> None:
         print(f"  （按 --resume 从第 {start_index + 1} 步继续）")
 
 
-def reconcile(cfg: dict[str, Any], run_root: Path) -> list[str]:
-    """产物对账：run_root 不存在则视为尚未产出（dry-run 正常情况）。"""
+def reconcile(cfg: dict[str, Any], run_root: Path, upto: int | None = None) -> list[str]:
+    """产物对账：run_root 不存在则视为尚未产出（dry-run 正常情况）。
+
+    `upto` = 只对账「理应已完成」的步骤（断点续跑时，后面的步骤本来就没产物）。
+    """
     if not run_root.exists():
         print(f"\n=== 产物对账 ===\n  run_root 尚未创建：{run_root}（dry-run 正常）")
         return []
     print(f"\n=== 产物对账 ===\n  run_root: {run_root}")
     missing: list[str] = []
-    for step in cfg["steps"]:
+    for i, step in enumerate(cfg["steps"]):
+        if upto is not None and i >= upto:
+            break
         miss = verify_produces(step, run_root)
         status = "OK" if not miss else f"MISSING {len(miss)}"
         print(f"  {step['id']:<18} {status}")
@@ -255,17 +275,72 @@ def _resolve_pending(step: dict[str, Any]) -> str:
     return f"{executor or '未知执行体'} 尚未实现"
 
 
+def _hook_block_severity(cfg: dict[str, Any], name: str) -> str:
+    """hook 的阻断语义：`on_fail: block` 才拦流程，`warn`/observe 只记录。"""
+    spec = ((cfg.get("hooks") or {}).get(name) or {})
+    return str(spec.get("on_fail") or ("block" if spec.get("type") == "gate" else "warn"))
+
+
+def _run_hooks(cfg: dict[str, Any], names: list[str], payload: dict[str, Any],
+               strict: bool = True) -> tuple[bool, list[dict[str, Any]]]:
+    """执行一组 hook，返回 (是否放行, 结果列表)。阻断级失败 → 不放行。
+
+    `type: transform` 的 hook 会把 `patch` 合并回 `context`，这样下游（执行体或
+    下一个 hook）真能看到它的产出 —— 否则 transform 等于白跑（T3.x 实测：
+    expand_narration 切好的 narration 不落 context，audio_duration_check 永远告警）。
+    """
+    from .hooks import run_hook
+
+    results: list[dict[str, Any]] = []
+    blocked = False
+    ctx = payload.setdefault("context", {})
+    for name in names:
+        if not name:
+            continue
+        res = run_hook(name, payload, cfg=cfg)
+        results.append(res.as_dict())
+        if res.ok and isinstance(res.patch, dict) and res.patch:
+            for k, v in res.patch.items():
+                if k in ("card", "schema"):
+                    continue
+                ctx[k] = v
+        if not res.ok:
+            sev = _hook_block_severity(cfg, name)
+            print(f"      ! {name}: {res.reason[:120]}（on_fail={sev}）")
+            if strict and sev == "block":
+                blocked = True
+    return (not blocked), results
+
+
+def _discover_artifacts(run_root: Path) -> dict[str, str]:
+    """断点续跑时从 run_root 恢复已产出物（key = 文件名去扩展名）。
+
+    没有这一步，`--resume` 跳过渲染步后 artifacts 仍是空的，
+    下游 hook（如 send_ledger）会报"找不到待发视频"而把整步阻断 —— C 步实测踩到。
+    """
+    found: dict[str, str] = {}
+    if not run_root.is_dir():
+        return found
+    for p in sorted(run_root.iterdir()):
+        if p.is_file() and p.suffix.lower() in {".mp4", ".png", ".json", ".mp3"}:
+            found[p.stem] = str(p)
+    return found
+
+
 def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
               task_id: str, start_index: int = 0, db_path: Path = DEFAULT_DB,
-              rerun_done: bool = False) -> int:
-    """真实执行（T2.2：带 pipeline_runs 状态流转）。
+              rerun_done: bool = False, material: dict[str, Any] | None = None,
+              account: str = "") -> int:
+    """真实执行（T2.2 状态流转 + P5 执行体接线 + hook 执行）。
 
-    执行体本身仍按 `EXECUTORS_PENDING` 拒绝（T2.3/T2.5/T4.x 才接线），
-    但每一步的 RUNNING / DONE / BLOCKED 都会真实落到 `pipeline_runs.steps_json`，
-    这样 `--resume` 有据可依，且失败点可定位。
+    每一步：before_hooks → 执行体 → after_hooks，产物写进 run_root。
+    `on_fail: block` 的 hook 失败或执行体异常 → 该步 BLOCKED、run BLOCKED、退出码 64。
     """
+    from .executors import ExecutorError, StepContext, run_step
+
     db = _db(db_path)
     steps = cfg["steps"]
+    artifacts: dict[str, str] = _discover_artifacts(run_root) if start_index > 0 else {}
     print("\n=== 执行 ===")
     if db:
         db.update_run_status(run_id, "RUNNING")
@@ -280,21 +355,73 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
 
         if db:
             db.set_step_status(run_id, sid, "RUNNING")
+        print(f"  [{sid}] …")
 
-        pending = _resolve_pending(step)
+        params = step.get("params") or {}
+        aspect = str(params.get("aspect") or "")
+        kind = str(step.get("artifact_kind") or {"vertical": "vertical",
+                                                 "landscape": "landscape"}.get(aspect, ""))
+        draft = {}
+        if artifacts.get("draft_script"):
+            try:
+                draft = json.loads(Path(artifacts["draft_script"]).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"      ! draft_script 读取失败: {exc}")
+
+        payload = {
+            "task_id": task_id, "run_id": run_id, "run_root": str(run_root),
+            "step_id": sid, "artifacts": dict(artifacts),
+            "context": {
+                "run_id": run_id, "account": account or (material or {}).get("account"),
+                "manifest": material, "db_path": str(db_path),
+                "artifact_kind": kind,
+                "aspect": {"vertical": "9:16", "landscape": "16:9"}.get(aspect, aspect),
+                "landscape_cover": str(params.get("landscape_cover") or ""),
+                "video_key": "video_16_9" if kind == "landscape" else "video",
+                "cover_key": "cover_16_9" if kind == "landscape" else "cover",
+                "draft": draft,
+                "expect_text": str(draft.get("cover_main_text") or ""),
+            },
+        }
+
         before = [h for h in (step.get("before_hooks") or []) if h]
         if before:
-            print(f"  [{sid}] before_hooks {len(before)} 个已注册（执行接线属 T2.5）")
+            ok, _ = _run_hooks(cfg, before, payload)
+            if not ok:
+                print(f"  [{sid}] before_hooks 阻断")
+                if db:
+                    db.set_step_status(run_id, sid, "BLOCKED")
+                    db.update_run_status(run_id, "BLOCKED")
+                return EXIT_NOT_IMPLEMENTED
 
-        if pending:
-            print(f"  [{sid}] 执行体 → {pending}")
+        try:
+            produced = run_step(step, StepContext(
+                step=step, run_root=run_root, run_id=run_id, task_id=task_id,
+                material=material, artifacts=dict(artifacts),
+                params=step.get("params") or {}, db_path=str(db_path),
+            ))
+        except ExecutorError as exc:
+            print(f"  [{sid}] 执行失败：{exc}")
             if db:
                 db.set_step_status(run_id, sid, "BLOCKED")
                 db.update_run_status(run_id, "BLOCKED")
-            print(f"\n拒绝执行：{pending}")
             return EXIT_NOT_IMPLEMENTED
 
-        print(f"  [{sid}] 执行体 → OK")
+        artifacts.update(produced or {})
+        print(f"  [{sid}] 产出: {', '.join(sorted(produced or {})) or '（无）'}")
+
+        after = [h for h in (step.get("after_hooks") or []) if h]
+        if after:
+            payload["artifacts"] = dict(artifacts)
+            payload["context"]["artifacts"] = dict(artifacts)
+            ok, _ = _run_hooks(cfg, after, payload)
+            if not ok:
+                print(f"  [{sid}] after_hooks 阻断")
+                if db:
+                    db.set_step_status(run_id, sid, "BLOCKED")
+                    db.update_run_status(run_id, "BLOCKED")
+                return EXIT_NOT_IMPLEMENTED
+
         if db:
             db.set_step_status(run_id, sid, "DONE")
 
@@ -403,7 +530,13 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
         if existing and args.resume:
             run_id = existing["run_id"]
-            print(f"\n=== 续跑已有 run ===\n  run_id={run_id} status={existing.get('status')}")
+            # 断点续跑必须回到**原来那个 run_root**，否则找不到上一步产物
+            if existing.get("run_root"):
+                run_root = Path(existing["run_root"])
+            # task_id 也必须回到原值：TTS props 落在 renderer/public/tasks/<task_id>/
+            task_id = str(existing.get("task_id") or task_id)
+            print(f"\n=== 续跑已有 run ===\n  run_id={run_id} status={existing.get('status')}"
+                  f"\n  run_root={run_root}")
         run_id = db.upsert_run(run_id, task_id, content_hash, account, run_root, status="RUNNING")
 
     print("\n=== 运行上下文 ===")
@@ -425,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. 计划 + 对账
     print_plan(cfg, start_index)
-    missing = reconcile(cfg, run_root)
+    missing = reconcile(cfg, run_root, upto=start_index if args.resume else None)
     if missing and not args.dry_run:
         print("\n拒绝执行：产物对账不通过 → " + "; ".join(missing[:3]))
         return EXIT_CONTRACT
@@ -435,14 +568,20 @@ def main(argv: list[str] | None = None) -> int:
         print("\n=== 干跑检查 ===")
         print("  · 未调用任何 LLM")
         print("  · 未写入 pipeline_runs")
-        print(f"  · 待接线执行体：{len(EXECUTORS_PENDING)} 个 builtin/llm（T2.5 接线；render/dispatch 待 T4.4/T4.7）")
+        from .executors import EXECUTORS
+        wired = [s["id"] for s in cfg["steps"] if (s.get("run") or s.get("uses") or s.get("type"))]
+        unwired = [s["id"] for s in cfg["steps"]
+                   if (s.get("run") or s.get("uses")) and (s.get("run") or s.get("uses")) not in EXECUTORS]
+        print(f"  · 执行体接线：{len(wired) - len(unwired)}/{len(wired)} 已接"
+              + (f"；未接 {', '.join(unwired)}" if unwired else ""))
         if warns:
             print(f"  · 警告 {len(warns)} 条")
         print("\nDRY RUN OK")
         return EXIT_OK
 
     return run_steps(cfg, run_root, run_id, task_id, start_index,
-                     db_path=Path(args.db), rerun_done=False)
+                     db_path=Path(args.db), rerun_done=False, material=material,
+                     account=account)
 
 
 if __name__ == "__main__":

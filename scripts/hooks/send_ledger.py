@@ -72,10 +72,20 @@ def main() -> None:
         C.fail(f"send_ledger: 台账不可用，拒绝发送（fail closed）: {exc}")
 
     task_id = str(p.get("task_id") or "")
-    first = db.claim_send_slot(dedupe_key, task_id, channel, chat_id, str(video))
-    if not first:
+    # 只读预检，**不抢占**：抢占必须由执行体（exec_dispatch）独占完成，
+    # 否则 hook 先 INSERT、执行体再 claim 必然返回 False → 被判 already_sent
+    # → 台账有行但一条没发出去（GATE-3 实测踩到过）。
+    try:
+        conn = db.get_conn()
+        row = conn.execute(
+            "select feishu_msg_id from send_ledger where dedupe_key=?", (dedupe_key,)
+        ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        C.fail(f"send_ledger: 台账不可读，拒绝发送（fail closed）: {exc}")
+    if row is not None:
         C.fail("already_sent", dedupe_key=dedupe_key[:16],
-               channel=channel, chat_id=chat_id, video_sha256=video_sha[:16])
+               channel=channel, chat_id=chat_id, video_sha256=video_sha[:16],
+               feishu_msg_id=(row[0] if row else None))
 
     C.emit(True, patch={
         "dedupe_key": dedupe_key[:16],
@@ -84,7 +94,7 @@ def main() -> None:
         "chat_id": chat_id,
         "video_sha256": video_sha[:16],
         "content_hash": content_hash[:16],
-        "claimed": True,
+        "claimed": False,   # 预检通过，实际抢占在执行体
     })
 
 

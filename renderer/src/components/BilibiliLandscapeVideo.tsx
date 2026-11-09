@@ -290,7 +290,9 @@ const BilibiliLandscapeVideoInner: React.FC<AlignedRenderPayload> = (props) => {
       )}
 
       {/* 关键帧作为封面：前 0.5 秒 (15 帧) 渲染 16:9 高清横屏封面海报，确保 B站、相册或播放器首帧默认直接展现宽屏大画幅海报 */}
-      <Sequence from={0} durationInFrames={15}>
+      {/* zIndex 必须高于分镜：分镜 Sequence 的 start_frame 从 0 开始，不加层级会把封面盖住（实测首帧变成 scene_0）。
+          用 Sequence 自带 style 叠层，不额外包 div —— 包 div 会引入新的定位上下文，导致封面标题被裁 */}
+      <Sequence from={0} durationInFrames={15} style={{ zIndex: 200 }}>
         <BilibiliLandscapeCover {...props} />
       </Sequence>
 

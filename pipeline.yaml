@@ -199,6 +199,7 @@ steps:
   - id: render_vertical
     name: "生成竖版视频"
     run: builtin.render
+    artifact_kind: vertical            # v1.4：external_truth 按此分派校验口径
     params: {aspect: vertical, composition: GeekShortVideo, width: 1080, height: 1920}
     reads: ["draft_script.json"]
     produces: ["video.mp4", "cover.png", "xhs_cards/"]
@@ -208,7 +209,8 @@ steps:
   - id: render_landscape
     name: "生成横版视频"
     run: builtin.render
-    params: {aspect: landscape, composition: BilibiliLandscapeVideo, width: 1920, height: 1080}
+    artifact_kind: landscape           # v1.4：横版校验（画幅/时长/文字跨度）
+    params: {aspect: landscape, composition: BilibiliLandscapeVideo, width: 1920, height: 1080, landscape_cover: generate}
     reads: ["draft_script.json"]        # v1.2 修正（P-5）：横版只读 props，video.mp4 是假依赖
     requires_props: true                # props 由 TTS 对齐步产出，不依赖竖版成片
     produces: ["video_16_9.mp4", "cover_16_9.png"]
@@ -227,12 +229,17 @@ steps:
   - id: dispatch
     name: "分发"
     run: builtin.dispatch
+    artifact_kind: sent                # v1.4：external_truth 校验"确实发出去了"
     params:
       enabled: true                                # false ⇒ 只出片（v1.3 / T4.7）
       mode: "${DISPATCH_MODE:-publish}"             # publish | output_only
     reads: ["video.mp4", "video_16_9.mp4"]
     dedupe: send_ledger
-    before_hooks: [hook.provenance_check, hook.external_truth, hook.card_render, hook.send_ledger]
+    # external_truth 已在 render_vertical / render_landscape 的 after_hooks 各跑一次，
+    # 在此再跑属于重复声明且上下文不成立（dispatch 阶段还没有"已发送"事实可校验）；
+    # card_render 的产物在 dispatch 没有消费者（exec_dispatch 直接发视频，不读 card）。
+    # 声明即生效：不能提供上下文的 hook 不允许声明（GATE-3 实测被这两条挡死）。
+    before_hooks: [hook.provenance_check, hook.send_ledger]
     after_hooks: [hook.audit_log]
 
 hooks:
@@ -298,9 +305,12 @@ hooks:
     type: gate
     impl: scripts/hooks/provenance_check.py
     on_fail: block
-  hook.card_render:
-    type: transform
-    impl: src/feishu/card_builder.py
+  # hook.card_render 暂不注册：
+  #   · 产物（Card 2.0 payload）在流水线里还没有消费者 —— approval 是纯 gate，
+  #     dispatch 的执行体直接发视频，不读 card；
+  #   · Card 2.0 的真实产出路径是 run_publish_worker（QA#8 已修，独立可用）。
+  # 契约校验器要求"注册即被引用"，与其挂在一个没人用的步上，不如先不声明。
+  # 待 approval 步落地执行体（T4.6）后，再连同 card_args 一起接线。
   hook.send_ledger:
     type: gate
     impl: scripts/hooks/send_ledger.py

@@ -287,8 +287,66 @@ def ocr_text(path: Path, ts: float = 0.2, timeout: float = 60.0) -> str | None:
             png.unlink(missing_ok=True)
 
 
-# ------------------------------------------------------------------ 数据面
+# ------------------------------------------------------------ 多采样（T2.6）
 
+# 封面定格段 [0, 0.5s] 内的采样点。单点 OCR 会被单帧噪声（转场、抗锯齿抖动、
+# tesseract 单帧误识）带偏，官方错版判定必须取多点统计量。
+DEFAULT_SAMPLE_TS: tuple[float, ...] = (0.10, 0.20, 0.30, 0.40)
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def is_image(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_SUFFIXES
+
+
+def parse_ts_list(raw) -> tuple[float, ...]:
+    """解析采样点：接受 `"0.1,0.2"` 字符串、[0.1, 0.2] 列表或 None；非法回退默认。
+
+    注意：本函数**容错**（供宽松场景用）。校验场景请用 `parse_ts_list_strict`，
+    否则非法采样点会被静默丢弃 → 采样数变少 → 门槛悄悄变松（静默降级）。
+    """
+    ts, _ = parse_ts_list_strict(raw)
+    return ts or DEFAULT_SAMPLE_TS
+
+
+def parse_ts_list_strict(raw) -> tuple[tuple[float, ...], list[str]]:
+    """严格解析：返回 (合法采样点, 非法片段列表)。非法片段非空时调用方必须 fail。"""
+    if raw is None or raw == "" or raw == []:
+        return DEFAULT_SAMPLE_TS, []
+    parts = raw if isinstance(raw, (list, tuple)) else str(raw).replace(" ", "").split(",")
+    out: list[float] = []
+    bad: list[str] = []
+    for part in parts:
+        try:
+            v = float(part)
+        except (TypeError, ValueError):
+            bad.append(str(part))
+            continue
+        if 0.0 <= v <= 3600.0:
+            out.append(v)
+        else:
+            bad.append(str(part))
+    return tuple(out), bad
+
+
+def ocr_text_spans(path: Path, timestamps: tuple[float, ...] | None = None,
+                   timeout: float = 60.0) -> list[tuple[float, float | None]]:
+    """多点采样：返回 [(ts, span|None)]。静态图片只采一次。"""
+    if is_image(path):
+        return [(0.0, ocr_text_span(path, 0.0, timeout))]
+    return [(ts, ocr_text_span(path, ts, timeout)) for ts in (timestamps or DEFAULT_SAMPLE_TS)]
+
+
+def ocr_texts(path: Path, timestamps: tuple[float, ...] | None = None,
+              timeout: float = 60.0) -> list[tuple[float, str | None]]:
+    """多点采样：返回 [(ts, text|None)]。静态图片只采一次。"""
+    if is_image(path):
+        return [(0.0, ocr_text(path, 0.0, timeout))]
+    return [(ts, ocr_text(path, ts, timeout)) for ts in (timestamps or DEFAULT_SAMPLE_TS)]
+
+
+# ------------------------------------------------------------------ 数据面
 def db_path(payload: dict[str, Any]) -> Path:
     override = ctx(payload).get("db_path")
     if override:

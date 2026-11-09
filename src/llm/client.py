@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -184,7 +185,11 @@ class LLMClient:
             try:
                 from openai import OpenAI
             except ImportError as exc:  # pragma: no cover
-                raise ConfigError("openai 包未安装：pip install openai") from exc
+                # 不要只说「未安装」：真正的 ImportError 常来自子依赖不兼容或
+                # 解释器选错（conda vs venv），必须把原始异常带出来，否则误诊。
+                raise ConfigError(
+                    f"openai 不可用（解释器 {sys.executable}）：{type(exc).__name__}: {exc}"
+                ) from exc
             self._client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
