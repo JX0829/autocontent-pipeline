@@ -1036,7 +1036,7 @@ for k,v in d['providers'].items():
 #### T2.2 DB 四表迁移 `src/db.py`
 - **状态**：✅ DONE（2026-11-09）
 - **依赖**：T2.1
-- **改动**：`src/db.py`（+约 240 行）；`src/pipeline/runner.py`（状态流转）；`src/pipeline/hooks.py`（降级落表）
+- **改动**：`src/db.py`（+约 240 行）；`src/pipeline/runner.py`（状态流转）；`src/pipeline/hooks.py`（降级落表）；**新增 `scripts/migrate_db.py`（迁移入口，默认 dry-run）**
 - **必须实现**（全部落地）：
   1. `init_db()` 中 `CREATE TABLE IF NOT EXISTS` 四表（§4.3，含 `uq_run_content` 唯一索引）
   2. `claim_send_slot(dedupe_key, ...) -> bool`：`INSERT ... ON CONFLICT DO NOTHING`，返回 `rowcount == 1`
@@ -1054,6 +1054,21 @@ for k,v in d['providers'].items():
   | 被拦 | 步骤 `BLOCKED` + run `BLOCKED`，退出码仍 `64` |
   | 干跑 | **完全不写库**（实测 prod `pipeline_runs` 计数 0） |
 - **降级留痕改走 DB**：`hooks._degraded()` 现在优先 `degraded_events` 表（带 task_id/step_id/hook_id），JSONL 仅兜底
+- **迁移入口 `scripts/migrate_db.py`（dry-run 优先）**：
+  迁移是最容易"跑一下就把生产库改了"的操作，因此脚本**默认只读**：
+  ```bash
+  python3 scripts/migrate_db.py            # dry-run（默认）：影子库算目标 schema + mode=ro 比对真实库
+  python3 scripts/migrate_db.py --json     # 机器可读
+  python3 scripts/migrate_db.py --apply    # 唯一会写库的入口
+  ```
+  - 做法：临时目录建影子库 → `init_db()` 得到目标 schema → 真实库 `file:...?mode=ro` 打开 → 比对 **表 / 列 / 索引** 三级差异 → 只打印将要执行的 DDL
+  - 真实库在 dry-run 下不建表、不 ALTER、不产生 `-wal/-shm`
+  - 实测三种场景（2026-11-09）：
+    | 场景 | 输出 | 库文件 |
+    | :--- | :--- | :--- |
+    | 生产库现状 | 建表 0 · 加列 0 · 建索引 0（schema 已最新） | SHA256 `c85c9022…` 前后一致，大小/mtime 不变，无 wal |
+    | 模拟旧库（删掉四表） | 建表 4 · 建索引 1（`CREATE_INDEX uq_run_content ON pipeline_runs`） | 副本 hash `a1d6e586…` 前后一致 |
+    | 模拟缺列（删掉 `steps_json`） | 加列 1（`ADD_COLUMN pipeline_runs.steps_json`） | 副本 hash `eafcec53…` 前后一致 |
 - **验收**（spec 原命令，实测）：
   ```bash
   python3 -c "
