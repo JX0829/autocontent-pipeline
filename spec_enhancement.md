@@ -213,8 +213,8 @@
 | P0 | T0.3 工作区卫生与提交边界 | ✅ DONE | 2026-11-09 | `94c2636` | 条目 12 → 6；`_deprecated/` 归档 5 个一次性脚本 |
 | P0 | T0.4 运行时自举 | ✅ DONE | 2026-11-09 | `2b40da1` | **v1.3 新增；G-A 阻断项已解除（system-fallback）** |
 | P1 | T1.1 落 pipeline.yaml | ✅ DONE | 2026-11-09 | `98bdbce` | 11 段 contract / 6 槽位 / 7 步 / 22 hooks，零模型名 |
-| P1 | T1.2 契约校验器 | ⬜ PENDING | — | — | 依赖 T1.1 |
-| P1 | T1.3 薄 Runner | ⬜ PENDING | — | — | 依赖 T1.2 |
+| P1 | T1.2 契约校验器 | ✅ DONE | 2026-11-09 | 待回填 | 5+4 项校验；AST 扫描命中 3 处 max_tokens 违例 |
+| P1 | T1.3 薄 Runner | ✅ DONE | 2026-11-09 | 待回填 | dry-run 全绿 EXIT=0；5 项负向退出码全对 |
 | P1 | T1.4 model_profile 能力契约 | ⬜ PENDING | — | — | QA#2②#3#9 核心 |
 | P1 | T1.5 LLM 统一调用层 | ⬜ PENDING | — | — | 禁止调用方自定 max_tokens |
 | P1 | T1.6 模型切换自检脚本 | ⬜ PENDING | — | — | 换模型前必跑 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P0 完成、P1 进行中，5/35 完成（T0.1–T0.4、T1.1 ✅），下一步 T1.2 契约校验器。
+**当前进度**：P1 进行中，7/35 完成（T0.1–T0.4、T1.1–T1.3 ✅），下一步 T1.4 model_profile 标定。
 
 ---
 
@@ -632,9 +632,9 @@ dispatch:
 - **注意**：YAML 流式映射中 `key:{` 缺空格会解析失败，一律写 `key: {`
 
 #### T1.2 契约校验器 `src/pipeline/contracts.py`
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T1.1
-- **改动**：新增文件（约 150 行）
+- **改动**：新增 `src/pipeline/__init__.py`（包声明）+ `src/pipeline/contracts.py`（约 270 行）
 - **必须实现**：
   1. `load_pipeline(path)`：解析 + `schema_version` 校验
   2. `validate_structure(cfg)`：步骤 id 唯一、hook 引用可解析、`uses` 槽位存在、**`kind: llm` 的 provider 必须含 `profile` 六字段齐全，`kind: tts` 至少含 `timeout_sec`**
@@ -649,12 +649,18 @@ c=load_pipeline('pipeline.yaml'); e=validate_structure(c); assert_no_model_liter
 print('errors:', e)"
   ```
 - **预期输出**：`errors: []`
-- **回滚**：`rm -rf src/pipeline/contracts.py`
+- **实测输出（2026-11-09）**：`errors: []` ✅
+- **实现补充（v1.3 落地时增强）**：
+  - 除上述 5 项外，另校验：`contract` 六个核心段齐全、产物**唯一归属**（同一产物不得由两步声明）、`reads` 必须能溯源到上游 `produces`/`manifest.json`、注册但未被任何 step 引用的 hook 视为错误
+  - `collect_warnings(cfg)` 单独返回非阻断提示（hook impl 未实现 20 条、profile 预算矛盾）
+  - `assert_no_caller_max_tokens` 改用 **AST 解析**（`ast.Call.keywords` 中 `arg == "max_tokens"`），避免把注释/文档串里的说明文字误判为违例；当前实测命中 `comment_funnel.py:151/214/253` **3 处真实违例**（待 T1.5 收口）
+  - 负向自测：注入 5 类缺陷（id 重复 / 未注册 hook / 幽灵 reads / profile 缺字段 / 孤儿 hook）**全部被捕获**
+- **回滚**：`rm -rf src/pipeline/contracts.py src/pipeline/__init__.py`
 
 #### T1.3 薄 Runner `src/pipeline/runner.py`
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T1.2
-- **改动**：新增文件（约 280 行）
+- **改动**：新增 `src/pipeline/runner.py`（约 330 行）
 - **必须实现**：
   - CLI：`python -m src.pipeline.runner --material <path> [--account X] [--dry-run] [--run-id ID] [--resume]`
   - `--dry-run`：只做结构校验 + 产物对账 + 打印执行计划，**不调用任何 LLM**
@@ -667,6 +673,17 @@ print('errors:', e)"
   python3 -m src.pipeline.runner --material /dev/null --dry-run; echo "EXIT=$?"
   ```
 - **预期输出**：逐步打印 7 个步骤 + 启动自检表，末尾 `DRY RUN OK`，`EXIT=0`
+- **实测输出（2026-11-09）**：`DRY RUN OK` / `EXIT=0` ✅（启动自检 8 行全 OK；执行计划 7 步带 reads/produces/hooks；产物对账走「run_root 尚未创建」分支）
+- **退出码实测（5 项负向自测全通过）**：
+  | 场景 | 期望 | 实测 |
+  |---|---|---|
+  | 缺失二进制 `definitely_not_a_cmd` | 69 | **69** + `拒绝运行：1 项运行时缺失` |
+  | step id 重复 | 2 | **2** + `✗ steps 中 id 重复: intake` |
+  | 真实运行（无 `--dry-run`） | 64 | **64** + `拒绝执行：builtin.intake 尚未实现（T1.8）` |
+  | 物料非合法 JSON | 2 | **2** + `物料不是合法 JSON` |
+  | `--resume` 且状态表不存在 | 0 | **0** + `pipeline_runs 表未建立（T2.2），从头开始` |
+  | `--resume` 且 3 步已完成（临时库实测） | 从第 4 步起 | **从 render_vertical 继续**，计划表前 3 步标 `✓` |
+- **诚实边界**：真实运行一律在首个 hook 前拦截并返回 64，**不做「看起来跑通」的假执行**；`pipeline_runs` 写入在表缺失时静默降级为提示（T2.2 建表后自动生效）
 - **回滚**：`rm src/pipeline/runner.py`
 
 #### T1.4 `model_profile` 能力契约（v1.1 新增）
