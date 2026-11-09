@@ -96,3 +96,7 @@ config/*.bak*
 # 一次性救火脚本：作废归档，禁止入库（§6 不做清单）
 scripts/_deprecated/
 
+
+# T4.1：历史产物归档与 run 级 public 软链（不进版本库）
+.archive/
+renderer/public/runs/
