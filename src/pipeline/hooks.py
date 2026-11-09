@@ -154,12 +154,16 @@ def _run_adapter(name: str, payload: dict[str, Any]) -> HookResult | None:
 
 # ------------------------------------------------------------------ 调用
 
-def _degraded(kind: str, detail: dict[str, Any]) -> None:
-    """降级留痕（复用 T1.5 的 record_degraded；导入失败也必须落盘，不许静默）。"""
+def _degraded(kind: str, detail: dict[str, Any], payload: dict[str, Any] | None = None) -> None:
+    """降级留痕：优先写 `degraded_events` 表（T2.2），JSONL 兜底，保证永不静默。"""
+    payload = payload or {}
+    task_id = str(payload.get("task_id") or detail.get("task_id") or "unknown")
+    step_id = str(payload.get("step_id") or detail.get("step_id") or "-")
+    hook_id = str(detail.get("hook") or "")
+    db_file = Path(os.getenv("SQLITE_DB_PATH") or PROJ / "data" / "pipeline_state.db")
     try:
-        from src.llm.client import record_degraded
-        record_degraded(kind, detail)
-        return
+        from src.db import PipelineDB
+        PipelineDB(str(db_file)).log_degraded(task_id, step_id, hook_id or None, kind, detail)
     except Exception:
         pass
     try:
@@ -199,14 +203,14 @@ def run_hook(name: str, payload: dict[str, Any], cfg: dict[str, Any] | None = No
         )
     except subprocess.TimeoutExpired:
         elapsed = time.time() - t0
-        _degraded("skipped", {"hook": name, "reason": "timeout", "timeout_sec": timeout})
+        _degraded("skipped", {"hook": name, "reason": "timeout", "timeout_sec": timeout}, payload)
         return HookResult(name=name, kind=kind, ok=False,
                           reason=f"timeout: 超过 {timeout:g}s", elapsed=elapsed)
     elapsed = time.time() - t0
 
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-3:]
-        _degraded("skipped", {"hook": name, "reason": f"exit_{proc.returncode}", "stderr": " | ".join(tail)})
+        _degraded("skipped", {"hook": name, "reason": f"exit_{proc.returncode}", "stderr": " | ".join(tail)}, payload)
         return HookResult(name=name, kind=kind, ok=False,
                           reason=f"hook_crashed(exit={proc.returncode}): {' | '.join(tail)[:300]}",
                           elapsed=elapsed, exit_code=proc.returncode,
@@ -214,14 +218,14 @@ def run_hook(name: str, payload: dict[str, Any], cfg: dict[str, Any] | None = No
 
     out = (proc.stdout or "").strip()
     if not out:
-        _degraded("skipped", {"hook": name, "reason": "empty_stdout"})
+        _degraded("skipped", {"hook": name, "reason": "empty_stdout"}, payload)
         return HookResult(name=name, kind=kind, ok=False, reason="协议违规: stdout 为空",
                           elapsed=elapsed, exit_code=proc.returncode)
 
     try:
         data = json.loads(out.splitlines()[-1])
     except json.JSONDecodeError as exc:
-        _degraded("skipped", {"hook": name, "reason": "bad_json", "head": out[:200]})
+        _degraded("skipped", {"hook": name, "reason": "bad_json", "head": out[:200]}, payload)
         return HookResult(name=name, kind=kind, ok=False, reason=f"协议违规: stdout 非 JSON（{exc}）",
                           elapsed=elapsed, exit_code=proc.returncode, stdout_tail=out[-300:])
 

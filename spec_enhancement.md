@@ -223,7 +223,7 @@
 | P1 | T1.9 配置面收敛 | ✅ DONE | 2026-11-09 | `7a89d0f` | DEADKEY=0 UNDECLARED=0；缺键 EXIT=78 |
 | P1 | GATE-1 声明层与模型契约验收 | ✅ PASS | 2026-11-09 | `7a89d0f` | 7/7 检查全绿；可进 P2 |
 | P2 | T2.1 Hook 执行引擎 | ✅ DONE | 2026-11-09 | `4dd146e` | 22/22 自检通过；runner 警告 20→0 |
-| P2 | T2.2 DB 三表迁移 | ⬜ PENDING | — | — | 依赖 T2.1 |
+| P2 | T2.2 DB 四表迁移 | ✅ DONE | 2026-11-09 | 待回填 | 四表就绪；claim True→False；状态流转/续跑/幂等跳过实测 |
 | P2 | T2.3 发送台账 Hook | ⬜ PENDING | — | — | 依赖 T2.2 |
 | P2 | T2.4 内容/视觉指纹 Hook | ⬜ PENDING | — | — | QA#11 |
 | P2 | T2.5 静默失败护栏 | ⬜ PENDING | — | — | QA#1#3#8 母题 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**14/35**（P1 完成 + T2.1 完成），GATE-1 ✅ PASS；下一步 T2.2 状态表。
+**当前进度**：**15/35**（P1 完成 + T2.1/T2.2 完成），GATE-1 ✅ PASS；下一步 T2.3 发送台账 hook。
 
 ---
 
@@ -1034,27 +1034,45 @@ for k,v in d['providers'].items():
 - **注意（实现期踩坑，已修）**：`ffmpeg` 抽帧必须用**二进制** `capture_output`，走 `text=True` 会在 `UnicodeDecodeError` 上崩（已写入 `_common.frame_gray` 注释）
 
 #### T2.2 DB 四表迁移 `src/db.py`
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T2.1
-- **改动**：`src/db.py`
-- **必须实现**：
+- **改动**：`src/db.py`（+约 240 行）；`src/pipeline/runner.py`（状态流转）；`src/pipeline/hooks.py`（降级落表）
+- **必须实现**（全部落地）：
   1. `init_db()` 中 `CREATE TABLE IF NOT EXISTS` 四表（§4.3，含 `uq_run_content` 唯一索引）
   2. `claim_send_slot(dedupe_key, ...) -> bool`：`INSERT ... ON CONFLICT DO NOTHING`，返回 `rowcount == 1`
   3. `record_artifact(task_id, kind, path, sha256, frame_hash)`
   4. `find_run_by_content(content_hash, account)`
   5. `log_degraded(task_id, step_id, hook_id, kind, detail)`（v1.1 新增）
-  6. `create_task` 的 `INSERT OR REPLACE` **暂不改**（留到 T4.3）
-- **验收**：
+  6. `create_task` 的 `INSERT OR REPLACE` **未改**（留到 T4.3）
+- **⚠️ §4.3 的一处必要增补**：`pipeline_runs` 是 **run 级**表（无 `step_id`），但 `--resume` 需要步骤级进度。已新增 `steps_json`（`{step_id: status}`）+ `updated_at` 两列，**保持"四表"不变**（不加第 5 张表）。原 runner 里那份按 `(run_id, step_id)` 写入的伪代码已删除。
+- **runner 状态流转（新增接线）**：
+  | 时机 | 行为 |
+  | :--- | :--- |
+  | 真实运行启动 | `content_hash_of()` 算内容指纹 → `find_run_by_content()`；已有 `status=DONE` 同内容 → **幂等跳过写库并 EXIT=0** |
+  | `--resume` | 复用已有 `run_id`，`resume_point()` 读 `steps_json` 算起点 |
+  | 每步 | `set_step_status(RUNNING/DONE/BLOCKED/SKIPPED)` |
+  | 被拦 | 步骤 `BLOCKED` + run `BLOCKED`，退出码仍 `64` |
+  | 干跑 | **完全不写库**（实测 prod `pipeline_runs` 计数 0） |
+- **降级留痕改走 DB**：`hooks._degraded()` 现在优先 `degraded_events` 表（带 task_id/step_id/hook_id），JSONL 仅兜底
+- **验收**（spec 原命令，实测）：
   ```bash
   python3 -c "
-from src.db import PipelineDB
-db=PipelineDB('./data/pipeline_state.db')
-print(db.claim_send_slot('k_test','t1','feishu','oc_x','/tmp/v.mp4'))
-print(db.claim_send_slot('k_test','t1','feishu','oc_x','/tmp/v.mp4'))
-db.log_degraded('t1','s1','h1','truncated','demo')"
+  from src.db import PipelineDB
+  db=PipelineDB('./data/pipeline_state.db')
+  print(db.claim_send_slot('k_test','t1','feishu','oc_x','/tmp/v.mp4'))
+  print(db.claim_send_slot('k_test','t1','feishu','oc_x','/tmp/v.mp4'))
+  db.log_degraded('t1','s1','h1','truncated','demo')"
   ```
-- **预期输出**：`True` 然后 `False`
-- **回滚**：`git checkout src/db.py` + 手动 drop 四表
+  → `True` / `False` / 无异常 ✅（实测在 prod 库副本 `/tmp/t22.db` 上执行，避免把 `k_test` 测试行写进生产台账；prod 只做了建表迁移）
+- **实测输出（2026-11-09，全部真实执行）**：
+  - 迁移：prod DB 新增 4 表；`content_tasks` **仍为 163 行未动**；`pipeline_runs/send_ledger/degraded_events/artifacts` 全空
+  - 方法级：`claim#1=True claim#2=False`；`record_artifact` 同键覆盖；`upsert_run` 对同 `(content_hash, account)` **复用原 run_id**（`run_b` → 返回 `run_a`）
+  - 状态流转：真实运行 `EXIT=64`，`pipeline_runs` 行 = `status=BLOCKED, steps_json={"intake":"BLOCKED"}`
+  - 断点续跑：预置 `{"intake":"DONE"}` → `已完成 1/7 步，从 check_material 继续`，`[intake] SKIP（断点已过）`
+  - 幂等跳过：状态改 `DONE` 后重跑同物料 → `=== 幂等跳过（uq_run_content）===` + `EXIT=0`
+  - 降级落表：hook 超时 `--timeout 0.001` → `degraded_events` 写入 `(t_degraded, expand_script, hook.envelope_validate, skipped, {...})`
+- **同时修正**：`EXECUTORS_PENDING` 的说明已过期（T1.5/T1.8 组件都已就绪），改为「待接线：T2.5」，不再谎报"未实现"
+- **回滚**：`git checkout src/db.py src/pipeline/runner.py` + 手动 drop 四表
 
 #### T2.3 发送台账与来源校验 Hook
 - **状态**：⬜ PENDING

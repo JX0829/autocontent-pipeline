@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -175,102 +177,130 @@ def reconcile(cfg: dict[str, Any], run_root: Path) -> list[str]:
 
 # ------------------------------------------------------------------ 状态库
 
-def _db_conn(db_path: Path) -> sqlite3.Connection | None:
-    if not db_path.exists():
-        return None
+def _db(db_path: Path = DEFAULT_DB):
+    """惰性构造 PipelineDB（T2.2）。库/表缺失 → None，调用方按"无状态库"降级。"""
     try:
-        return sqlite3.connect(str(db_path))
-    except sqlite3.Error:
+        from src.db import PipelineDB
+        return PipelineDB(str(db_path))
+    except Exception:
         return None
 
 
-def _has_runs_table(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "select name from sqlite_master where type='table' and name='pipeline_runs'"
-    ).fetchone()
-    return bool(row)
+def content_hash_of(cfg: dict[str, Any], material: dict[str, Any] | None) -> str:
+    """内容指纹：归一化 title + body。用于 (content_hash, account) 唯一约束与去重。"""
+    from src.pipeline.manifest import load_manifest
+    from src.pipeline.intake import ManifestInvalid
+    if not material:
+        return hashlib.sha256(b"no-material").hexdigest()
+    try:
+        m = load_manifest(material)
+    except (ValueError, ManifestInvalid):
+        return hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    norm = re.sub(r"\s+", "", (m.title or "") + "|" + (m.body or ""))
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
 def record_status(run_id: str, task_id: str, step_id: str, status: str,
                   run_root: str, db_path: Path = DEFAULT_DB) -> bool:
-    """写 pipeline_runs.status。表不存在（T2.2 未落地）时静默降级，只提示一次。"""
-    conn = _db_conn(db_path)
-    if conn is None:
+    """写步骤级状态到 pipeline_runs.steps_json（T2.2）。失败返回 False，不抛。"""
+    db = _db(db_path)
+    if db is None:
         return False
     try:
-        if not _has_runs_table(conn):
-            return False
-        conn.execute(
-            """insert into pipeline_runs (run_id, task_id, step_id, status, run_root, updated_at)
-               values (?, ?, ?, ?, ?, datetime('now'))
-               on conflict(run_id, step_id) do update set
-                 status=excluded.status, updated_at=excluded.updated_at""",
-            (run_id, task_id, step_id, status, run_root),
-        )
-        conn.commit()
-        return True
-    except sqlite3.Error:
+        db.upsert_run(run_id, task_id, "", "", run_root)
+        return db.set_step_status(run_id, step_id, status)
+    except Exception:
         return False
-    finally:
-        conn.close()
 
 
 def resume_point(run_id: str, step_ids: list[str], db_path: Path = DEFAULT_DB) -> tuple[int, str]:
-    """返回 (从第几步开始(0-based), 说明)。表缺失即从头开始。"""
-    conn = _db_conn(db_path)
-    if conn is None:
-        return 0, "状态库不存在，从头开始"
+    """返回 (从第几步开始(0-based), 说明)。读 pipeline_runs.steps_json（T2.2）。"""
+    db = _db(db_path)
+    if db is None:
+        return 0, "状态库不可用，从头开始"
     try:
-        if not _has_runs_table(conn):
-            return 0, "pipeline_runs 表未建立（T2.2），从头开始"
-        rows = conn.execute(
-            "select step_id, status from pipeline_runs where run_id = ?", (run_id,)
-        ).fetchall()
-        done = {sid for sid, st in rows if st in ("DONE", "SKIPPED")}
-        for i, sid in enumerate(step_ids):
-            if sid not in done:
-                return i, f"已完成 {len(done)}/{len(step_ids)} 步，从 {sid} 继续"
-        return len(step_ids), "全部步骤已完成"
-    finally:
-        conn.close()
+        run = db.get_run(run_id)
+    except Exception:
+        return 0, "状态库读取失败，从头开始"
+    if not run:
+        return 0, "无该 run 记录，从头开始"
+    steps = run.get("steps") or {}
+    done = {sid for sid, st in steps.items() if st in ("DONE", "SKIPPED")}
+    for i, sid in enumerate(step_ids):
+        if sid not in done:
+            return i, f"已完成 {len(done)}/{len(step_ids)} 步，从 {sid} 继续"
+    return len(step_ids), "全部步骤已完成"
 
 
 # ------------------------------------------------------------------ 执行体
 
 HOOKS_PENDING = "hook 执行引擎未实现（T2.1）"
+# 执行体接线状态（组件已具备，缺的是「把组件接到 step 上」这一步 = T2.5）
 EXECUTORS_PENDING = {
-    "builtin.intake": "T1.8",
-    "builtin.check_material": "T1.8",
-    "builtin.render": "T4.4",
-    "builtin.dispatch": "T4.7",
-    "llm.main": "T1.5",
-    "llm.fast": "T1.5",
+    "builtin.intake": "T2.5 执行接线（intake.py 已就绪）",
+    "builtin.check_material": "T2.5 执行接线（manifest 校验已就绪）",
+    "builtin.render": "T4.4 渲染执行体",
+    "builtin.dispatch": "T4.7 发布执行体",
+    "llm.main": "T2.5 执行接线（LLMClient 已就绪）",
+    "llm.fast": "T2.5 执行接线（LLMClient 已就绪）",
 }
 
 
 def _resolve_pending(step: dict[str, Any]) -> str:
     executor = step.get("run") or step.get("uses") or ""
     if executor in EXECUTORS_PENDING:
-        return f"{executor} 尚未实现（{EXECUTORS_PENDING[executor]}）"
+        return f"{executor} 待接线：{EXECUTORS_PENDING[executor]}"
     if step.get("type") == "gate":
-        return f"gate {step['id']} 尚未实现（T4.6 审批渠道抽象）"
+        return f"gate {step['id']} 待接线：T4.6 审批渠道抽象"
     return f"{executor or '未知执行体'} 尚未实现"
 
 
 def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
-              task_id: str, start_index: int = 0) -> int:
-    """真实执行。当前一律在第一步前拦住，避免"看起来跑通"。"""
+              task_id: str, start_index: int = 0, db_path: Path = DEFAULT_DB,
+              rerun_done: bool = False) -> int:
+    """真实执行（T2.2：带 pipeline_runs 状态流转）。
+
+    执行体本身仍按 `EXECUTORS_PENDING` 拒绝（T2.3/T2.5/T4.x 才接线），
+    但每一步的 RUNNING / DONE / BLOCKED 都会真实落到 `pipeline_runs.steps_json`，
+    这样 `--resume` 有据可依，且失败点可定位。
+    """
+    db = _db(db_path)
+    steps = cfg["steps"]
     print("\n=== 执行 ===")
-    for step in cfg["steps"]:
-        for h in step.get("before_hooks") or []:
-            if h:
-                print(f"  [{step['id']}] before {h} → {HOOKS_PENDING}")
-                print(f"\n拒绝执行：{_resolve_pending(step)}")
-                return EXIT_NOT_IMPLEMENTED
-        print(f"  [{step['id']}] 执行体 → {_resolve_pending(step)}")
-        record_status(run_id, task_id, step["id"], "BLOCKED", str(run_root))
-        print(f"\n拒绝执行：{_resolve_pending(step)}")
-        return EXIT_NOT_IMPLEMENTED
+    if db:
+        db.update_run_status(run_id, "RUNNING")
+
+    for i, step in enumerate(steps):
+        sid = step["id"]
+        if i < start_index and not rerun_done:
+            print(f"  [{sid}] SKIP（断点已过）")
+            if db:
+                db.set_step_status(run_id, sid, "SKIPPED")
+            continue
+
+        if db:
+            db.set_step_status(run_id, sid, "RUNNING")
+
+        pending = _resolve_pending(step)
+        before = [h for h in (step.get("before_hooks") or []) if h]
+        if before:
+            print(f"  [{sid}] before_hooks {len(before)} 个已注册（执行接线属 T2.5）")
+
+        if pending:
+            print(f"  [{sid}] 执行体 → {pending}")
+            if db:
+                db.set_step_status(run_id, sid, "BLOCKED")
+                db.update_run_status(run_id, "BLOCKED")
+            print(f"\n拒绝执行：{pending}")
+            return EXIT_NOT_IMPLEMENTED
+
+        print(f"  [{sid}] 执行体 → OK")
+        if db:
+            db.set_step_status(run_id, sid, "DONE")
+
+    if db:
+        db.update_run_status(run_id, "DONE")
+    print("\n执行完成")
     return EXIT_OK
 
 
@@ -356,16 +386,34 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CONTRACT
     account = args.account or ((cfg.get("inputs") or {}).get("account") or {}).get("default") \
         or ((material or {}).get("account"))
+    account = account or "unknown"
     run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid() % 0xFFFF:04x}"
     task_id = str((material or {}).get("task_id") or (material or {}).get("id") or run_id)
     run_root = PROJ / "output" / f"{datetime.now():%Y%m%d}" / run_id
+    content_hash = content_hash_of(cfg, material)
+
+    # 3.5 状态库（T2.2）：真实运行才落库；干跑绝不写入
+    db = None if args.dry_run else _db(Path(args.db))
+    if db is not None:
+        existing = db.find_run_by_content(content_hash, account)
+        if existing and existing.get("status") == "DONE" and not args.resume:
+            print(f"\n=== 幂等跳过（uq_run_content）===\n"
+                  f"  同内容已出片: run_id={existing['run_id']} status=DONE\n"
+                  f"  content_hash={content_hash[:16]}… account={account}")
+            return EXIT_OK
+        if existing and args.resume:
+            run_id = existing["run_id"]
+            print(f"\n=== 续跑已有 run ===\n  run_id={run_id} status={existing.get('status')}")
+        run_id = db.upsert_run(run_id, task_id, content_hash, account, run_root, status="RUNNING")
 
     print("\n=== 运行上下文 ===")
     print(f"  run_id   : {run_id}")
     print(f"  task_id  : {task_id}")
-    print(f"  account  : {account or '(未指定)'}")
+    print(f"  account  : {account}")
+    print(f"  content  : {content_hash[:16]}…")
     print(f"  material : {'(无物料)' if material is None else f'{len(material)} 个字段'}")
     print(f"  run_root : {run_root}")
+    print(f"  状态库   : {args.db if db is not None else '(dry-run 未写库)'}")
     print(f"  模式     : {'DRY-RUN' if args.dry_run else 'REAL'}")
 
     # 4. 断点
@@ -387,13 +435,14 @@ def main(argv: list[str] | None = None) -> int:
         print("\n=== 干跑检查 ===")
         print("  · 未调用任何 LLM")
         print("  · 未写入 pipeline_runs")
-        print(f"  · 待实现执行体：{len(EXECUTORS_PENDING)} 个 builtin/llm + gate（T1.5/T1.8/T4.4/T4.6/T4.7）")
+        print(f"  · 待接线执行体：{len(EXECUTORS_PENDING)} 个 builtin/llm（T2.5 接线；render/dispatch 待 T4.4/T4.7）")
         if warns:
-            print(f"  · 警告 {len(warns)} 条（hook impl 待 T2.1/T2.5 落地）")
+            print(f"  · 警告 {len(warns)} 条")
         print("\nDRY RUN OK")
         return EXIT_OK
 
-    return run_steps(cfg, run_root, run_id, task_id, start_index)
+    return run_steps(cfg, run_root, run_id, task_id, start_index,
+                     db_path=Path(args.db), rerun_done=False)
 
 
 if __name__ == "__main__":
