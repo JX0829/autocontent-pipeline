@@ -219,9 +219,9 @@
 | P1 | T1.5 LLM 统一调用层 | ✅ DONE | 2026-11-09 | `505417e` | 4 调用点收口；6 项异常路径实测；删静默判D |
 | P1 | T1.6 模型切换自检脚本 | ✅ DONE | 2026-11-09 | `d08789d` | 4 槽位真实自检 4/4 PASS；抓到预算过紧并回调 8192/2560 |
 | P1 | T1.7 物料契约 `manifest.schema.json` | ✅ DONE | 2026-11-09 | `e9a696e` | 9 例契约矩阵 9/9；runner 已接线 |
-| P1 | T1.8 投料通道实现 | ⬜ PENDING | — | — | **v1.3 新增；G-C，3 种载体** |
-| P1 | T1.9 配置面收敛 | ⬜ PENDING | — | — | **v1.3 新增；G-B，死键+fail-fast** |
-| P1 | GATE-1 声明层与模型契约验收 | ⬜ PENDING | — | — | 干跑全绿才可进 P2 |
+| P1 | T1.8 投料通道实现 | ✅ DONE | 2026-11-09 | 待回填 | 三载体 IDENTICAL True；重放被拦 |
+| P1 | T1.9 配置面收敛 | ✅ DONE | 2026-11-09 | 待回填 | DEADKEY=0 UNDECLARED=0；缺键 EXIT=78 |
+| P1 | GATE-1 声明层与模型契约验收 | ✅ PASS | 2026-11-09 | 待回填 | 7/7 检查全绿；可进 P2 |
 | P2 | T2.1 Hook 执行引擎 | ⬜ PENDING | — | — | 依赖 GATE-1 |
 | P2 | T2.2 DB 三表迁移 | ⬜ PENDING | — | — | 依赖 T2.1 |
 | P2 | T2.3 发送台账 Hook | ⬜ PENDING | — | — | 依赖 T2.2 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P1 进行中，11/35 完成（T0.1–T0.4、T1.1–T1.7 ✅），下一步 T1.8 投料通道。
+**当前进度**：**P1 全部完成（13/35）**，GATE-1 ✅ PASS；下一步 P2 · T2.1。
 
 ---
 
@@ -880,23 +880,23 @@ for k,v in d['providers'].items():
 - **不做**：不新增字段就不改 schema —— **任何新物料字段必须先改本 schema**（对齐 §5 变更纪律）
 
 #### T1.8 投料通道实现（v1.3 新增，G-C）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T1.7（schema）、T1.3（runner 入口）
 - **缺口来源**：§1.7 **G-C** —— `intake` 步 `run: builtin.intake` 是空壳，全文未定义"物料怎么递进来"
 - **目标**：三种载体，**同一份 schema 校验**，产出结构完全一致的 manifest（§4.9.2）
-- **改动**：`src/pipeline/intake.py`（新增，约 180 行）、`src/pipeline/runner.py`（CLI 参数）、`scripts/hooks/envelope_validate.py`（复用校验）、`config/feishu_inbox.yaml`（可选）
-- **执行**：
-  1. CLI 参数统一：`--material <path>` / `--material -`（stdin） / `--material feishu`（轮询 inbox）
+- **改动**：新增 `src/pipeline/intake.py`（约 230 行）；`src/pipeline/runner.py`（`--material` 载体识别 + `--inbox`）
+- **执行**（全部落地）：
+  1. CLI 参数统一：`--material <path>` / `--material -`（stdin） / `--material feishu`（轮询投料箱，`--inbox` 可指定目录）
   2. 三个 loader 各自只做**取字节**，取到后一律走 `manifest.load_manifest()` + `validate()`：
      ```python
-     loaders = {"cli": _from_path, "stdin": _from_stdin, "feishu": _from_inbox}
-     raw = loaders[carrier]()          # 只负责拿到 text
+     raw = loaders[carrier]()          # 只负责拿到 JSON
      m = load_manifest(raw)            # 统一解析（唯一入口）
      errs = validate(m)
-     if errs: raise ManifestInvalid(errs)   # 不静默、不补默认值
+     if errs: raise ManifestInvalid(errs, carrier)   # 不静默、不补默认值
      ```
-  3. `feishu` 载体：飞书文件消息落到 `inbox/<msg_id>.json`，处理完移到 `inbox/.done/`，**同一 `msg_id` 二次出现直接跳过**（防重放，复用 L1 指纹）
-  4. `--selftest`：内置一份最小样例，把三条通路各跑一次，断言产出的 manifest 字节级一致
+  3. `feishu` 载体：飞书文件消息落到 `inbox/<msg_id>.json`，处理完移到 `inbox/.done/<msg_id>.json`，**同一 `msg_id` 二次出现直接跳过**（防重放）
+  4. `--selftest`：内置最小样例，三通路各跑一次，断言 `canonical()`（键排序+紧凑分隔符）**字节级一致**，并额外断言「重放被拦」「非法物料被拒」
+  5. `msg_id` 属载体元数据，产出前从 raw 中剥离，保证三载体结构严格一致
 - **验收**：
   ```bash
   printf '{"title":"投料自检","source_url":"https://example.com/x"}' > /tmp/min.json
@@ -905,62 +905,71 @@ for k,v in d['providers'].items():
   python3 -m src.pipeline.intake --selftest; echo "C3=$?"
   ```
 - **预期输出**：`C1=0` / `C2=0` / `C3=0`，且 selftest 打印 `IDENTICAL True`（三载体产出等价）
+- **实测输出（2026-11-09）**：`C1=0` / `C2=0` / `C3=0` ✅
+  ```
+  cli     : /tmp/min.json → 57 bytes
+  stdin   : stdin        → 57 bytes
+  feishu  : .../msg_001.json → 57 bytes (msg_id=msg_001)
+  IDENTICAL True   REPLAY_BLOCKED True   INVALID_REJECTED True   SELFTEST PASS
+  ```
+  feishu 载体端到端：首轮 `--material feishu --inbox /tmp/inbox_t` → `DRY RUN OK / EXIT=0`，文件移入 `.done/`；把同一文件再放回去重放 → `EXIT=2`（无未处理物料，不重复出片）
 - **回滚**：`rm src/pipeline/intake.py && git checkout src/pipeline/runner.py`
 - **不做**：不为任一载体开后门式字段补全（缺字段一律 `ManifestInvalid`）
 
 #### T1.9 配置面收敛（v1.3 新增，G-B）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T1.1（`pipeline.yaml`）、T1.3（runner 启动流程）
 - **缺口来源**：§1.7 **G-B** —— 12 个 `.env` 键里 `REMOTION_DIR` **零引用**（死键）；`FEISHU_APP_ID`(2)/`FEISHU_APP_SECRET`(2)/`FEISHU_APPROVAL_CHAT_ID`(8)/`SQLITE_DB_PATH`(3) 被代码读取却**未在 `pipeline.yaml` 声明**；且**无 fail-fast**
-- **改动**：新增 `.env.example`、`src/pipeline/config.py`（新增，约 120 行）、`pipeline.yaml`（`providers.feishu` / `providers.db` 段）、`.gitignore`
-- **执行**：
-  1. 生成 `.env.example`：键集合 = 代码实读键集合（C1），值留空并加注释
-  2. 补声明：
-     ```yaml
-     providers:
-       feishu:
-         kind: saas
-         env: {app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET, approval_chat_id: FEISHU_APPROVAL_CHAT_ID}
-         profile: {timeout_sec: 30}
-       db:
-         kind: storage
-         env: {path: SQLITE_DB_PATH}
-         profile: {timeout_sec: 5}
-     ```
-  3. 死键处置（C3）：`REMOTION_DIR` 二选一 —— 若渲染层需要可配目录则接线到 `providers.renderer.env`，否则**从 `.env` 与 `.env.example` 一并删除**
-  4. fail-fast（C4）：`config.load_required()` 在 runner 第 0 步校验必填键，缺失即
-     ```python
-     raise MissingConfig(missing_keys, code=78)   # EXIT_MISSING_CONFIG
-     ```
-  5. 掩码（C5）：`*_KEY` / `*_SECRET` 在日志与异常中输出为 `ab****yz`
+- **改动**：新增 `.env.example`、`src/pipeline/config.py`（约 220 行）、`scripts/audit_config.py`；`pipeline.yaml`（`config_binding.required_env` / `optional_env`）；`.env`（删除死键）
+- **执行**（全部落地）：
+  1. `.env.example`：键集合 = 代码实读键集合，分「必填 8 / 可选 9」两段并逐条注释；**不含 `REMOTION_DIR`**
+  2. 补声明：`providers.feishu`（`app_id`/`app_secret`/`approval_chat_id`）+ `providers.db`（`path`）在 T1.1 已声明；本次在 `config_binding` 增加 `required_env`（8 键）与 `optional_env`（9 键），使「声明即生效」可被机器判定
+  3. 死键处置：`REMOTION_DIR` 全仓 `.py` 零引用 → **已从 `.env` 删除**（备份 `.env.bak.t19`），`.env.example` 不再出现
+  4. fail-fast：`config.load_required(cfg)` 作为 runner **第 0 步**（在契约/自检之前），缺失即 `MissingConfig` → `EXIT=78` 并打印 `missing: KEY1, KEY2`
+  5. 掩码：`*_KEY`/`*_SECRET`/`*_TOKEN`/`*_PASSWORD`/`*_COOKIE`/`*_CT0` 输出为 `ab****yz`
+  6. 巡检工具 `scripts/audit_config.py`：三面比对（代码实读 / pipeline 声明 / `.env` 实际），输出 `DEADKEY / UNDECLARED / MISSING_REQUIRED`
 - **验收**：
   ```bash
-  # 死键检查
-  grep -rn "REMOTION_DIR" --include=*.py src scripts | wc -l      # 期望 0（或已接线）
-  # 全键声明检查
-  python3 scripts/audit_config.py            # 新增小工具，EXPECT: UNDECLARED=0 DEADKEY=0
-  # fail-fast 检查
+  grep -rn "REMOTION_DIR" --include=*.py src scripts | wc -l      # 期望 0
+  python3 scripts/audit_config.py                                 # EXPECT: DEADKEY=0 UNDECLARED=0
   env -u LLM_API_KEY python3 -m src.pipeline.runner --material /tmp/min.json --dry-run; echo "EXIT=$?"
   ```
-- **预期输出**：`DEADKEY=0 UNDECLARED=0`；未设 `LLM_API_KEY` 时立即退出并打印 `missing: LLM_API_KEY`，`EXIT=78`（**不是**跑到第 3 步才炸）
-- **回滚**：`rm .env.example src/pipeline/config.py && git checkout pipeline.yaml`
+- **预期输出**：`0` / `DEADKEY=0 UNDECLARED=0`；未设 `LLM_API_KEY` 时立即 `EXIT=78`（**不是**跑到第 3 步才炸）
+- **实测输出（2026-11-09）**：
+  - `grep REMOTION_DIR → 0` ✅
+  - `audit_config`：声明 17 键（必填 8 / 可选 9）、`.env` 11 键、代码实读 10 键，`DEADKEY=0 UNDECLARED=0 MISSING_REQUIRED=0`，`EXIT=0` ✅
+  - fail-fast：`EXIT=78` + `missing: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL_FAST, LLM_MODEL_MAIN, SQLITE_DB_PATH, TTS_RATE, TTS_VOICE_NEWS, TTS_VOICE_TECH`，**一行未跑即退出** ✅
+- **⚠️ 验收命令的一处必要修正**：单纯 `env -u LLM_API_KEY` **测不出**缺键 —— `.env` 文件会把该键重新补回环境。为此新增 `AUTOCONTENT_ENV_FILE` 覆盖变量，验收改为：
+  ```bash
+  env -u LLM_API_KEY AUTOCONTENT_ENV_FILE=/dev/null python3 -m src.pipeline.runner --material /tmp/min.json --dry-run; echo "EXIT=$?"   # → 78
+  ```
+  这是"用 /dev/null 当空白 env 文件"的真实模拟，比原命令更严格。
+- **回滚**：`rm .env.example src/pipeline/config.py scripts/audit_config.py && git checkout pipeline.yaml && cp .env.bak.t19 .env`
 - **禁止**：不得用 `os.getenv(k, "默认值")` 掩盖缺失 —— 默认值只允许出现在非敏感、非必填键上
 
 #### GATE-1 · 声明层与模型契约验收
-- **状态**：⬜ PENDING
-- **准入条件**：T1.1–T1.9 全部 `✅`
-- **验收命令**：
+- **状态**：✅ **PASS**（2026-11-09）
+- **准入条件**：T1.1–T1.9 全部 `✅`（已全部满足：9/9）
+- **验收命令**（建议直接跑封装脚本）：
   ```bash
-  python3 scripts/bootstrap.py --dry-run && \
-  python3 -m src.pipeline.runner --material /dev/null --dry-run && \
-  python3 -c "from src.pipeline.contracts import load_pipeline,validate_structure as v;c=load_pipeline('pipeline.yaml');assert not v(c);print('STRUCT OK')" && \
-  python3 scripts/model_switch_check.py --dry-run && \
-  python3 -c "import json;s=json.load(open('manifest.schema.json'));print('MANIFEST OK',len(s['required']))" && \
-  python3 -m src.pipeline.intake --selftest && \
-  python3 scripts/audit_config.py && \
-  echo "GATE-1 PASS"
+  bash scripts/gate1.sh; echo "GATE-1 EXIT=$?"
   ```
-- **预期输出**：`DRY RUN OK` / `STRUCT OK` / `MANIFEST OK 3` / `IDENTICAL True` / `DEADKEY=0 UNDECLARED=0` / `GATE-1 PASS`
+  等价于原链路：bootstrap → runner 干跑 → 契约结构 → model_switch 自检 → manifest 契约 → intake selftest → audit_config
+- **实测输出（2026-11-09）**：
+  ```
+  ✅ bootstrap 运行时自举    BOOTSTRAP: 20/20 PASS
+  ✅ runner 干跑             DRY RUN OK
+  ✅ 契约结构校验            STRUCT OK
+  ✅ 模型切换自检            DRY RUN OK（未发起任何真实请求）
+  ✅ 物料契约                MANIFEST OK required=1 anyOf=2
+  ✅ 投料通道自检            SELFTEST PASS
+  ✅ 配置面巡检              结论：配置面干净 —— 无死键、无未声明、必填齐全
+
+  GATE-1 PASS
+  GATE-1 EXIT=0
+  ```
+- **⚠️ 预期输出修正**：原写 `MANIFEST OK 3` 有误 —— `required` 只有 `title` 共 **1** 项，另两条约束（body / source_url）在 `anyOf` 里，`anyOf` 有 **2** 个分支。已改为打印 `required=1 anyOf=2`，避免后人拿错误数字对不上。
+- **新增固化脚本**：`scripts/gate1.sh`（一次失败即汇总退出非零），GATE-1 从此不必手抄命令链
 - **不通过处理**：退回对应任务，禁止进入 P2
 
 ---
@@ -1554,6 +1563,25 @@ contract:
     approval_modes: [feishu, cli, auto]
     fail_fast_missing: true              # v1.3（T1.9）：必填键缺失启动即退出
     exit_code_missing: 78
+    required_env:                        # v1.3（T1.9）：runner 第 0 步校验，缺一即拒跑
+      - LLM_BASE_URL
+      - LLM_API_KEY
+      - LLM_MODEL_MAIN
+      - LLM_MODEL_FAST
+      - TTS_VOICE_TECH
+      - TTS_VOICE_NEWS
+      - TTS_RATE
+      - SQLITE_DB_PATH
+    optional_env:                        # v1.3（T1.9）：只在对应分支需要，缺失不阻断
+      - FEISHU_APP_ID
+      - FEISHU_APP_SECRET
+      - FEISHU_APPROVAL_CHAT_ID
+      - XHS_PROBE_PROXY
+      - XHS_PROBE_COOKIE
+      - TWITTER_PROXY
+      - TWITTER_CT0
+      - TWITTER_AUTH_TOKEN
+      - FEISHU_DEFAULT_CHAT_ID
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py
     enforce_on_start: true

@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.pipeline.config import MissingConfig, load_required
 from src.pipeline.contracts import (
     ContractError,
     assert_no_model_literal,
@@ -38,6 +39,7 @@ from src.pipeline.contracts import (
     validate_structure,
     verify_produces,
 )
+from src.pipeline.intake import ManifestInvalid, acquire, detect_carrier
 from src.pipeline.manifest import load_manifest, validate
 
 PROJ = Path(__file__).resolve().parent.parent.parent
@@ -274,36 +276,29 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
 
 # ------------------------------------------------------------------ 入口
 
-def _read_material(path: str) -> dict[str, Any] | None:
-    """dry-run 场景允许 /dev/null 或 -（无物料）。
+def _read_material(path: str, inbox: str | None = None) -> dict[str, Any] | None:
+    """统一投料入口（T1.8）：cli 路径 / stdin / feishu 三载体共用一份 schema。
 
-    物料合法性由 T1.7 的 manifest 契约判定：不符合 `manifest.schema.json` 直接拒绝，
-    不进入后续步骤（禁止让模型凭空编造事实）。
+    `/dev/null` 仅用于「无物料干跑」。校验不通过直接 `ContractError` → EXIT=2，
+    不做任何载体级字段补全。
     """
     if path in ("NUL",) or path == "/dev/null":
         return None
-    if path == "-":
-        raw = json.load(sys.stdin)
-        data = load_manifest(raw)
-    else:
-        p = Path(path)
-        if not p.exists():
-            raise ContractError(f"物料文件不存在: {p}")
-        try:
-            data = load_manifest(p)
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise ContractError(f"物料无法解析: {exc}") from exc
-
-    errors = validate(data)
-    if errors:
-        raise ContractError("物料不符合 manifest.schema.json：\n  - " + "\n  - ".join(errors))
-    return data.raw
+    try:
+        got = acquire(path, inbox=inbox)
+    except ManifestInvalid as exc:
+        raise ContractError(str(exc)) from exc
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        raise ContractError(f"取物料失败（carrier={detect_carrier(path)}）: {exc}") from exc
+    return got.raw
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="AutoContent Pipeline 薄 Runner（T1.3）")
     ap.add_argument("--pipeline", default="pipeline.yaml", help="声明文件路径")
-    ap.add_argument("--material", required=True, help="物料路径；- 表示 stdin；/dev/null 表示无物料（dry-run）")
+    ap.add_argument("--material", required=True,
+                    help="物料：路径 / -（stdin） / feishu（轮询投料箱） / /dev/null（干跑无物料）")
+    ap.add_argument("--inbox", default=None, help="feishu 投料箱目录（默认 <项目>/inbox）")
     ap.add_argument("--account", default=None, help="目标账号，覆盖 inputs.account.default")
     ap.add_argument("--dry-run", action="store_true", help="只校验与打印计划，不调用任何模型、不写库")
     ap.add_argument("--run-id", default=None, help="指定 run_id（默认按时间生成）")
@@ -311,12 +306,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", default=str(DEFAULT_DB), help="状态库路径")
     args = ap.parse_args(argv)
 
-    # 1. 契约校验
+    # 加载声明文件
     try:
         cfg = load_pipeline(args.pipeline)
     except ContractError as exc:
         print(f"[contract] {exc}", file=sys.stderr)
         return EXIT_CONTRACT
+
+    # 0. 配置 fail-fast（T1.9 / G-B）：必填 env 缺失立即退出 78，绝不跑到第 3 步才炸
+    print("=== 配置校验 ===")
+    try:
+        load_required(cfg)
+        print("  必填键: 齐全")
+    except MissingConfig as exc:
+        print(f"  missing: {', '.join(exc.missing)}", file=sys.stderr)
+        print(f"  参考 .env.example 补齐后重试（EXIT={exc.code}）", file=sys.stderr)
+        return exc.code
 
     print("=== 契约校验 ===")
     errors = validate_structure(cfg)
@@ -345,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3. 物料与运行上下文
     try:
-        material = _read_material(args.material)
+        material = _read_material(args.material, args.inbox)
     except ContractError as exc:
         print(f"[material] {exc}", file=sys.stderr)
         return EXIT_CONTRACT

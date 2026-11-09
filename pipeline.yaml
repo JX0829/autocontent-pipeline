@@ -39,6 +39,25 @@ contract:
     approval_modes: [feishu, cli, auto]
     fail_fast_missing: true              # v1.3（T1.9）：必填键缺失启动即退出
     exit_code_missing: 78
+    required_env:                        # v1.3（T1.9）：runner 第 0 步校验，缺一即拒跑
+      - LLM_BASE_URL
+      - LLM_API_KEY
+      - LLM_MODEL_MAIN
+      - LLM_MODEL_FAST
+      - TTS_VOICE_TECH
+      - TTS_VOICE_NEWS
+      - TTS_RATE
+      - SQLITE_DB_PATH
+    optional_env:                        # v1.3（T1.9）：只在对应分支需要，缺失不阻断
+      - FEISHU_APP_ID
+      - FEISHU_APP_SECRET
+      - FEISHU_APPROVAL_CHAT_ID
+      - XHS_PROBE_PROXY
+      - XHS_PROBE_COOKIE
+      - TWITTER_PROXY
+      - TWITTER_CT0
+      - TWITTER_AUTH_TOKEN
+      - FEISHU_DEFAULT_CHAT_ID
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py
     enforce_on_start: true
