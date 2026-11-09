@@ -4,7 +4,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-# 后台/非交互 shell 的 python3 常解析到无项目依赖的 conda 解释器，
+# 后台/非交互 shell 的 "$PY" 常解析到无项目依赖的 conda 解释器，
 # 显式指定带依赖的解释器（可用 PYTHON=... 覆盖）。
 PY="${PYTHON:-/opt/homebrew/opt/python@3.14/bin/python3.14}"
 if ! "$PY" -c "import openai, edge_tts, lark_oapi" >/dev/null 2>&1; then

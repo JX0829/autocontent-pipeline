@@ -11,6 +11,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${PYTHON:-/opt/homebrew/opt/python@3.14/bin/python3.14}"
+export PYTHON="$PY"   # 传给 gate1/2/3.sh：它们默认 python3，后台可能是缺依赖的 conda
 MODE="normal"
 case "${1:-}" in
   --full) MODE="full" ;;

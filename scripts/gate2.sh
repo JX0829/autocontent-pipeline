@@ -9,6 +9,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# 统一解释器：后台/CI 的 "$PY" 可能是缺依赖的 conda，必须可覆盖
+PY="${PYTHON:-python3}"
+
 fail=0
 TMP=$(mktemp -d)
 DB="$TMP/gate2.db"
@@ -17,7 +20,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo "=== GATE-2 · 台账幂等验收 ==="
 
 # 1) DB 层：同一 dedupe_key 连claim 3 次
-OUT=$(SQLITE_DB_PATH="$DB" python3 - "$DB" <<'PY'
+OUT=$(SQLITE_DB_PATH="$DB" "$PY" - "$DB" <<'PY'
 import sys
 from src.db import PipelineDB
 db = PipelineDB(sys.argv[1])
@@ -39,7 +42,7 @@ else
 fi
 
 # 2) hook 层：同一 payload 连投两次 → ok=true 然后 already_sent
-HK=$(TMPDIR_WORK="$TMP" AUTOCONTENT_DATA_DIR="$TMP/data" SQLITE_DB_PATH="$DB" python3 - <<'PY'
+HK=$(TMPDIR_WORK="$TMP" AUTOCONTENT_DATA_DIR="$TMP/data" SQLITE_DB_PATH="$DB" "$PY" - <<'PY'
 import json, os, subprocess, sys
 from pathlib import Path
 tmp = Path(os.environ["TMPDIR_WORK"])
@@ -74,7 +77,7 @@ print(json.dumps({"first": a.get("ok"), "second": b.get("ok"),
                   "rows_before": r0, "rows_after": r1}, ensure_ascii=False))
 PY
 )
-FIRST=$(echo "$HK" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['first'],d['second'],d['rows_before'],d['rows_after'])" 2>/dev/null)
+FIRST=$(echo "$HK" | "$PY" -c "import json,sys;d=json.load(sys.stdin);print(d['first'],d['second'],d['rows_before'],d['rows_after'])" 2>/dev/null)
 if [ "$FIRST" = "True True -1 -1" ] || [ "$FIRST" = "True True 0 0" ]; then
   printf '  ✅ %-26s 只读预检不落行（幂等由 claim_send_slot 保证）\n' "hook 二次投递"
 else
@@ -83,16 +86,16 @@ else
 fi
 
 # 3) 静默失败扫描（T2.5）：只报新增
-if python3 scripts/audit_silent_failure.py --json >/dev/null 2>&1; then
+if "$PY" scripts/audit_silent_failure.py --json >/dev/null 2>&1; then
   printf '  ✅ %-26s 新增违例 0\n' "静默失败扫描"
 else
   printf '  ❌ %-26s 存在新增静默失败反模式\n' "静默失败扫描"
-  python3 scripts/audit_silent_failure.py | tail -5 | sed 's/^/       /'
+  "$PY" scripts/audit_silent_failure.py | tail -5 | sed 's/^/       /'
   fail=1
 fi
 
 # 4) hook 引擎自检（T2.1–T2.6 全部 hook）
-if python3 -m src.pipeline.hooks --selftest >/dev/null 2>&1; then
+if "$PY" -m src.pipeline.hooks --selftest >/dev/null 2>&1; then
   printf '  ✅ %-26s SELFTEST PASS\n' "hook 引擎自检"
 else
   printf '  ❌ %-26s 自检失败\n' "hook 引擎自检"

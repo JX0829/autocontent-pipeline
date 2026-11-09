@@ -59,8 +59,6 @@ contract:
       - APPROVAL_ALLOWED_USERS           # 逗号分隔 open_id，限定谁能批（缺省不限）
       # T4.7 出片/发片解耦：publish（默认）| output_only（只出片不发片）
       - DISPATCH_MODE
-      - XHS_PROBE_PROXY
-      - XHS_PROBE_COOKIE
       - TWITTER_PROXY
       - TWITTER_CT0
       - TWITTER_AUTH_TOKEN

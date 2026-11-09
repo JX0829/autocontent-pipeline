@@ -51,9 +51,7 @@ def get_platform_policy(platform: str) -> Dict[str, Any]:
     """
     policies = load_platform_policies()
     norm_platform = (platform or "").lower().strip()
-    if norm_platform in ["xhs", "xiaohongshu", "red"]:
-        key = "xiaohongshu"
-    elif norm_platform in ["douyin", "dy", "tiktok"]:
+    if norm_platform in ["douyin", "dy", "tiktok"]:
         key = "douyin"
     else:
         key = norm_platform
@@ -64,10 +62,9 @@ def get_platform_policy(platform: str) -> Dict[str, Any]:
     return policy
 
 
-def get_footer_callout(platform: str = "xiaohongshu") -> str:
+def get_footer_callout(platform: str = "douyin") -> str:
     """
     获取对应平台在短视频分镜与封面底部的引导语
-    - 小红书：'💡 欢迎评论区交流'
     - 抖音：'💡 评论区AI回复，欢迎交流'
     """
     policy = get_platform_policy(platform)
@@ -75,7 +72,7 @@ def get_footer_callout(platform: str = "xiaohongshu") -> str:
     return text_policy.get("footer_callout", "💡 欢迎评论区交流")
 
 
-def get_seed_comment_hook(platform: str = "xiaohongshu") -> str:
+def get_seed_comment_hook(platform: str = "douyin") -> str:
     """
     获取对应平台在首评或置顶评论中的引流引导语
     """

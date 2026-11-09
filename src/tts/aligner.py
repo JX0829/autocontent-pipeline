@@ -200,7 +200,7 @@ class TTSAligner:
             cover_sub_text=draft.cover_sub_text,
             resource_keyword=draft.resource_keyword,
             bgm_src="sfx/bgm_loop.wav",
-            footer_callout=get_footer_callout(getattr(draft, "target_account_type", "xiaohongshu")),
+            footer_callout=get_footer_callout(getattr(draft, "target_account_type", "douyin")),
             scenes=aligned_scenes
         )
 

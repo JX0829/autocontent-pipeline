@@ -14,7 +14,7 @@ class SceneItemDraft(BaseModel):
 class DraftScriptPayload(BaseModel):
     theme: Literal["tech-github", "ai-product", "breaking-news"]
     entity_key: str
-    title: str = Field(..., max_length=20, description="小红书/抖音双列瀑布流极客标题，严格限制在20字以内")
+    title: str = Field(..., max_length=20, description="抖音/视频号双列瀑布流极客标题，严格限制在20字以内")
     cover_main_text: str = Field(..., max_length=20)
     cover_sub_text: str = Field(..., max_length=30)
     hook_narration: str = Field(..., max_length=50)

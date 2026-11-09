@@ -97,35 +97,16 @@ def fetch_x_trending(query: str = "AI OR LLM OR OpenSource", max_count: int = 5,
         return []
 
 def fetch_social_trends(
-    xhs_keywords: str = "AI开源,大模型",
     x_query: str = "AI OR Agent OR OpenSource",
     max_per_platform: int = 3
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
-    统一获取多平台社交热点
-    :return: {"xhs": [...], "twitter": [...]}
+    统一获取社交热点（2026-11-09：小红书已下线，仅保留 X/Twitter）
+    :return: {"twitter": [...]}
     """
-    result: Dict[str, List[Dict[str, Any]]] = {
-        "xhs": [],
-        "twitter": []
-    }
+    result: Dict[str, List[Dict[str, Any]]] = {"twitter": []}
 
-    # 1. 抓取 MediaCrawler 小红书/国内热点
-    try:
-        from src.crawlers.mediacrawler_adapter import search_media_trending, is_mediacrawler_available
-        if is_mediacrawler_available():
-            # 遵守避险策略，轻量只读搜索（设置 8s 极简熔断）
-            notes = search_media_trending(
-                platform="xhs",
-                keywords=xhs_keywords,
-                max_count=max_per_platform,
-                timeout_sec=8
-            )
-            result["xhs"] = notes
-    except Exception as e:
-        logger.warning(f"MediaCrawler fetch failed: {e}")
-
-    # 2. 抓取 X (Twitter) 推文
+    # 抓取 X (Twitter) 推文
     try:
         tweets = fetch_x_trending(query=x_query, max_count=max_per_platform, timeout_sec=5)
         result["twitter"] = tweets

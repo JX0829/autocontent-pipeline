@@ -107,7 +107,7 @@ class FeishuCardBuilder:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": "🚀 **动态多平台分发矩阵**: `📺 B站(私密草稿)` · `📲 微信视频号(公开分发)` · `📕 小红书(手机文案提取)`"
+                    "content": "🚀 **动态多平台分发矩阵**: `📺 B站(私密草稿)` · `📲 微信视频号(公开分发)`"
                 }
             })
             elements.append({

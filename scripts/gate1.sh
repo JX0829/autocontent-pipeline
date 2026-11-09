@@ -6,6 +6,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# 统一解释器：后台/CI 的 "$PY" 可能是缺依赖的 conda，必须可覆盖
+PY="${PYTHON:-python3}"
+
 fail=0
 run() {
   local label="$1"; shift
@@ -20,14 +23,14 @@ run() {
 }
 
 echo "=== GATE-1 · 声明层与模型契约验收 ==="
-run "bootstrap 运行时自举"   python3 scripts/bootstrap.py --dry-run --quiet
-run "runner 干跑"            python3 -m src.pipeline.runner --material /dev/null --dry-run
-run "契约结构校验"           python3 -c "from src.pipeline.contracts import load_pipeline,validate_structure as v;c=load_pipeline('pipeline.yaml');assert not v(c);print('STRUCT OK')"
-run "模型切换自检"           python3 scripts/model_switch_check.py --dry-run
-run "物料契约"               python3 -c "import json;s=json.load(open('manifest.schema.json'));assert s.get('anyOf');print('MANIFEST OK required=%d anyOf=%d' % (len(s['required']), len(s['anyOf'])))"
-run "投料通道自检"           python3 -m src.pipeline.intake --selftest
-run "hook 引擎自检"          python3 -m src.pipeline.hooks --selftest
-run "配置面巡检"             python3 scripts/audit_config.py
+run "bootstrap 运行时自举"   "$PY" scripts/bootstrap.py --dry-run --quiet
+run "runner 干跑"            "$PY" -m src.pipeline.runner --material /dev/null --dry-run
+run "契约结构校验"           "$PY" -c "from src.pipeline.contracts import load_pipeline,validate_structure as v;c=load_pipeline('pipeline.yaml');assert not v(c);print('STRUCT OK')"
+run "模型切换自检"           "$PY" scripts/model_switch_check.py --dry-run
+run "物料契约"               "$PY" -c "import json;s=json.load(open('manifest.schema.json'));assert s.get('anyOf');print('MANIFEST OK required=%d anyOf=%d' % (len(s['required']), len(s['anyOf'])))"
+run "投料通道自检"           "$PY" -m src.pipeline.intake --selftest
+run "hook 引擎自检"          "$PY" -m src.pipeline.hooks --selftest
+run "配置面巡检"             "$PY" scripts/audit_config.py
 
 echo
 if [ "$fail" -eq 0 ]; then

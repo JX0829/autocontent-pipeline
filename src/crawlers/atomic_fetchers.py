@@ -868,59 +868,6 @@ def fetch_github_ai_topics(
     return items
 
 # ─────────────────────────────────────────────────────────────
-# 9. 小红书极客与开发者垂直玩法原子抓取函数
-# ─────────────────────────────────────────────────────────────
-
-def fetch_xiaohongshu_tech(
-    query: str = "AI智能体 OR 大模型架构 OR 开源AI",
-    limit: int = 5,
-    timeout_sec: int = 10
-) -> List[Dict[str, Any]]:
-    """
-    单一信源原子函数：基于 agent-reach opencli 检索小红书前沿技术与开发玩法笔记
-    """
-    items: List[Dict[str, Any]] = []
-    agent_reach_bin = "/Users/a1/.local/bin/agent-reach"
-    if not os.path.exists(agent_reach_bin):
-        return items
-
-    cmd = [agent_reach_bin, "xiaohongshu", "search", query, "--limit", str(limit)]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
-        if res.returncode == 0 and res.stdout.strip():
-            data = json.loads(res.stdout)
-            for it in data.get("items", []):
-                title = it.get("title") or "小红书开发者前沿笔记"
-                url = it.get("url") or ""
-                author = it.get("author") or "小红书极客"
-                pub_at = it.get("published_at") or "今日热点"
-                raw = it.get("raw") or {}
-                
-                # 提取唯一的 note_id 作为去重指纹
-                note_id = ""
-                if "search_result/" in url:
-                    note_id = url.split("search_result/")[1].split("?")[0]
-                elif "discovery/item/" in url:
-                    note_id = url.split("discovery/item/")[1].split("?")[0]
-                else:
-                    note_id = hashlib.md5(url.encode()).hexdigest()[:12]
-
-                items.append({
-                    "title": f"前沿笔记: {title}",
-                    "desc": f"小红书创作者 @{author} 发布的最新 AI 实践与开发者技术探讨",
-                    "url": url,
-                    "source": "xiaohongshu",
-                    "author": author,
-                    "published_at": pub_at,
-                    "badge": "小红书 · 极客",
-                    "unique_id": f"xhs_{note_id}",
-                    "raw": raw
-                })
-    except Exception as e:
-        print(f"[Warning: Xiaohongshu fetch failed]: {e}", file=sys.stderr)
-    return items[:limit]
-
-# ─────────────────────────────────────────────────────────────
 # 10. Twitter (X) 全球 AI 领袖一手动态原子抓取函数
 # ─────────────────────────────────────────────────────────────
 
@@ -940,9 +887,24 @@ def fetch_twitter_x_tech(
     cmd = [agent_reach_bin, "twitter", "search", query, "--limit", str(limit)]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
-        if res.returncode == 0 and res.stdout.strip():
-            data = json.loads(res.stdout)
-            for it in data.get("items", []):
+        if res.returncode != 0:
+            print(f"[ERROR: Twitter fetch exit={res.returncode}] "
+                  f"{(res.stderr or res.stdout or '')[:300]}", file=sys.stderr)
+            return items
+        if not res.stdout.strip():
+            print("[ERROR: Twitter fetch returned empty stdout]", file=sys.stderr)
+            return items
+        data = json.loads(res.stdout)
+        # 🚨 agent-reach 在 backend 不可用时返回 returncode=0 + ok=false + items=[]，
+        #    旧逻辑静默返回空列表，导致 Section 1 长期消失且无任何日志。
+        if data.get("ok") is False:
+            _err = data.get("error") or {}
+            _attempts = (data.get("meta") or {}).get("attempts") or []
+            print(f"[ERROR: Twitter backend unavailable] code={_err.get('code')} "
+                  f"msg={_err.get('message')} attempts={json.dumps(_attempts, ensure_ascii=False)[:300]}",
+                  file=sys.stderr)
+            return items
+        for it in data.get("items", []):
                 text_content = it.get("text") or it.get("title") or ""
                 url = it.get("url") or ""
                 author = it.get("author") or "AI Researcher"
@@ -970,7 +932,10 @@ def fetch_twitter_x_tech(
                     "raw": it
                 })
     except Exception as e:
-        print(f"[Warning: Twitter fetch failed]: {e}", file=sys.stderr)
+        print(f"[ERROR: Twitter fetch failed]: {type(e).__name__}: {e}", file=sys.stderr)
+    if not items:
+        print("[WARN: Twitter/Section 1 本轮抓取 0 条 —— 请检查 9222 端口占用与 opencli 登录态]",
+              file=sys.stderr)
     return items[:limit]
 
 

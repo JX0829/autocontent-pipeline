@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """hook.title_length_guard（gate, warn）—— 标题长度护栏。
 
-平台硬上限不同（小红书 20 / 抖音 30），按 context.platform 取策略；
+平台硬上限不同（抖音 30 / B站 40），按 context.platform 取策略；
 超限只 warn（`on_fail: warn`），不阻断出片，但必须留可观测记录。
 """
 import sys
@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
 
 DEFAULT_MAX = 30
-PLATFORM_MAX = {"xiaohongshu": 20, "douyin": 30, "bilibili": 40, "wechat": 30}
+PLATFORM_MAX = {"douyin": 30, "bilibili": 40, "wechat": 30}
 
 
 def main() -> None:

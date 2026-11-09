@@ -15,8 +15,6 @@
     "scripts/hooks/silence_guard.py::swallow_exception::4c4d217300#1",
     "scripts/landscape_guard.py::swallow_exception::e6d06af814#1",
     "scripts/poll_douyin_comments.py::swallow_exception::e6d06af814#1",
-    "scripts/poll_xhs_comments.py::swallow_exception::e6d06af814#1",
-    "scripts/xhs_cdp_login.py::swallow_exception::e6d06af814#1",
     "src/crawlers/atomic_fetchers.py::swallow_exception::e6d06af814#1",
     "src/crawlers/atomic_fetchers.py::swallow_exception::e6d06af814#2",
     "src/crawlers/atomic_fetchers.py::swallow_exception::e6d06af814#3",
@@ -34,9 +32,6 @@
     "src/pipeline/hooks.py::swallow_exception::4c4d217300#1",
     "src/pipeline/runner.py::swallow_exception::e6d06af814#1",
     "src/providers/douyin.py::swallow_exception::e6d06af814#1",
-    "src/providers/xiaohongshu_cdp.py::swallow_exception::e6d06af814#1",
-    "src/providers/xiaohongshu_cdp.py::swallow_exception::e6d06af814#2",
-    "src/providers/xiaohongshu_cdp.py::swallow_exception::e6d06af814#3",
     "src/templates_manager.py::swallow_exception::e6d06af814#1",
     "src/templates_manager.py::swallow_exception::e6d06af814#2"
   ]
