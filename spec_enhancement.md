@@ -208,9 +208,9 @@
 
 | 阶段 | 任务 | 状态 | 完成时间 | Commit | 备注 |
 |---|---|---|---|---|---|
-| P0 | T0.1 基线快照与分支隔离 | ⬜ PENDING | — | — | 阻塞全部后续任务 |
-| P0 | T0.2 模型调用点与环境盘点 | ⬜ PENDING | — | — | QA#4；产出 model_inventory.md |
-| P0 | T0.3 工作区卫生与提交边界 | ⬜ PENDING | — | — | **v1.2 新增；小品改动入主线的边界** |
+| P0 | T0.1 基线快照与分支隔离 | ✅ DONE | 2026-11-09 | 待回填 | 分支 `feat/pipeline-spec-enhancement`；baseline `163\|163` + `179` |
+| P0 | T0.2 模型调用点与环境盘点 | ✅ DONE | 2026-11-09 | 待回填 | QA#4；产出 `model_inventory.md`（4 调用点/网关 2 模型/7 job） |
+| P0 | T0.3 工作区卫生与提交边界 | ✅ DONE | 2026-11-09 | 待回填 | 条目 12 → 6；`_deprecated/` 归档 5 个一次性脚本 |
 | P0 | T0.4 运行时自举 | ✅ DONE | 2026-11-09 | `2b40da1` | **v1.3 新增；G-A 阻断项已解除（system-fallback）** |
 | P1 | T1.1 落 pipeline.yaml | ⬜ PENDING | — | — | 依赖 T0.1 |
 | P1 | T1.2 契约校验器 | ⬜ PENDING | — | — | 依赖 T1.1 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P0 进行中，1/35 完成（T0.4 ✅；T0.1–T0.3 待做）。
+**当前进度**：P0 完成，4/35 完成（T0.1–T0.4 ✅），下一步 P1 · T1.1。
 
 ---
 
@@ -1355,6 +1355,18 @@ print(n('好用[捂脸R]')==n('好用'))                            # True 表�
 14. **（v1.3）不假设"首次渲染会自动下载浏览器"**（必须先 `bootstrap.py --ensure`，见 T0.4）
 15. **（v1.3）不为投料载体各写一套解析**（三载体共用 `manifest.schema.json`，见 T1.8）
 16. **（v1.3）不用 `os.getenv(k, "默认值")` 掩盖必填键缺失**（缺失即 `EXIT=78`，见 T1.9）
+
+### 6.1 提交边界（T0.3 固化，2026-11-09）
+
+| 类别 | 处置 | 是否入库 |
+|---|---|---|
+| 本次方案新增/修改的契约文件（`spec_enhancement.md`、`model_inventory.md`、`scripts/bootstrap.py`、`.gitignore`、`pipeline.yaml` 等） | 按任务单 commit 入库 | ✅ 是 |
+| 小品的核心修复（`landscape_guard.py` / `render_landscape.py` / `BilibiliLandscapeCover.tsx` / `run_publish_worker.py`） | **不单独提交**，由 T3.2 / T4.4 接管重做后随任务入库 | ⏳ 后置 |
+| 一次性救火脚本（5 个） | 移入 `scripts/_deprecated/` 并 `.gitignore` 忽略 | ❌ 否 |
+| 备份文件（`*.bak*` / `.backup/` / `.env.bak*`） | `.gitignore` 忽略，只留本地 | ❌ 否 |
+| 历史产物（`output/` / `renderer/public/tasks/`） | 测试驱动产物，保持忽略 | ❌ 否 |
+
+**执行铁律**：`git add` 必须**逐文件指名**，禁止 `git add -A` / `git add .`。
 
 ---
 
