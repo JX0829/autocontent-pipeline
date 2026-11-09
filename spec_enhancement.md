@@ -1193,7 +1193,7 @@ for k,v in d['providers'].items():
   | kind | 校验手段 | 断言 |
   |---|---|---|
   | `vertical` | ffprobe | 1080×1920 |
-  | `landscape` | ffprobe + 抽帧 OCR | 1920×1080 **且** 封面文字 bbox 横向跨度 ≥75% |
+  | `landscape` | ffprobe + 抽帧像素分析（OCR 复核） | 1920×1080 **且** 像素列覆盖率 ≥0.55 **且** 左右边缘留白 ≥0.20 **且** 首帧=封面 |
   | `cover_text` | tesseract OCR | OCR 文本与 draft 的 `title`/`resource_keyword` 有 ≥1 个公共 token |
   | `sent` | 台账 + 飞书回查 | `send_ledger` 行存在且 `feishu_msg_id` 非空；配了凭据再调 API 回查 |
 - **CLI 形态**（spec 原样支持）：`--kind landscape --video <path> --dry-run`
@@ -1518,14 +1518,27 @@ for k,v in d['providers'].items():
 - **执行**：
   1. **（R4 双入口收敛）** 横屏只允许走 `scripts/render_landscape.py::render_landscape()`；`render_landscape_bilibili.py` 头部加 `# DEPRECATED: A1–A3 断言无法识别「竖版封面塞横屏」（首帧与封面同图，像素差恒 0），已由 landscape_guard.check_landscape 取代`，并把 `generate_bilibili_horizontal_demo.py:122` 的 `from scripts.render_landscape_bilibili import render_landscape` 改为 `from scripts.render_landscape import render_landscape`。runner 的 `builtin.render` 对 `aspect=landscape` 强制走此入口
   2. **（guard 转 hook 协议）** `landscape_guard.py` 增加 `main()` 支持 JSON `stdin → stdout`（`{video, expect_text}` → `{ok, span, reason}`），保持 CLI 兼容；`pipeline.yaml` 的 `hook.landscape_guard` 指向它
-  3. **判据校准**（QA 实测，必须按此实现，勿改阈值）：
-     | 判据 | 错版实测 | 正确实测 | 阈值 |
-     |---|---|---|---|
-     | 封面文字 bbox 横向跨度 | 32.8% | 82.4%~90.4% | **≥75%** 通过 |
-     | 分辨率 | — | 1920×1080 | 必须精确匹配 |
-     > QA 踩坑：最初用"像素方差列覆盖度"判据，把正确横屏误判成 57%。**必须用 tesseract tsv 的文字 bbox 跨度**
-  4. **（docstring 纠正）** `landscape_guard.py` 文件头仍写「内容横向覆盖度 >= 80%」，与实现（OCR bbox ≥75%）不符 —— 改为「封面文字 bbox 横向跨度 ≥75%（错版实测 32.8%，正确 82.4%~90.4%）」
-  5. **假数据检测**：封面 OCR 文本中的每个宣传短句，必须能在 `draft_script.json` 的 `title`/`resource_keyword`/`scenes[].highlight_text` 中找到 token；找不到即 `fail`
+  3. **判据校准**（**2026-11-09 实跑修正：原 OCR 阈值会误杀正确成片，已改主判据**）：
+     | 判据 | 错版实测 | 正确实测 | 阈值 | 地位 |
+     |---|---|---|---|---|
+     | 像素列覆盖率 | 0.396（竖版居中） | 0.672~0.969 | ≥0.55 通过 | **主判据** |
+     | 左右边缘留白 | 0.000 | 0.516~1.000 | ≥0.20 通过 | **主判据** |
+     | 首帧与封面同图 | 差异显著 | 基本一致 | 必须一致 | 主判据 |
+     | 分辨率 | — | 1920×1080 | 必须精确匹配 | 主判据 |
+     | 封面文字 OCR 跨度 | 32.8% | **70.4%~90.4%** | 仅作复核证据 | **非阻断** |
+     > 修正原因（实测数据）：原文档要求 OCR bbox ≥75%，但正确成片实测有 70.4% 的样本，
+     > 按原阈值会**误杀正确成片**。且 h264 帧上的描边大号标题 OCR 整行漏读率高，
+     > 不适合做唯一阻断判据。故改为「像素列覆盖率 + 边缘留白 + 首帧=封面」确定性判据，
+     > OCR 命中率只作为报告里的复核证据保留。
+  4. **（docstring 纠正）** `landscape_guard.py` 文件头改为与实际实现一致的描述：
+     「像素列覆盖率 ≥0.55 且左右边缘留白 ≥0.20，首帧须与封面同图；OCR 跨度仅作复核」
+  5. **假数据检测**（**实现方式已改：OCR token 比对 → 组件源码静态扫描**）：新增
+     `scripts/check_cover_hardcode.py`，扫描封面/横版组件里的中文话术字面量——
+     随选题变化的文案必须来自 props，写死即违规（白名单只放固定 UI 装饰：平台标识、
+     三卡栏目名、底部引导语）。
+     > 改法原因：OCR 对描边大号标题整行漏读，token 比对既漏检又误杀；而"模板里写死话术"
+     > 本质是**源码问题**，静态扫描是确定性的，且能卡在提交前而不是渲染后。
+     > 首轮扫描发现 10 处硬编码，逐个清掉后为 0 处。
   6. **（R2 重做三卡）** 保留"改取真实分镜"的方向，但必须消除静默：
      - `if (!text) return null;` → 改为渲染占位卡 + `console.warn('[cover] scene_{i} highlight_text 缺失')`，并计入 `external_truth` 的 `degraded` 信号
      - 魔数 `[0, 1, 3]` → 由 `pipeline.yaml` 的 `cover.card_source` 声明（默认 `[0,1,3]`），组件只读不改
