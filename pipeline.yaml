@@ -57,6 +57,8 @@ contract:
       - TWITTER_PROXY
       - TWITTER_CT0
       - TWITTER_AUTH_TOKEN
+      - AUTOCONTENT_ENV_FILE
+      - AUTOCONTENT_DATA_DIR
       - FEISHU_DEFAULT_CHAT_ID
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py

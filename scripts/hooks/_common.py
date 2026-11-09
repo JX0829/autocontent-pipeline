@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""scripts/hooks/_common.py —— hook 公共工具（T2.1 协议）
+
+协议（spec_enhancement.md §5 T2.1）：
+    stdin  : {"task_id","run_root","step_id","artifacts":{...},"context":{...}}
+    stdout : {"ok": bool, "patch"?: object, "reason"?: string}
+
+约定：
+  · hook **永远 exit 0**，失败用 `ok=false` 表达（引擎据 ok 决定 gate/transform 行为）
+  · 缺文件/缺字段一律 `ok=false` + 可读 reason，绝不"猜一个值糊过去"
+  · 需要耗时/外部命令的 hook 自己做超时保护（引擎默认 30s 硬超时）
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, NoReturn
+
+PROJ = Path(__file__).resolve().parent.parent.parent
+
+
+# ------------------------------------------------------------------ 协议 IO
+
+def load_payload() -> dict[str, Any]:
+    try:
+        raw = sys.stdin.read()
+        return json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError as exc:
+        _emit({"ok": False, "reason": f"payload_not_json: {exc}"})
+        raise SystemExit(0)
+
+
+def _emit(obj: dict[str, Any]) -> None:
+    print(json.dumps(obj, ensure_ascii=False))
+    sys.stdout.flush()
+
+
+def emit(ok: bool, patch: dict[str, Any] | None = None, reason: str = "", **extra: Any) -> NoReturn:
+    out: dict[str, Any] = {"ok": bool(ok)}
+    if patch:
+        out["patch"] = patch
+    if reason:
+        out["reason"] = reason
+    out.update(extra)
+    _emit(out)
+    raise SystemExit(0)
+
+
+def fail(reason: str, **extra: Any) -> NoReturn:
+    emit(False, None, reason, **extra)
+
+
+# ------------------------------------------------------------------ 取值
+
+def ctx(payload: dict[str, Any]) -> dict[str, Any]:
+    return payload.get("context") or {}
+
+
+def arts(payload: dict[str, Any]) -> dict[str, Any]:
+    return payload.get("artifacts") or {}
+
+
+def run_root(payload: dict[str, Any]) -> Path:
+    return Path(payload.get("run_root") or PROJ / "output" / "_tmp")
+
+
+def artifact(payload: dict[str, Any], key: str) -> Path | None:
+    """解析 artifact 路径：支持绝对路径、相对 run_root、以及 {key: {path: ...}} 形态。"""
+    v = arts(payload).get(key)
+    if isinstance(v, dict):
+        v = v.get("path") or v.get("file")
+    if not v:
+        return None
+    p = Path(str(v))
+    return p if p.is_absolute() else run_root(payload) / p
+
+
+def read_json(path: Path | None) -> Any:
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def text_of(obj: Any) -> str:
+    """把 draft/manifest 之类的结构压平成可扫描文本。"""
+    if obj is None:
+        return ""
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, dict):
+        return "\n".join(text_of(v) for v in obj.values() if v is not None)
+    if isinstance(obj, (list, tuple)):
+        return "\n".join(text_of(v) for v in obj)
+    return str(obj)
+
+
+# ------------------------------------------------------------------ 哈希
+
+def sha256_text(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(chunk), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def normalize_text(s: str) -> str:
+    """去空白/标点/表情，用于去重与指纹比对。"""
+    s = re.sub(r"[\s\u200b]+", "", s or "")
+    s = re.sub(r"[，。！？、；：“”‘’（）【】《》,.!?;:\"'()\[\]<>~`@#$%^&*_+=|\\/-]", "", s)
+    return s.lower()
+
+
+# ------------------------------------------------------------------ 外部命令
+
+def sh(cmd: list[str], timeout: float = 20.0) -> tuple[int, str, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"命令不存在: {cmd[0]}"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"命令超时({timeout}s): {' '.join(cmd[:3])}"
+
+
+def ffprobe_json(path: Path, timeout: float = 20.0) -> dict[str, Any] | None:
+    rc, out, _ = sh(["ffprobe", "-v", "error", "-print_format", "json",
+                     "-show_format", "-show_streams", str(path)], timeout)
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+def video_size(path: Path) -> tuple[int, int] | None:
+    info = ffprobe_json(path)
+    if not info:
+        return None
+    for s in info.get("streams") or []:
+        if s.get("codec_type") == "video":
+            return int(s.get("width") or 0), int(s.get("height") or 0)
+    return None
+
+
+def video_duration(path: Path) -> float | None:
+    info = ffprobe_json(path)
+    if not info:
+        return None
+    try:
+        return float((info.get("format") or {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def frame_gray(path: Path, ts: float = 0.2, timeout: float = 25.0) -> tuple[bytes, int, int] | None:
+    """抽一帧转灰度原始字节（**二进制**读取，不能走 text=True，否则会解码崩溃）。"""
+    size = video_size(path)
+    if not size:
+        return None
+    w, h = size
+    try:
+        p = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(ts), "-i", str(path),
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            capture_output=True, timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    data = p.stdout or b""
+    if p.returncode != 0 or len(data) < w * h:
+        return None
+    return data[: w * h], w, h
+
+
+# ------------------------------------------------------------------ 数据面
+
+def db_path(payload: dict[str, Any]) -> Path:
+    override = ctx(payload).get("db_path")
+    if override:
+        return Path(override)
+    return Path(os.getenv("SQLITE_DB_PATH") or PROJ / "data" / "pipeline_state.db")
+
+
+def ledger_path(name: str) -> Path:
+    """台账路径。`AUTOCONTENT_DATA_DIR` 可重定向（自检/CI 用，避免污染真实台账）。"""
+    override = os.getenv("AUTOCONTENT_DATA_DIR")
+    base = Path(override) if override else (PROJ / "data")
+    return base / f"{name}.jsonl"
+
+
+def append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_jsonl(path: Path, limit: int = 5000) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def today() -> str:
+    return datetime.now().strftime("%Y-%m-%d")

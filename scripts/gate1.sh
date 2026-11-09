@@ -26,6 +26,7 @@ run "契约结构校验"           python3 -c "from src.pipeline.contracts impor
 run "模型切换自检"           python3 scripts/model_switch_check.py --dry-run
 run "物料契约"               python3 -c "import json;s=json.load(open('manifest.schema.json'));assert s.get('anyOf');print('MANIFEST OK required=%d anyOf=%d' % (len(s['required']), len(s['anyOf'])))"
 run "投料通道自检"           python3 -m src.pipeline.intake --selftest
+run "hook 引擎自检"          python3 -m src.pipeline.hooks --selftest
 run "配置面巡检"             python3 scripts/audit_config.py
 
 echo

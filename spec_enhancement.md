@@ -222,7 +222,7 @@
 | P1 | T1.8 投料通道实现 | ✅ DONE | 2026-11-09 | `7a89d0f` | 三载体 IDENTICAL True；重放被拦 |
 | P1 | T1.9 配置面收敛 | ✅ DONE | 2026-11-09 | `7a89d0f` | DEADKEY=0 UNDECLARED=0；缺键 EXIT=78 |
 | P1 | GATE-1 声明层与模型契约验收 | ✅ PASS | 2026-11-09 | `7a89d0f` | 7/7 检查全绿；可进 P2 |
-| P2 | T2.1 Hook 执行引擎 | ⬜ PENDING | — | — | 依赖 GATE-1 |
+| P2 | T2.1 Hook 执行引擎 | ✅ DONE | 2026-11-09 | 待回填 | 22/22 自检通过；runner 警告 20→0 |
 | P2 | T2.2 DB 三表迁移 | ⬜ PENDING | — | — | 依赖 T2.1 |
 | P2 | T2.3 发送台账 Hook | ⬜ PENDING | — | — | 依赖 T2.2 |
 | P2 | T2.4 内容/视觉指纹 Hook | ⬜ PENDING | — | — | QA#11 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**P1 全部完成（13/35）**，GATE-1 ✅ PASS；下一步 P2 · T2.1。
+**当前进度**：**14/35**（P1 完成 + T2.1 完成），GATE-1 ✅ PASS；下一步 T2.2 状态表。
 
 ---
 
@@ -923,7 +923,7 @@ for k,v in d['providers'].items():
 - **改动**：新增 `.env.example`、`src/pipeline/config.py`（约 220 行）、`scripts/audit_config.py`；`pipeline.yaml`（`config_binding.required_env` / `optional_env`）；`.env`（删除死键）
 - **执行**（全部落地）：
   1. `.env.example`：键集合 = 代码实读键集合，分「必填 8 / 可选 9」两段并逐条注释；**不含 `REMOTION_DIR`**
-  2. 补声明：`providers.feishu`（`app_id`/`app_secret`/`approval_chat_id`）+ `providers.db`（`path`）在 T1.1 已声明；本次在 `config_binding` 增加 `required_env`（8 键）与 `optional_env`（9 键），使「声明即生效」可被机器判定
+  2. 补声明：`providers.feishu`（`app_id`/`app_secret`/`approval_chat_id`）+ `providers.db`（`path`）在 T1.1 已声明；本次在 `config_binding` 增加 `required_env`（8 键）与 `optional_env`（11 键），使「声明即生效」可被机器判定
   3. 死键处置：`REMOTION_DIR` 全仓 `.py` 零引用 → **已从 `.env` 删除**（备份 `.env.bak.t19`），`.env.example` 不再出现
   4. fail-fast：`config.load_required(cfg)` 作为 runner **第 0 步**（在契约/自检之前），缺失即 `MissingConfig` → `EXIT=78` 并打印 `missing: KEY1, KEY2`
   5. 掩码：`*_KEY`/`*_SECRET`/`*_TOKEN`/`*_PASSWORD`/`*_COOKIE`/`*_CT0` 输出为 `ab****yz`
@@ -954,7 +954,7 @@ for k,v in d['providers'].items():
   ```bash
   bash scripts/gate1.sh; echo "GATE-1 EXIT=$?"
   ```
-  等价于原链路：bootstrap → runner 干跑 → 契约结构 → model_switch 自检 → manifest 契约 → intake selftest → audit_config
+  等价于原链路：bootstrap → runner 干跑 → 契约结构 → model_switch 自检 → manifest 契约 → intake selftest → **hook 引擎自检（T2.1 加入）** → audit_config（共 8 项）
 - **实测输出（2026-11-09）**：
   ```
   ✅ bootstrap 运行时自举    BOOTSTRAP: 20/20 PASS
@@ -977,23 +977,61 @@ for k,v in d['providers'].items():
 ### P2 · Hook 引擎与去重核心
 
 #### T2.1 Hook 执行引擎 `src/pipeline/hooks.py`
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09，含 20 个 hook 实现，警告 20 → 0）
 - **依赖**：GATE-1
-- **改动**：新增文件（约 160 行）
-- **协议**：
+- **改动**：新增 `src/pipeline/hooks.py`（约 420 行）+ `scripts/hooks/_common.py`（约 250 行）+ **20 个 hook 实现**（`scripts/hooks/*.py`）
+- **协议**（全部落地）：
   - 输入 `stdin`：`{task_id, run_root, step_id, artifacts:{...}, context:{...}}`
   - 输出 `stdout`：`{ok: bool, patch?: object, reason?: string}`
-  - 超时：默认 30s，超时视为 `ok=false` **且必须写 `degraded_events(kind=skipped)`**（不允许静默）
+  - 超时：默认 30s，超时视为 `ok=false` **且写 `degraded_events(kind=skipped)`**（实测会写 `data/degraded_events.jsonl`）
   - `gate`：`ok=false` → 按 `on_fail`（`block` 中止 / `warn` 记录续行）
-  - `transform`：`patch` 合并进 `context`
+  - `transform`：`patch` 合并进 `context`（`run_chain` 顺序执行并合并）
   - `observe`：忽略返回值，仅落日志
+- **退出码语义（实测定义）**：`0` = hook 正常执行完（`ok` 可为 false，那是业务判定）；`1` = 引擎层故障（`impl_missing` / 超时 / 崩溃 / 协议违规）或 `--strict` 下 `ok=false`
+- **20 个 hook 实现**（`scripts/hooks/`）：
+
+  | hook | 类型 | 判据（真实执行，非占位） |
+  | :--- | :--- | :--- |
+  | `envelope_validate` | observe | payload 三要素 + manifest 形态 |
+  | `persist_task` | transform | 按 `entity_key` upsert `content_tasks`，回传规范 task_id |
+  | `dedupe_entity` | gate/block | 近 60 条历史 theme + 发送台账，归一化/Jaccard≥0.8 |
+  | `sensitive_scan` | gate/block | `config/sensitive_words.txt`(75) + 15 条注入/凭据正则 |
+  | `policy_precheck` | gate/block | `config/platform_policies.yaml` 冷冻期/封禁/回复模式 |
+  | `material_bundle` | transform | `Manifest.to_prompt_block()` 整份物料打包 |
+  | `prompt_render` | transform | 物料块 + 账号 → 最终 prompt + `prompt_fp` |
+  | `title_length_guard` | gate/warn | 平台上限（小红书 20/抖音 30）+ 最短 8 |
+  | `material_check` | gate/block | schema + 事实可用性（占位串/重复度/长度） |
+  | `expand_narration` | transform | 句末切分 + 4.5 字/秒时长预估 |
+  | `content_fingerprint` | gate/warn | sha256(归一化 title+body) + 台账查重并登记 |
+  | `frame_fingerprint` | transform | ffmpeg 抽 0.2s 灰度帧 → sha256 |
+  | `frame_sample_check` | gate/block | 0.5s/2s 抽帧非纯色（stddev>3）+ 画幅比对（QA **M5**） |
+  | `audio_duration_check` | gate/warn | ffprobe 时长 vs 字数推算（±30%） |
+  | `landscape_precheck` | gate/block | 画幅声明 16:9 + 封面源横版且 ≥1280x720 |
+  | `provenance_check` | gate/block | 正文数字逐个回查物料原文（QA **M1** 幻觉闸门） |
+  | `send_ledger` | gate/block | `(entity_key, platform, date)` 已发则拦 |
+  | `silence_guard` | gate/warn | 产物全缺 / `degraded_count>0` / 空 draft（QA **M4**） |
+  | `external_truth` | gate/block | 产物真实存在+非空+ffprobe 可解码 |
+  | `audit_log` | observe | run_root + `data/audit.jsonl` 双写审计 |
+- **两个既有 impl 的适配器**（不改它们的源码，属 T3.2/T4.x 接管范围）：
+  ```python
+  ADAPTERS = {
+      "hook.landscape_guard": ("scripts.landscape_guard", "check_landscape"),
+      "hook.card_render": ("src.feishu.card_builder", "build_approval_card"),
+  }
+  ```
+  引擎优先走适配器，其余一律 subprocess + stdin/stdout 协议。
 - **验收**：
   ```bash
-  echo '{"task_id":"t","run_root":"/tmp","step_id":"s","artifacts":{},"context":{}}' \
-    | python3 -m src.pipeline.hooks --hook hook.envelope_validate --pipeline pipeline.yaml; echo "EXIT=$?"
+  python3 -m src.pipeline.hooks --list          # 22 项，impl 全部 ✓
+  python3 -m src.pipeline.hooks --selftest      # 22 个 hook 真实调用 + 3 项负向验证
+  python3 -m src.pipeline.runner --material /dev/null --dry-run | grep 警告
   ```
-- **预期输出**：JSON 且 `exit 0`（实现文件缺失时应返回 `reason: impl_missing` 而非崩溃）
-- **回滚**：`rm src/pipeline/hooks.py`
+- **实测输出（2026-11-09）**：
+  - `--selftest`：**22/22 通过**，耗时 0.02~0.63s/个；负向验证 3/3 按预期拦截（`sensitive_scan` 命中 `api_key`、`material_check` 拒绝无事实物料、`title_length_guard` 拦 1 字标题）→ `SELFTEST PASS（失败 0 项）`
+  - runner 干跑：**`结构错误: 0    警告: 0`** ← 20 条警告清零
+  - 自检夹具是**真物料**：1920x1080 / 3s / 带音轨的 H.264 视频 + PIL 渲染的可 OCR 横排大字封面 + 临时 SQLite 台账，不是 mock
+- **回滚**：`rm src/pipeline/hooks.py scripts/hooks/*.py`
+- **注意（实现期踩坑，已修）**：`ffmpeg` 抽帧必须用**二进制** `capture_output`，走 `text=True` 会在 `UnicodeDecodeError` 上崩（已写入 `_common.frame_gray` 注释）
 
 #### T2.2 DB 四表迁移 `src/db.py`
 - **状态**：⬜ PENDING
@@ -1581,6 +1619,8 @@ contract:
       - TWITTER_PROXY
       - TWITTER_CT0
       - TWITTER_AUTH_TOKEN
+      - AUTOCONTENT_ENV_FILE
+      - AUTOCONTENT_DATA_DIR
       - FEISHU_DEFAULT_CHAT_ID
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py
