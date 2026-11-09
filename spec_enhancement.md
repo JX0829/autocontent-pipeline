@@ -216,7 +216,7 @@
 | P1 | T1.2 契约校验器 | ✅ DONE | 2026-11-09 | `437c23d` | 5+4 项校验；AST 扫描命中 3 处 max_tokens 违例 |
 | P1 | T1.3 薄 Runner | ✅ DONE | 2026-11-09 | `437c23d` | dry-run 全绿 EXIT=0；5 项负向退出码全对 |
 | P1 | T1.4 model_profile 能力契约 | ✅ DONE | 2026-11-09 | `a25d06c` | 实测 reasoning 1023~1259；main 6144/fast 2048 |
-| P1 | T1.5 LLM 统一调用层 | ⬜ PENDING | — | — | 禁止调用方自定 max_tokens |
+| P1 | T1.5 LLM 统一调用层 | ✅ DONE | 2026-11-09 | 待回填 | 4 调用点收口；6 项异常路径实测；删静默判D |
 | P1 | T1.6 模型切换自检脚本 | ⬜ PENDING | — | — | 换模型前必跑 |
 | P1 | T1.7 物料契约 `manifest.schema.json` | ⬜ PENDING | — | — | **v1.2 新增，P-2；内聚前提** |
 | P1 | T1.8 投料通道实现 | ⬜ PENDING | — | — | **v1.3 新增；G-C，3 种载体** |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P1 进行中，8/35 完成（T0.1–T0.4、T1.1–T1.4 ✅），下一步 T1.5 LLM 统一调用层。
+**当前进度**：P1 进行中，9/35 完成（T0.1–T0.4、T1.1–T1.5 ✅），下一步 T1.6 模型切换自检。
 
 ---
 
@@ -730,34 +730,61 @@ for k,v in d['providers'].items():
 - **复用要求**：换模型必须重跑本节标定方法（附录 B SOP 第 3 步），**不得沿用本次数值**
 
 #### T1.5 LLM 统一调用层 `src/llm/client.py`（v1.1 新增）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T1.4
 - **QA 来源**：#2① #2② #3 #9（全部调用层问题）
-- **改动**：新增文件（约 200 行）+ 改造 `src/safety/comment_funnel.py`、`src/hotspot_extractor.py` 的调用点
-- **必须实现**：
+- **改动**：新增 `src/llm/__init__.py` + `src/llm/client.py`（约 300 行）；改造 `src/safety/comment_funnel.py`（3 处调用点）、`src/hotspot_extractor.py`（1 处）、3 个轮询脚本调用点
+- **必须实现**（全部落地）：
   ```python
   class TruncatedOutput(Exception): ...      # finish_reason == "length"
   class EmptyCompletion(Exception): ...       # content 为空/纯空白
   class OutputTooShort(Exception): ...        # len < profile.min_output_chars
+  class ClassificationError(...): ...         # 替代「异常即判 D」
+  class ConfigError(...): ...                 # 槽位/env 缺键即失败
 
   class LLMClient:
-      def __init__(self, slot: str, cfg: dict): ...   # 从 pipeline.yaml 槽位读 profile
+      def __init__(self, slot: str, cfg: dict = None, *, client=None): ...   # 从 pipeline.yaml 槽位读 profile
       def complete(self, messages, **kw) -> str:
-          # 1. max_tokens 只能来自 profile，禁止调用方覆盖 → 传了直接 raise TypeError
-          # 2. 检查 finish_reason，length → TruncatedOutput(实际completion_tokens)
+          # 1. max_tokens 只能来自 profile，调用方传了 → TypeError
+          # 2. finish_reason == length → TruncatedOutput(实际 completion_tokens)
           # 3. content 空 → EmptyCompletion
-          # 4. len(content) < min_output_chars → OutputTooShort
-          # 5. 任何异常都写 degraded_events 后再抛（不吞）
+          # 4. len < min_output_chars → OutputTooShort
+          # 5. 任何失败先写留痕再抛（不吞）
           # 6. 记录 reasoning_tokens / 耗时 / 槽位名
+      def complete_json(...) -> dict          # JSON 解析失败即抛，不返回空 dict
   ```
-- **改造要求**：`comment_funnel.py` 三处调用（classify / reply / seed）改为 `LLMClient("llm.fast").complete(...)`；删除本地 `max_tokens=5/100/120`；删除 `except → 返回 "D"` 兜底，改为抛 `ClassificationError`
+- **改造要求**：`comment_funnel` 三处调用（classify / reply / seed）改为 `self.llm.complete(..., task=...)`；**已删除**本地 `max_tokens=1024` ×3；**已删除** `except → 返回 "D"` 兜底，改为 `raise ClassificationError`
 - **验收**：
   ```bash
-  grep -rn "max_tokens" --include=*.py src | grep -v "src/llm/client.py" && echo "VIOLATION" || echo "OK: 无调用方自设 max_tokens"
-  grep -rn "return \"D\"" src/safety/comment_funnel.py && echo "VIOLATION" || echo "OK: 无静默判D兜底"
+  # ① 调用方不得自设 max_tokens（改用 AST 判定，见下方说明）
+  python3 -c "from src.pipeline.contracts import assert_no_caller_max_tokens as f; v=f(); print('VIOLATION' if v else 'OK: 无调用方自设 max_tokens')"
+  # ② 不得有静默判 D 兜底
+  grep -rn 'return "D"' src/safety/comment_funnel.py && echo "VIOLATION" || echo "OK: 无静默判D兜底"
   ```
 - **预期输出**：两行均 `OK:`
-- **回滚**：`git checkout src/safety/comment_funnel.py src/hotspot_extractor.py && rm -rf src/llm/`
+- **实测输出（2026-11-09）**：`OK: 无调用方自设 max_tokens` / `OK: 无静默判D兜底` ✅
+- **⚠️ 验收命令修正**：原命令 `grep -rn "max_tokens" --include=*.py src | grep -v "src/llm/client.py"` 会误伤 `contracts.py` —— 因为**校验器必须写出字段名 `max_tokens` 才能校验它**（`LLM_PROFILE_FIELDS`）。已改为调用 `assert_no_caller_max_tokens()`（AST 精确匹配 `Call(keywords=max_tokens)`），语义更严且无误报。
+- **异常路径实测（6 项，全通过）**：
+  | 注入条件 | 期望 | 实测 |
+  |---|---|---|
+  | 调用方传 `max_tokens=99` | `TypeError` | **TypeError** + "预算只能来自 providers.llm.fast.profile" |
+  | `finish_reason=length` | `TruncatedOutput` | **TruncatedOutput** + 实际 2048/2048 |
+  | `content="   "` | `EmptyCompletion` | **EmptyCompletion** |
+  | main 槽位输出 2 字 | `OutputTooShort` | **OutputTooShort**（2 < 80） |
+  | 槽位 env 键不存在 | `ConfigError` | **ConfigError**（证明**不再回落** `gemini-3.8-flash`） |
+  | profile 缺 `reasoning_reserve` | `ConfigError` | **ConfigError** |
+- **真实调用实测**：
+  | 调用 | 结果 | reasoning | visible | 延迟 |
+  |---|---|---|---|---|
+  | `level2_classify`（严格枚举分类提示） | `A` | 40 | 3 | 1.7s |
+  | `generate_seed_comment` | 59 字评论 | — | — | — |
+  | `llm.main.complete_json`（JSON 扩写） | 126 字 body | 1056 | 97 | 8.9s |
+- **重要发现（修正 T1.4 的表述口径）**：`reasoning_tokens` **强烈依赖 prompt 形态** —— 自由问答可冲到 1024~1259（截断），严格枚举分类只需 40。因此 `reasoning_reserve=1536` 是按**最坏观测值**兜底，不是"每次都烧 1500"。T1.4 表中数字应理解为「最坏情形上界」。
+- **附带加固**：
+  - `LLMClient` 内部幂等 `load_dotenv`，独立调用也能取到 env（不依赖调用方先加载）
+  - 新增 `process_comment_safe()`：长驻轮询脚本用它，LLM 故障时返回 `classification=None` + `reason=LLM_DEGRADED:...`（**不伪装成 D**）；已迁移 `poll_xhs_comments.py`、`poll_douyin_comments.py`、`run_comment_cron.py` 三个真实调用点（`poll_bilibili_comments.py` / `poll_channels_comments.py` 本就有 try 兜底）
+  - 留痕双写：`data/degraded_events.jsonl` 必写；`degraded_events` 表存在时同时入库
+- **回滚**：`git checkout src/safety/comment_funnel.py src/hotspot_extractor.py scripts/poll_xhs_comments.py scripts/poll_douyin_comments.py scripts/run_comment_cron.py && rm -rf src/llm/`
 - **失败处理**：改造后评论分类实测若出现 `TruncatedOutput` → 说明 `max_tokens` 仍不足，回 T1.4 上调后重验，**禁止在调用点硬编码兜底**
 
 #### T1.6 模型切换自检脚本 `scripts/model_switch_check.py`（v1.1 新增）

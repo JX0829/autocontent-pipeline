@@ -201,7 +201,7 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
         fact_summary = feed_title or "前沿开源项目与AI技术快讯，源码与技术复现指南。"
         keyword = "AI"
 
-        res = funnel.process_comment(
+        res = funnel.process_comment_safe(
             raw_comment=comment_text,
             fact_summary_150=fact_summary,
             resource_keyword=keyword,

@@ -1,10 +1,10 @@
 import re
-import os
 import json
 import logging
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
-from openai import OpenAI
+
+from src.llm.client import ClassificationError, LLMClient, LLMError
 
 logger = logging.getLogger("CommentFunnel")
 
@@ -60,15 +60,10 @@ class CommentSafetyFunnel:
         self.config_dir = Path(config_dir) if config_dir else Path(__file__).resolve().parent.parent.parent / "config"
         self.sensitive_words = self._load_sensitive_words()
         
-        # 初始化 LLM 客户端
-        api_key = os.getenv("LLM_API_KEY", "123456")
-        base_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8317/v1")
-        self.model_fast = os.getenv("LLM_MODEL_FAST", "gemini-3.8-flash")
-        
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=base_url
-        )
+        # T1.5：统一走 LLMClient，模型/预算/超时全部来自 pipeline.yaml 的 llm.fast 槽位
+        # 原实现把 model 默认值写成已失效的 gemini-3.8-flash，缺 .env 键即打到不存在的模型
+        self.llm = LLMClient("llm.fast")
+        self.model_fast = self.llm.model  # 兼容旧引用（只读观测用）
 
     def _load_sensitive_words(self) -> list[str]:
         words_file = self.config_dir / "sensitive_words.txt"
@@ -148,25 +143,24 @@ class CommentSafetyFunnel:
 </user_comment>"""
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model_fast,
-                messages=[
-                    {"role": "user", "content": system_prompt}
-                ],
+            raw_out = self.llm.complete(
+                [{"role": "user", "content": system_prompt}],
                 temperature=0.1,
-                max_tokens=1024,
-                extra_headers={"Connection": "close"}
+                task="comment_classify",
+            ).upper()
+        except LLMError as exc:
+            # 不再「异常即判 D」：静默兜底会让故障潜伏数天（QA#2②#9）
+            raise ClassificationError(f"[Level 2] 分类调用失败: {exc}") from exc
+
+        # 严格提取 A/B/C/D/E
+        match = re.search(r"[ABCDE]", raw_out)
+        if not match:
+            raise ClassificationError(
+                f"[Level 2] 分类结果非法，未取到 A/B/C/D/E（raw: {raw_out[:60]!r}）"
             )
-            raw_out = resp.choices[0].message.content.strip().upper()
-            # 严格提取 A/B/C/D/E
-            match = re.search(r"[ABCDE]", raw_out)
-            classification = match.group(0) if match else "D"
-            logger.info(f"[Level 2] Classify result: {classification} (raw: {raw_out})")
-            return classification
-        except Exception as e:
-            logger.error(f"[Level 2] LLM classification error: {e}")
-            # 遇故障保安全，默认归类为 D 丢弃
-            return "D"
+        classification = match.group(0)
+        logger.info(f"[Level 2] Classify result: {classification} (raw: {raw_out})")
+        return classification
 
     def level3_generate_reply(
         self,
@@ -211,24 +205,19 @@ class CommentSafetyFunnel:
 4. 严禁出现“私信”、“暗号”、“主页”、“加群”等任何引流导流词汇，严禁涉及敏感违规内容。"""
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model_fast,
-                messages=[
-                    {"role": "user", "content": system_prompt}
-                ],
+            answer = self.llm.complete(
+                [{"role": "user", "content": system_prompt}],
                 temperature=0.7,
-                max_tokens=1024,
-                extra_headers={"Connection": "close"}
-            )
-            answer = resp.choices[0].message.content.strip().replace("\n", " ").strip('"\'')
+                task="comment_reply",
+            ).replace("\n", " ").strip('"\'')
             # 校验出厂敏感词
             is_safe, _, _ = self.level1_check(answer)
             if not is_safe:
                 logger.warning(f"[Level 3] Output failed safety check: {answer}")
                 return None
             return answer
-        except Exception as e:
-            logger.error(f"[Level 3] Answer generation error: {e}")
+        except LLMError as exc:
+            logger.error(f"[Level 3] Answer generation error: {exc}")
             if classification == "B":
                 import random
                 return random.choice(self.POSITIVE_TEMPLATES)
@@ -250,23 +239,18 @@ class CommentSafetyFunnel:
 5. 严禁出现“私信”、“暗号”、“主页”、“加群”等导流词汇，严禁违规敏感内容。"""
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model_fast,
-                messages=[
-                    {"role": "user", "content": system_prompt}
-                ],
+            comment = self.llm.complete(
+                [{"role": "user", "content": system_prompt}],
                 temperature=0.7,
-                max_tokens=1024,
-                extra_headers={"Connection": "close"}
-            )
-            comment = resp.choices[0].message.content.strip().replace("\n", " ").strip('"\'')
+                task="seed_comment",
+            ).replace("\n", " ").strip('"\'')
             is_safe, _, _ = self.level1_check(comment)
             if not is_safe:
                 logger.warning(f"[SeedComment] Output failed safety check: {comment}")
                 return None
             return comment
-        except Exception as e:
-            logger.error(f"[SeedComment] Generation error: {e}")
+        except LLMError as exc:
+            logger.error(f"[SeedComment] Generation error: {exc}")
             return None
 
     def process_comment(
@@ -311,3 +295,34 @@ class CommentSafetyFunnel:
             "reply": reply,
             "reason": "OK"
         }
+
+    def process_comment_safe(
+        self,
+        raw_comment: str,
+        fact_summary_150: str,
+        resource_keyword: str = "",
+        private_domain_hook: str = ""
+    ) -> Dict[str, Any]:
+        """长驻轮询脚本专用：LLM 故障时不中断整轮，但也**绝不伪装成 D 类**。
+
+        `classification` 返回 `None`（表示"未判定"，不是"判为恶意"），
+        `reason` 为 `LLM_DEGRADED:...`，上游据此跳过本条且可观测。
+        留痕由 `src.llm.client.record_degraded` 落 `data/degraded_events.jsonl`。
+        """
+        try:
+            return self.process_comment(
+                raw_comment=raw_comment,
+                fact_summary_150=fact_summary_150,
+                resource_keyword=resource_keyword,
+                private_domain_hook=private_domain_hook,
+            )
+        except LLMError as exc:
+            logger.error(f"[Funnel] LLM 降级，跳过本条（不做判 D 兜底）: {exc}")
+            return {
+                "raw_comment": raw_comment,
+                "sanitized_comment": raw_comment[:80],
+                "level1_pass": True,
+                "classification": None,
+                "reply": None,
+                "reason": f"LLM_DEGRADED:{type(exc).__name__}",
+            }

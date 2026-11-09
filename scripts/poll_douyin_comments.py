@@ -199,7 +199,7 @@ def poll_and_reply_live_comments():
                         continue
 
                 logger.info(f"Processing new live comment: '{comment_text}' by {user_name} on '{v_title[:20]}'")
-                res = funnel.process_comment(comment_text, fact_summary, keyword, hook)
+                res = funnel.process_comment_safe(comment_text, fact_summary, keyword, hook)
                 reply_content = res.get("reply")
                 logger.info(f"Funnel verdict: Classification={res['classification']}, Reply='{reply_content}'")
 

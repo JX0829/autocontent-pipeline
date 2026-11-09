@@ -1,4 +1,3 @@
-import os
 import sys
 import json
 import logging
@@ -12,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from openai import OpenAI
+from src.llm.client import LLMClient, LLMError
 from src.schemas import DraftScriptPayload
 
 logger = logging.getLogger("HotspotExtractor")
@@ -125,14 +124,9 @@ def check_topic_duplicate(candidate: dict, recent_topics: list) -> tuple:
     return False, ""
 
 def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
-    api_key = os.getenv("LLM_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("LLM_MODEL_MAIN", "deepseek-chat")
-
-    if not api_key:
-        raise ValueError("LLM_API_KEY 未在环境变量中配置")
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    # T1.5：模型/预算/JSON 模式/超时全部来自 pipeline.yaml 的 llm.main 槽位。
+    # 原实现把 base_url/model 默认值写死（已是失效模型），缺 .env 键即静默打错目标。
+    llm = LLMClient("llm.main")
 
     # 1. 查询近期已制作的排他黑名单
     recent_topics = get_recent_pipeline_topics(limit=30)
@@ -158,15 +152,21 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
     ]
 
     for attempt in range(max_retries):
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.3 + (attempt * 0.2),
-            response_format={"type": "json_object"}
-        )
+        try:
+            data = llm.complete_json(
+                messages,
+                temperature=0.3 + (attempt * 0.2),
+                task=f"script_expand_attempt{attempt + 1}",
+            )
+        except (LLMError, json.JSONDecodeError) as exc:
+            # 截断/空返回/JSON 非法一律可见：重试到上限后上抛，不做兜底
+            logger.error(f"[Attempt {attempt+1}] LLM 输出不可用: {exc}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "user", "content": "上一次输出不合法，请重新输出完整合法的 JSON。"})
+                continue
+            raise
 
-        raw_json = response.choices[0].message.content.strip()
-        data = json.loads(raw_json)
+        raw_json = json.dumps(data, ensure_ascii=False)
 
         # 校验合法性
         payload = DraftScriptPayload(**data)

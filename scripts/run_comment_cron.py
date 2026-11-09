@@ -213,7 +213,7 @@ def inspect_and_reply_task(task_id: str, db: PipelineDB, funnel: CommentSafetyFu
     ]
 
     for c in sample_incoming_comments:
-        res = funnel.process_comment(
+        res = funnel.process_comment_safe(
             raw_comment=c["text"],
             fact_summary_150=fact_summary,
             resource_keyword=resource_keyword,
