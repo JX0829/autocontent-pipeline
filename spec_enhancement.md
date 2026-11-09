@@ -215,7 +215,7 @@
 | P1 | T1.1 落 pipeline.yaml | ✅ DONE | 2026-11-09 | `98bdbce` | 11 段 contract / 6 槽位 / 7 步 / 22 hooks，零模型名 |
 | P1 | T1.2 契约校验器 | ✅ DONE | 2026-11-09 | `437c23d` | 5+4 项校验；AST 扫描命中 3 处 max_tokens 违例 |
 | P1 | T1.3 薄 Runner | ✅ DONE | 2026-11-09 | `437c23d` | dry-run 全绿 EXIT=0；5 项负向退出码全对 |
-| P1 | T1.4 model_profile 能力契约 | ✅ DONE | 2026-11-09 | 待回填 | 实测 reasoning 1023~1259；main 6144/fast 2048 |
+| P1 | T1.4 model_profile 能力契约 | ✅ DONE | 2026-11-09 | `a25d06c` | 实测 reasoning 1023~1259；main 6144/fast 2048 |
 | P1 | T1.5 LLM 统一调用层 | ⬜ PENDING | — | — | 禁止调用方自定 max_tokens |
 | P1 | T1.6 模型切换自检脚本 | ⬜ PENDING | — | — | 换模型前必跑 |
 | P1 | T1.7 物料契约 `manifest.schema.json` | ⬜ PENDING | — | — | **v1.2 新增，P-2；内聚前提** |
