@@ -169,7 +169,9 @@ async def process_task(task_data):
     if not source_url:
         raise ValueError("缺 source_url：物料未提供，禁止用占位 URL 兜底")
     account_id = str(task_data.get("account") or _man.get("account") or default_account())
-    db.create_task(
+    # T4.3：冲突必须显式处理 —— 同一 entity_key 已存在时不再重复生产，
+    # 直接返回已有 task_id，避免重跑把已渲染/已发布记录冲掉
+    conflict = db.create_task(
         task_id=task_id,
         source_url=source_url,
         entity_key=draft_payload.entity_key,
@@ -177,6 +179,19 @@ async def process_task(task_data):
         target_account_id=account_id,
         draft_script=task_data
     )
+    if conflict:
+        row = db.get_conn().execute(
+            "select task_id, status from content_tasks where entity_key=?",
+            (draft_payload.entity_key,)).fetchone()
+        existing = row[0] if row else task_id
+        print(f"⏭️  [dedupe] entity_key 已存在，跳过生产: {draft_payload.entity_key} "
+              f"→ 既有 task_id={existing} status={row[1] if row else '?'}")
+        return {
+            "task_id": existing,
+            "title": task_data.get("title"),
+            "skipped": True,
+            "reason": "entity_key 已存在（T4.3 冲突不覆盖）",
+        }
 
     # TTS 对齐
     # T4.5：账号类型 → 槽位名映射，音色/语速全部来自 pipeline.yaml 的 env 槽位
@@ -251,6 +266,9 @@ async def main():
     print("\n" + "=" * 60)
     print("🚀 全部热点新闻视频批量渲染完毕！")
     for r in results:
+        if r.get("skipped"):
+            print(f"  - 【{r['title']}】⏭️  已跳过：{r.get('reason')}（既有 task_id={r['task_id']}）")
+            continue
         print(f"  - 【{r['title']}】\n    归档: {r['output_dir']}\n    规格: {r['size_mb']:.2f} MB, {r['total_sec']:.1f}s")
     print("=" * 60)
 

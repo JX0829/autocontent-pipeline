@@ -137,25 +137,37 @@ class PipelineDB:
 
             conn.commit()
 
-    def create_task(self, task_id, source_url, entity_key, theme, target_account_id, draft_script):
+    def create_task(self, task_id, source_url, entity_key, theme, target_account_id,
+                    draft_script, status="INGESTED"):
+        """落库新任务，返回是否发生冲突（True = 已存在同 entity_key/task_id，本次未写入）。
+
+        T4.3 状态机归位：
+          · 状态默认 `INGESTED`（物料刚进来），不再一上来就写 `SCRIPTED`
+            —— 之前脚本还没生成就标 SCRIPTED，状态机无法表达"扩写中/扩写失败"
+          · `INSERT OR REPLACE` 改为 `ON CONFLICT DO NOTHING`
+            —— REPLACE 会**静默覆盖**已有任务（连带把已渲染产物、发布记录冲掉），
+               冲突必须显式返回给调用方决定，不能由数据库替人做主
+        """
         with self.get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
-            INSERT OR REPLACE INTO content_tasks 
+            INSERT INTO content_tasks
             (task_id, source_url, entity_key, theme, target_account_id, status, draft_script_json, fact_summary_150, resource_keyword, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT DO NOTHING
             """, (
                 task_id,
                 source_url,
                 entity_key,
                 theme,
                 target_account_id,
-                "SCRIPTED",
+                status,
                 json.dumps(draft_script, ensure_ascii=False),
                 draft_script.get("fact_summary_150", ""),
                 draft_script.get("resource_keyword", "")
             ))
             conn.commit()
+            return cur.rowcount == 0
 
     def update_task_status(self, task_id, status, **kwargs):
         with self.get_conn() as conn:
