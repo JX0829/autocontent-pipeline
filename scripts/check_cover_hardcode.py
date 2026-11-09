@@ -50,6 +50,9 @@ def scan(path: Path) -> list[tuple[int, str]]:
         stripped = line.strip()
         if stripped.startswith(("//", "*", "/*", "#")):
             continue
+        # 日志/告警文案不上屏，不算"封面假数据"（例如 console.warn('[cover] ... 缺失')）
+        if any(k in stripped for k in ("console.", "logger.", "warn(", "error(")):
+            continue
         for m in STR_LIT.finditer(line):
             val = m.group(2).strip()
             if not val or not CJK.search(val):

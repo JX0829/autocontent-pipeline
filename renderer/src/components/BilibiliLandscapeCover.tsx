@@ -155,10 +155,15 @@ export const BilibiliLandscapeCover: React.FC<AlignedRenderPayload> = (props) =>
           { label: '◈ 关键机制', color: '#c084fc', border: 'rgba(168, 85, 247, 0.25)' },
           { label: '◈ 实操提醒', color: '#f8fafc', border: 'rgba(255, 255, 255, 0.15)' },
         ].map((card, i) => {
-          const pick = [0, 1, 3][i];
+          // 取哪几屏由 pipeline.yaml 的 cover.card_source 声明（默认 [0,1,3]），组件不写死魔数
+          const source = props.cover_card_source ?? [0, 1, 3];
+          const pick = source[i] ?? i;
           const scene = props.scenes?.[pick] ?? props.scenes?.[i];
-          const text = (scene as any)?.highlight_text || '';
-          if (!text) return null;
+          const text = scene?.highlight_text ?? '';
+          if (!text) {
+            // 不静默跳过：渲染占位卡并告警，"分镜缺 highlight_text"必须在成片上看得见
+            console.warn(`[cover] scene_${pick} highlight_text 缺失，渲染占位卡`);
+          }
           return (
             <div
               key={i}
@@ -169,13 +174,14 @@ export const BilibiliLandscapeCover: React.FC<AlignedRenderPayload> = (props) =>
                 padding: '26px 32px',
                 boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
                 backdropFilter: 'blur(16px)',
+                opacity: text ? 1 : 0.35,
               }}
             >
               <div style={{ color: '#94a3b8', fontSize: 22, fontWeight: 600, marginBottom: 8 }}>
                 {card.label}
               </div>
               <div style={{ color: card.color, fontSize: 36, fontWeight: 900, lineHeight: 1.25 }}>
-                {text}
+                {text || '—'}
               </div>
             </div>
           );

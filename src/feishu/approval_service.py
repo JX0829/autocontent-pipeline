@@ -218,6 +218,13 @@ class FeishuApprovalService:
                     logger.warning(f"[FEISHU] 封面上传失败，改为无封面发送: {e}")
 
             # 3. 时长（毫秒）：media 消息需要，缺失时飞书仍可发送但不显示时长
+            #
+            # 实测结论（2026-11-09，消息对照）：
+            #   · 传 ms（19264）→ 发送成功、msg_type=media、有封面，但 API 回读 duration 恒为 0
+            #   · 传秒（2）    → 消息直接变成 msg_type=nonsupport（客户端"不支持该消息类型"）
+            # 结论：**duration 由飞书服务端按文件元数据计算，客户端传值被忽略**，
+            #       SDK 的上传接口也没有 duration 字段可填。回读 0 属于平台限制，不是本项目的 bug。
+            #       ⚠️ 千万不要改成秒——那会把消息发成 nonsupport 坏消息。
             duration_ms = _probe_duration_ms(video_path)
 
             content: Dict[str, Any] = {"file_key": file_key}

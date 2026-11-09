@@ -166,7 +166,13 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
         props_dir=str(props_dir), public_prefix=public_prefix))
 
     props_path = props_dir / "aligned_render.json"
-    _write_json(props_path, aligned.model_dump())
+    props_data = aligned.model_dump()
+    # T4.4：封面三卡取哪几镜由 pipeline.yaml 的 cover.card_source 声明，
+    # 组件只读不写死（原实现把 [0,1,3] 硬编码在 TSX 里，改配置不生效）
+    from src.pipeline.contracts import load_pipeline
+    props_data["cover_card_source"] = (
+        (load_pipeline().get("cover") or {}).get("card_source") or [0, 1, 3])
+    _write_json(props_path, props_data)
 
     video = ctx.out("video.mp4")
     cover = ctx.out("cover.png")
