@@ -26,24 +26,6 @@ class DouyinRunner(BaseCommentRunner):
         from scripts.poll_douyin_comments import poll_and_reply_live_comments
         return poll_and_reply_live_comments() or []
 
-class XiaohongshuRunner(BaseCommentRunner):
-    def __init__(self):
-        super().__init__("小红书")
-
-    def run(self) -> List[Dict[str, Any]]:
-        from src.platform_policy import get_platform_policy
-        xhs_policy = get_platform_policy("xiaohongshu")
-        interaction_policy = xhs_policy.get("interaction_policy", {})
-
-        if interaction_policy.get("enable_background_polling", False):
-            from scripts.poll_xhs_comments import poll_and_reply_xhs_comments
-            # 严格按照 manual_approval 模式运行（只产生建议回复供复制，绝不直接写入）
-            is_dry_run = (interaction_policy.get("reply_mode") == "manual_approval")
-            return poll_and_reply_xhs_comments(dry_run=is_dry_run) or []
-        else:
-            logger.info("Xiaohongshu polling is currently DISABLED by platform policy.")
-            return []
-
 class BilibiliRunner(BaseCommentRunner):
     def __init__(self):
         super().__init__("哔哩哔哩")
@@ -74,7 +56,6 @@ def run():
     
     runners: List[BaseCommentRunner] = [
         DouyinRunner(),
-        XiaohongshuRunner(),
         BilibiliRunner(),
         ChannelsRunner()
     ]

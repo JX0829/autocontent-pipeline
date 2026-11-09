@@ -1,9 +1,9 @@
 """
 src/crawlers/social_trends_adapter.py
 全网社交热点统一适配器
-双轨并行聚合：
-1. MediaCrawler: 小红书(xhs) / 微博(wb) / B站(bili) 科技关键词搜索
-2. X (Twitter): 本地 twitter-cli 工具只读搜索（支持 5s 优雅熔断降级）
+X (Twitter): 本地 twitter-cli 工具只读搜索（支持 5s 优雅熔断降级）
+
+2026-11-09：小红书整体下线，MediaCrawler 抓取链路已从本适配器移除。
 """
 
 import os

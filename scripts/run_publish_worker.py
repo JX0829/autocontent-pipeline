@@ -27,7 +27,6 @@ load_dotenv(PIPELINE_ROOT / ".env")
 
 from src.db import PipelineDB
 from src.providers.douyin import DouyinProvider
-from src.providers.xiaohongshu import XiaohongshuProvider
 from src.providers.bilibili import BilibiliProvider
 from src.providers.channels_cdp import ChannelsCDPProvider
 from src.feishu.approval_service import FeishuApprovalService
@@ -254,7 +253,7 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
             except Exception as e:
                 dispatch_results.append(f"🎵 **抖音**: ❌ 异常 ({e})")
 
-    # 4. 手机发帖专例文案推送（小红书 7 天避险冷冻期 & 手机发布）
+    # 4. 手机端发帖素材推送（通用：标题 + 正文双代码块，供手机 App 端复制）
     #    T3.2-R3：卡片由 card_builder 直接产出 Card 2.0，不再经过 post 富文本中间结构
     clean_tags = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
     short_title = ensure_clean_short_title(title, max_chars=30)
@@ -265,20 +264,20 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
                             chat_id=os.getenv("FEISHU_APPROVAL_CHAT_ID") or "")
         if not key:
             logger.warning(f"Task '{task_id}' 手机素材已推送过（台账拦截）")
-            dispatch_results.append(f"📕 **小红书 (手机发帖素材)**: ⏭️ 台账命中，已推送过")
+            dispatch_results.append(f"📱 **手机端素材**: ⏭️ 台账命中，已推送过")
         else:
             card = FeishuCardBuilder.build_mobile_copy_card(
                 task_id=task_id, short_title=short_title, full_body=full_body)
             msg_id = notify_feishu("", card=card, db=db, dedupe_key=key)
             if msg_id:
-                dispatch_results.append(f"📕 **小红书 (手机发帖素材)**: ✅ 已推送（feishu_msg_id=`{msg_id}`）")
+                dispatch_results.append(f"📱 **手机端素材**: ✅ 已推送（feishu_msg_id=`{msg_id}`）")
             else:
-                dispatch_results.append(f"📕 **小红书**: ❌ 卡片发送失败（详见告警）")
+                dispatch_results.append(f"📱 **手机端素材**: ❌ 卡片发送失败（详见告警）")
     except MissingChatIdError as e:
         logger.error(f"Task '{task_id}' 素材推送中止: {e}")
-        dispatch_results.append(f"📕 **小红书**: ❌ {e}")
+        dispatch_results.append(f"📱 **手机端素材**: ❌ {e}")
     except Exception as e:
-        dispatch_results.append(f"📕 **小红书**: ❌ 素材推送失败 ({e})")
+        dispatch_results.append(f"📱 **手机端素材**: ❌ 素材推送失败 ({e})")
 
     # 5. 更新 SQLite 数据库任务状态
     db.update_task_status(task_id, "DISPATCHED", platform_draft_id=f"matrix_{task_id}")
