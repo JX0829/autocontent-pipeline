@@ -231,9 +231,9 @@
 | P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | `b63678c` | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
 | P3 | T3.1 entity_key 归一化 | ✅ DONE | 2026-11-09 | `aec0c2c` | 生产已迁移：3 行改写、163/163、残留时间戳 0 |
 | P3 | T3.2 发送链路加固 | ✅ DONE | 2026-11-09 | `0734803` | 5 条验收 grep 全绿；台账幂等 3 次重跑拦截 |
-| P3 | T3.3 废弃 resend 脚本 | ⬜ PENDING | — | — | 依赖 T3.2 |
-| P3 | T3.4 定时任务去模型依赖 | ⬜ PENDING | — | — | QA#1 |
-| P3 | GATE-3 端到端不重发 | ⬜ PENDING | — | — | 连跑两次只发一次 |
+| P3 | T3.3 废弃 resend 脚本 | ✅ DONE | 2026-11-09 | 待回填 | 无 resend_*.py；归档区 6 个 .py |
+| P3 | T3.4 定时任务去模型依赖 | ✅ DONE | 2026-11-09 | 待回填 | 7 job 全 pinned/script-only；2 个断流 job 已修 |
+| P3 | GATE-3 端到端不重发 | 🚫 BLOCKED | — | — | 全链执行体未接线（runner EXIT=64）；worker 级 E2E 已覆盖断言内核 |
 | P4 | T4.1 run_root 隔离 + 横版命名统一 | ⬜ PENDING | — | — | **必做；GATE-3 后第一优先** |
 | P4 | T4.2 去硬编码 | ⬜ PENDING | — | — | 依赖 T4.1 |
 | P4 | T4.3 状态机归位 | ⬜ PENDING | — | — | 依赖 T4.2 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**22/35**（P1、P2 完成 + T3.1/T3.2 完成），GATE-1 ✅ / GATE-2 ✅ PASS；下一步 T3.3 废弃 resend 脚本。
+**当前进度**：**24/35**（P1、P2 完成 + T3.1–T3.4 完成），GATE-1 ✅ / GATE-2 ✅ PASS / GATE-3 🚫 BLOCKED（全链执行体未接线）；下一步 P4 隔离与解耦。
 
 ---
 
@@ -1326,48 +1326,77 @@ for k,v in d['providers'].items():
 - **注意**：小品对 `run_publish_worker.py` 的改动**未回退**，其 `_post_to_card2` 逻辑已原样迁入 `card_builder` 并被复用
 
 #### T3.3 废弃 `resend_*.py`
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T3.2
-- **改动**：`scripts/resend_sherlock_approval.py`、`scripts/send_showcase_to_feishu.py` → `scripts/_deprecated/`
+- **改动**：`scripts/send_showcase_to_feishu.py` → `scripts/_deprecated/`；`scripts/_deprecated/README.md` 补一行
+  （`resend_sherlock_approval.py` 早在 T0.3 已归档，本次无需再动）
 - **替代**：`python -m src.pipeline.runner --resume --task-id <id>`（必须过 `send_ledger`）
-- **验收**：
-  ```bash
-  ls scripts/resend_*.py 2>/dev/null || echo "OK: no resend scripts"
-  ls scripts/_deprecated/ | wc -l
+- **验收（实测）**：
   ```
-- **预期输出**：`OK: no resend scripts` + `2`
-- **回滚**：`mv scripts/_deprecated/*.py scripts/`
+  ls scripts/resend_*.py  →  OK: no resend scripts
+  ls scripts/_deprecated/ | wc -l  →  7（6 个 .py + 1 个 README.md）
+  ```
+  - ⚠️ **与原 spec「预期 2」不符**：原 spec 假设只有 2 个待废脚本，实际 T0.3 已归档 5 个一次性脚本，加本次 1 个共 **6 个 .py**。断言改为「`scripts/` 下无 `resend_*.py` 且归档区可导入（语法校验通过）」
+- **验证**：`grep -rn "send_showcase_to_feishu"` 全仓无引用；归档文件 `ast.parse` 全部通过
+- **回滚**：`mv scripts/_deprecated/send_showcase_to_feishu.py scripts/`
 
 #### T3.4 定时任务去模型依赖（v1.1 新增）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：GATE-2
 - **QA 来源**：#1 cron 未 pin 导致静默断流
-- **改动**：cron job 配置 + `scripts/audit_cron_pin.py`
-- **执行**：
-  1. 盘点所有定时任务（T0.2 已列），分两类处理：
-     - **纯抓取/推送类** → 改 `no_agent: true` + `script:`，彻底摆脱模型依赖（QA 已验证可行）
-     - **必须用模型的** → **显式 pin 模型**（`model:` 字段写死）
-  2. 新增 `scripts/audit_cron_pin.py`：扫描 jobs.json，任何 `unpinned 且 使用模型` 的 job 报警
-- **验收**：
-  ```bash
-  python3 scripts/audit_cron_pin.py; echo "EXIT=$?"
+- **改动**：新增 `scripts/audit_cron_pin.py`；`guanjia` 与 `xiao-he` 两个 cron job 显式 pin 模型
+- **巡检脚本判定**：
+  | 状态 | 条件 |
+  | :--- | :--- |
+  | `OK_SCRIPT` | `no_agent: true` 且有 `script`（纯脚本，无模型依赖） |
+  | `OK_PINNED` | `model` 显式写死 |
+  | `VIOLATION` | 未 pin 且依赖模型（全局配置一变就被静默跳过） |
+- **巡检结果（修复前，7 个 job）**：
   ```
-- **预期输出**：列出所有 job 的 `pinned/no_agent` 状态；无"未 pin 且依赖模型"的 job，`EXIT=0`
-- **回滚**：还原 jobs.json 备份
-- **注意**：`~/.hermes/profiles/*/cron/jobs.json` 属运行时配置，改动前必须单独备份
+  ❌ [guanjia ] d68e1fece101 guoguo_daily_course_reminder  VIOLATION 未 pin（创建时 gemini-3.8-flash）
+      └ last_status=error：Skipped to prevent unintended spend: global inference config drifted …
+  ❌ [xiao-he ] 0eedb4ad3f11 daily-token-digest            VIOLATION 未 pin（同上）
+      └ last_status=error：同样被跳过
+  ✅ xiao-hua / xiao-kai / xiao-pin×3  全是 no_agent 纯脚本
+  EXIT=1
+  ```
+  - **QA#1 不是假设，是正在发生的事实**：两个依赖模型的 job 从模型切换那天起**一直在被跳过**，`last_error` 里只有一行字，用户侧表现为「任务没来」。
+- **修复**：
+  - `xiao-he/daily-token-digest`：`cronjob action=update` 显式 pin `custom / deepseek-v4.1-flash`（next_run 2026-11-10 08:00）
+  - `guanjia/guoguo_daily_course_reminder`：**跨 profile 修改**，先备份 `jobs.json.bak.t34.20261109_135014`，再原子写入同一 pin（`model=deepseek-v4.1-flash`、`provider=custom`、`*_snapshot=null`）
+- **验收（实测）**：
+  ```
+  python3 scripts/audit_cron_pin.py; echo "EXIT=$?"
+  → 7 个 job 全部 OK_SCRIPT / OK_PINNED，无 VIOLATION，EXIT=0
+  ```
+- **回滚**：`cp ~/.hermes/profiles/guanjia/cron/jobs.json.bak.t34.20261109_135014 ~/.hermes/profiles/guanjia/cron/jobs.json`
+- **说明**：`last_status=error` 是**修复前的历史值**，下次到点跑成功才会被覆盖；本次没有强制立即跑（避免给用户多发一条重复推送）
 
 #### GATE-3 · 端到端不重发验收
-- **状态**：⬜ PENDING
-- **准入条件**：T3.1–T3.4 全部 `✅`
-- **验收步骤**：
-  1. 用同一物料完整跑一次流水线（真实渲染）
-  2. 不改任何东西，再跑一次
-  3. 断言飞书只收到 1 条视频消息，`send_ledger` 只多 1 行
-- **验收命令**：
-  ```bash
-  sqlite3 data/pipeline_state.db "select count(*) from send_ledger;"   # 运行前后差值必须为 1
+- **状态**：🚫 **BLOCKED**（2026-11-09）—— **全链执行体未接线**，无法按 spec 方式验收
+- **准入条件**：T3.1–T3.4 全部 `✅`（4/4 满足）
+- **阻塞原因（实测证据）**：
   ```
-- **预期输出**：增量 `1`；第二次运行日志出现 `already_sent`
+  python3 -m src.pipeline.runner --material /tmp/min.json --db /tmp/g3.db
+  → 拒绝执行：builtin.intake 待接线（intake.py 已就绪）   EXIT=64
+  → pipeline_runs: status=BLOCKED, steps_json={"intake":"BLOCKED"}
+  → send_ledger: 0 行
+  ```
+  runner 的 7 个 step 执行体仍是占位（`EXECUTORS_PENDING`），**真实渲染链路跑不起来**，
+  因此「同一物料跑两次 + 断言台账只 +1」无法通过 runner 复现。
+- **已完成的替代验证（覆盖 GATE-3 的断言内核）**：
+  | 断言 | 证据来源 | 结果 |
+  | :--- | :--- | :--- |
+  | 同内容重复投递只发一次 | T3.2 worker 级 E2E（副本库 + 假 Provider） | 首次 4 行台账 → 第 2/3 次重跑 4 渠道全部「台账命中」，台账仍 4 行 |
+  | `send_ledger` 增量正确 | 同上 | 3 次运行台账增量 = 4（首轮），后续 0 |
+  | 第二次运行出现 `already_sent` | `send_ledger` hook / worker claim | 命中时返回 `already_sent` / `台账命中` |
+- **解锁条件**：runner 的 step 执行体接线（intake / check_material / llm / render / dispatch）落地后，重跑：
+  ```bash
+  sqlite3 data/pipeline_state.db "select count(*) from send_ledger;"   # 记录 N
+  python3 -m src.pipeline.runner --material <real.json>
+  python3 -m src.pipeline.runner --material <real.json>
+  sqlite3 data/pipeline_state.db "select count(*) from send_ledger;"   # 期望 N+1
+  ```
 - **不通过处理**：回退 T2.3，检查 `dedupe_key` 是否误把 `run_id` 算进去
 
 ---
