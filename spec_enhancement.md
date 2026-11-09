@@ -226,9 +226,9 @@
 | P2 | T2.2 DB 四表迁移 | ✅ DONE | 2026-11-09 | `d27db94` | 四表就绪；claim True→False；状态流转/续跑/幂等跳过实测 |
 | P2 | T2.3 发送台账 Hook | ✅ DONE | 2026-11-09 | `8444872` | 首发 true→二次 already_sent；stale_artifact 实测 |
 | P2 | T2.4 内容/视觉指纹 Hook | ✅ DONE | 2026-11-09 | `8444872` | normalize True/True；3 帧指纹+artifacts 落库 |
-| P2 | T2.5 静默失败护栏 | ✅ DONE | 2026-11-09 | 待回填 | 基线 37/37 新增 0；silence_guard degraded:1 实测 | QA#1#3#8 母题 |
-| P2 | T2.6 外部真值校验 Hook | ✅ DONE | 2026-11-09 | 待回填 | 4 种 kind 实测；CLI text_span 0.992 | QA#7#10 |
-| P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | 待回填 | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
+| P2 | T2.5 静默失败护栏 | ✅ DONE | 2026-11-09 | `b63678c` | 基线 37/37 新增 0；silence_guard degraded:1 实测 | QA#1#3#8 母题 |
+| P2 | T2.6 外部真值校验 Hook | ✅ DONE | 2026-11-09 | `b63678c` | 4 种 kind 实测；CLI text_span 0.992 | QA#7#10 |
+| P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | `b63678c` | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
 | P3 | T3.1 entity_key 归一化 | ⬜ PENDING | — | — | **高风险，需备份** |
 | P3 | T3.2 发送链路加固 | ⬜ PENDING | — | — | QA#8#10 |
 | P3 | T3.3 废弃 resend 脚本 | ⬜ PENDING | — | — | 依赖 T3.2 |
