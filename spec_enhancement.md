@@ -211,7 +211,7 @@
 | P0 | T0.1 基线快照与分支隔离 | ⬜ PENDING | — | — | 阻塞全部后续任务 |
 | P0 | T0.2 模型调用点与环境盘点 | ⬜ PENDING | — | — | QA#4；产出 model_inventory.md |
 | P0 | T0.3 工作区卫生与提交边界 | ⬜ PENDING | — | — | **v1.2 新增；小品改动入主线的边界** |
-| P0 | T0.4 运行时自举 | ✅ DONE | 2026-11-09 | 未提交 | **v1.3 新增；G-A 阻断项已解除（system-fallback）** |
+| P0 | T0.4 运行时自举 | ✅ DONE | 2026-11-09 | `2b40da1` | **v1.3 新增；G-A 阻断项已解除（system-fallback）** |
 | P1 | T1.1 落 pipeline.yaml | ⬜ PENDING | — | — | 依赖 T0.1 |
 | P1 | T1.2 契约校验器 | ⬜ PENDING | — | — | 依赖 T1.1 |
 | P1 | T1.3 薄 Runner | ⬜ PENDING | — | — | 依赖 T1.2 |
