@@ -79,22 +79,27 @@ providers:
     env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_MAIN}
     schema_out: DraftScriptPayload
     profile:
-      max_tokens: 4096
-      reasoning_reserve: 512
+      # T1.4 实测标定（2026-11-09，deepseek-v4.1-flash @ 8317）
+      #   reasoning 实测 1023~1259；真实 draft ≈6100~6700 字符 ≈4000 visible token
+      #   → max_tokens = reasoning_reserve(1536) + visible(4608)
+      max_tokens: 6144
+      reasoning_reserve: 1536
       timeout_sec: 120
       json_mode: true
       min_output_chars: 80
-      expected_latency_sec: 30
+      expected_latency_sec: 25
   llm.fast:
     kind: llm
     env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_FAST}
     profile:
-      max_tokens: 1024
-      reasoning_reserve: 512
-      timeout_sec: 60
+      # T1.4 实测：分类任务 max_tokens=1024 时 reasoning 顶满 → finish=length、content 空
+      #   抬到 2048 后 reasoning=1099、finish=stop、正常返回单字母
+      max_tokens: 2048
+      reasoning_reserve: 1536
+      timeout_sec: 120
       json_mode: false
       min_output_chars: 1
-      expected_latency_sec: 15
+      expected_latency_sec: 20
   tts.tech:
     kind: tts
     env: {voice: TTS_VOICE_TECH, rate: TTS_RATE}

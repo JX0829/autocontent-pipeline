@@ -76,7 +76,7 @@
 | **M4** | **降级路径不告警** | `if not items: continue`、`except: 判D`、`finish=length` 不检查 | 故障潜伏数天，靠用户主动反馈才被发现 |
 | **M5** | **出厂质检只看分辨率** | 横屏片 `ffprobe` 通过但第 0.5 秒封面是竖版裁切图，二次复发 | 错版片推给用户 |
 
-**M3 的具体数字**（QA 实测）：`deepseek-v4.1-flash` 每次先消耗 **250~450 reasoning tokens** 才输出正文。原预算：
+**M3 的具体数字**（QA 实测）：`deepseek-v4.1-flash` 每次先消耗 **250~450 reasoning tokens** 才输出正文。**⚠️ 2026-11-09 复测修正：当前实测已达 1000~1260（见 §5 T1.4 标定表），本段旧数值仅作历史参照，不可用于预算推导。** 原预算：
 
 | 调用点 | 原 max_tokens | 实测 |
 |---|---|---|
@@ -215,7 +215,7 @@
 | P1 | T1.1 落 pipeline.yaml | ✅ DONE | 2026-11-09 | `98bdbce` | 11 段 contract / 6 槽位 / 7 步 / 22 hooks，零模型名 |
 | P1 | T1.2 契约校验器 | ✅ DONE | 2026-11-09 | `437c23d` | 5+4 项校验；AST 扫描命中 3 处 max_tokens 违例 |
 | P1 | T1.3 薄 Runner | ✅ DONE | 2026-11-09 | `437c23d` | dry-run 全绿 EXIT=0；5 项负向退出码全对 |
-| P1 | T1.4 model_profile 能力契约 | ⬜ PENDING | — | — | QA#2②#3#9 核心 |
+| P1 | T1.4 model_profile 能力契约 | ✅ DONE | 2026-11-09 | 待回填 | 实测 reasoning 1023~1259；main 6144/fast 2048 |
 | P1 | T1.5 LLM 统一调用层 | ⬜ PENDING | — | — | 禁止调用方自定 max_tokens |
 | P1 | T1.6 模型切换自检脚本 | ⬜ PENDING | — | — | 换模型前必跑 |
 | P1 | T1.7 物料契约 `manifest.schema.json` | ⬜ PENDING | — | — | **v1.2 新增，P-2；内聚前提** |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P1 进行中，7/35 完成（T0.1–T0.4、T1.1–T1.3 ✅），下一步 T1.4 model_profile 标定。
+**当前进度**：P1 进行中，8/35 完成（T0.1–T0.4、T1.1–T1.4 ✅），下一步 T1.5 LLM 统一调用层。
 
 ---
 
@@ -687,29 +687,33 @@ print('errors:', e)"
 - **回滚**：`rm src/pipeline/runner.py`
 
 #### T1.4 `model_profile` 能力契约（v1.1 新增）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09 实测标定）
 - **依赖**：T1.1
 - **QA 来源**：#2② token 预算、#3 超时、#9 摘要过短
-- **改动**：填写 `pipeline.yaml` 中每个 provider 的 `profile` 段（T1.1 已留骨架）
-- **执行**：
-  1. 先用真实调用测出 `deepseek-v4.1-flash` 的 `reasoning_tokens` 区间（QA 记录 250~450）
-     ```bash
-     python3 - <<'PY'
-     import os, time
-     from openai import OpenAI
-     c = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_BASE_URL"))
-     r = c.chat.completions.create(model=os.getenv("LLM_MODEL_MAIN"),
-         messages=[{"role":"user","content":"只回复 OK"}], max_tokens=1024)
-     u = r.usage
-     print("usage:", u.prompt_tokens, u.completion_tokens)
-     detail = getattr(u, "completion_tokens_details", None)
-     print("reasoning:", getattr(detail, "reasoning_tokens", "n/a"))
-     print("finish:", r.choices[0].finish_reason)
-     PY
-     ```
-  2. 按实测填入：`max_tokens >= reasoning_reserve + 业务正文预算`（脚本类正文建议 ≥800 字 → `max_tokens: 4096`，`reasoning_reserve: 512`）
-  3. `timeout_sec`：LLM 120s；抓取类 30s（QA#3 实测 20~25s）
-  4. `min_output_chars`：脚本正文 80（QA#9 基线）；分类结果 1
+- **改动**：`pipeline.yaml` 的 `llm.main` / `llm.fast` 两段 `profile` 按实测填值（附录 A 同步）
+- **实测数据（2026-11-09，`deepseek-v4.1-flash` @ `127.0.0.1:8317`，共 11 次真实调用）**：
+
+  | 任务形态 | `max_tokens` | `reasoning_tokens` | `completion_tokens` | `finish` | 可见输出 | 延迟 |
+  |---|---|---|---|---|---|---|
+  | 最小「只回复 OK」×3 | 1024 | 9 / 0 / 0 | 12 / 3 / 3 | stop | 2 字 | 1.3–1.8s |
+  | **分类 A/B/C/D** | **1024** | **1024（顶满）** | 1024 | **length** | **0 字** ❌ | 9.6s |
+  | 分类 A/B/C/D | 2048 | 1099 | 1102 | stop | 1 字 ✅ | 10.1s |
+  | JSON 扩写 150–200 字 ×3 | 4096 | 1146 / 1182 / 1259 | 1286 / 1299 / 1369 | stop | 198–246 字 ✅ | 10.2–10.8s |
+  | 长正文 700–900 字 | 4096 | 1023 | 1529 | stop | 864 字 ✅ | 16.5s |
+
+  **结论一（关键修正）**：QA 记录的 `reasoning 250~450` **已严重过期**。当前推理预算常态 **1000~1260**，即使是「判一个字母」的分类任务也要 ~1100。按 512 预留 → **必然截断**。
+  **结论二（QA#2② 现场复现）**：分类任务 `max_tokens=1024` 时 reasoning 吃满 1024，`finish=length`、`content` 为空 —— 这正是"评论全判 D / 静默丢弃"的物理成因。
+  **结论三（真实 draft 体量）**：仓内 3 份历史 `aligned_render.json` 实测 6115–6657 字符 ≈ **3700–4000 visible token**，JSON 键名额外占约 40–100 token。
+
+- **最终标定值**：
+
+  | 槽位 | `max_tokens` | `reasoning_reserve` | 推导 | `timeout_sec` | `expected_latency_sec` | `json_mode` | `min_output_chars` |
+  |---|---|---|---|---|---|---|---|
+  | `llm.main` | **6144** | **1536** | 1536（reasoning 上界+22% 余量）+ 4608（覆盖 4000 visible） | 120 | 25 | true | 80 |
+  | `llm.fast` | **2048** | **1536** | 1536 + 512（分类/短回复） | 120 | 20 | false | 1 |
+
+  `reasoning_reserve` 取实测上界 1259 向上取整到 1536（≈+22% 余量），避免同一 prompt 的 reasoning 抖动导致偶发截断（实测同一 JSON prompt 三次为 1146/1182/1259，波动 10%）。
+
 - **验收**：
   ```bash
   python3 -c "
@@ -720,8 +724,10 @@ for k,v in d['providers'].items():
     else: print(k,'timeout_ok',bool(v.get('profile',{}).get('timeout_sec')))"
   ```
 - **预期输出**：`llm.main MISSING set()` / `llm.fast MISSING set()` / `tts.tech timeout_ok True`
+- **实测输出**：`llm.main MISSING set()` / `llm.fast MISSING set()` / `tts.tech|tts.news|feishu|db timeout_ok True`（6 槽位全过）✅；附录 A 与 `pipeline.yaml` 的 providers/steps/hooks/contract **逐项相等**
 - **回滚**：`git checkout pipeline.yaml`
-- **失败处理**：若无 `LLM_API_KEY` 或网关不可达 → 标记 `⛔`，用 QA 实测值（250~450）作为保守下界先行填入，待网关恢复后复核
+- **失败处理**：若无 `LLM_API_KEY` 或网关不可达 → 标记 `⛔`，用本次实测上界（reasoning 1259）作为保守下界先行填入，待网关恢复后复核
+- **复用要求**：换模型必须重跑本节标定方法（附录 B SOP 第 3 步），**不得沿用本次数值**
 
 #### T1.5 LLM 统一调用层 `src/llm/client.py`（v1.1 新增）
 - **状态**：⬜ PENDING
@@ -1527,22 +1533,24 @@ providers:
     env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_MAIN}
     schema_out: DraftScriptPayload
     profile:
-      max_tokens: 4096
-      reasoning_reserve: 512
+      # T1.4 实测标定：reasoning 1023~1259，真实 draft ≈4000 visible token
+      max_tokens: 6144          # = reasoning_reserve(1536) + visible(4608)
+      reasoning_reserve: 1536
       timeout_sec: 120
       json_mode: true
       min_output_chars: 80
-      expected_latency_sec: 30
+      expected_latency_sec: 25
   llm.fast:
     kind: llm
     env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_FAST}
     profile:
-      max_tokens: 1024
-      reasoning_reserve: 512
-      timeout_sec: 60
+      # T1.4 实测：1024 时 reasoning 顶满→finish=length/content 空；2048 正常
+      max_tokens: 2048
+      reasoning_reserve: 1536
+      timeout_sec: 120
       json_mode: false
       min_output_chars: 1
-      expected_latency_sec: 15
+      expected_latency_sec: 20
   tts.tech:
     kind: tts
     env: {voice: TTS_VOICE_TECH, rate: TTS_RATE}
