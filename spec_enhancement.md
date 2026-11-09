@@ -223,7 +223,7 @@
 | P1 | T1.9 配置面收敛 | ✅ DONE | 2026-11-09 | `7a89d0f` | DEADKEY=0 UNDECLARED=0；缺键 EXIT=78 |
 | P1 | GATE-1 声明层与模型契约验收 | ✅ PASS | 2026-11-09 | `7a89d0f` | 7/7 检查全绿；可进 P2 |
 | P2 | T2.1 Hook 执行引擎 | ✅ DONE | 2026-11-09 | `4dd146e` | 22/22 自检通过；runner 警告 20→0 |
-| P2 | T2.2 DB 四表迁移 | ✅ DONE | 2026-11-09 | 待回填 | 四表就绪；claim True→False；状态流转/续跑/幂等跳过实测 |
+| P2 | T2.2 DB 四表迁移 | ✅ DONE | 2026-11-09 | `d27db94` | 四表就绪；claim True→False；状态流转/续跑/幂等跳过实测 |
 | P2 | T2.3 发送台账 Hook | ⬜ PENDING | — | — | 依赖 T2.2 |
 | P2 | T2.4 内容/视觉指纹 Hook | ⬜ PENDING | — | — | QA#11 |
 | P2 | T2.5 静默失败护栏 | ⬜ PENDING | — | — | QA#1#3#8 母题 |
