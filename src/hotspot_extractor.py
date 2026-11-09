@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.llm.client import LLMClient, LLMError
 from src.schemas import DraftScriptPayload
+from src.utils.normalize import normalize_entity_key
 
 logger = logging.getLogger("HotspotExtractor")
 
@@ -38,7 +39,7 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 
 生成的 DraftScriptPayload 必须遵循以下规范：
 1. theme: 必须是 "tech-github" 或 "ai-product" 或 "breaking-news"
-2. entity_key: 唯一事件或项目标识，如 github:owner/repo 或 news:event-slug
+2. entity_key: 唯一事件或项目标识，如 github:owner/repo 或 news:event-slug（**严禁在结尾拼接任何时间戳/序号/随机串**——同一事件必须永远得到同一个 key，重复即视为重复选题）
 3. title: 抖音/小红书吸引眼球的极客标题（严禁超过20字！黄金区间为14~20字，中英字符总数必须<=20字，确保小红书与抖音视频发布接口及双列瀑布流无截断展示）
 4. cover_main_text: 封面正中央超大主标题（简短有力，8~12字，九宫格不裁切）
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
@@ -92,13 +93,13 @@ def check_topic_duplicate(candidate: dict, recent_topics: list) -> tuple:
     """代码级严格硬去重判断"""
     cand_title = (candidate.get("title") or "").lower()
     cand_slug = (candidate.get("resource_keyword") or "").lower()
-    cand_key = (candidate.get("entity_key") or "").lower()
+    cand_key = normalize_entity_key(candidate.get("entity_key") or "").lower()   # T3.1
     cand_norm_title = "".join(c for c in cand_title if c.isalnum() or '\u4e00' <= c <= '\u9fff')
 
     for rec in recent_topics:
         rec_title = (rec.get("title") or "").lower()
         rec_slug = (rec.get("slug") or "").lower()
-        rec_key = (rec.get("entity_key") or "").lower()
+        rec_key = normalize_entity_key(rec.get("entity_key") or "").lower()       # T3.1
         rec_norm_title = "".join(c for c in rec_title if c.isalnum() or '\u4e00' <= c <= '\u9fff')
 
         # 1. 关键词 slug 精准比对
@@ -185,6 +186,10 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
                 continue
             else:
                 logger.error(f"All {max_retries} attempts picked duplicate topics! Fallback to last.")
+
+        # T3.1：写入前剥掉尾部时间戳，否则同一事件重跑会绕过 UNIQUE(entity_key)
+        if result.get("entity_key"):
+            result["entity_key"] = normalize_entity_key(result["entity_key"])
 
         if task_id:
             result["task_id"] = task_id

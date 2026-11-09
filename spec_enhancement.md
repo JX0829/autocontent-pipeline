@@ -229,7 +229,7 @@
 | P2 | T2.5 静默失败护栏 | ✅ DONE | 2026-11-09 | `b63678c` | 基线 37/37 新增 0；silence_guard degraded:1 实测 | QA#1#3#8 母题 |
 | P2 | T2.6 外部真值校验 Hook | ✅ DONE | 2026-11-09 | `b63678c` | 4 种 kind 实测；CLI text_span 0.992 | QA#7#10 |
 | P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | `b63678c` | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
-| P3 | T3.1 entity_key 归一化 | ⬜ PENDING | — | — | **高风险，需备份** |
+| P3 | T3.1 entity_key 归一化 | 🟡 PARTIAL | 2026-11-09 | 待回填 | 代码完成；dry-run 3 行/1 冲突；生产 apply 待裁决 |
 | P3 | T3.2 发送链路加固 | ⬜ PENDING | — | — | QA#8#10 |
 | P3 | T3.3 废弃 resend 脚本 | ⬜ PENDING | — | — | 依赖 T3.2 |
 | P3 | T3.4 定时任务去模型依赖 | ⬜ PENDING | — | — | QA#1 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**20/35**（P1 完成 + P2 全部完成），GATE-1 ✅ / GATE-2 ✅ PASS；下一步 P3 · T3.1 entity_key 归一化。
+**当前进度**：**20/35 + T3.1 代码完成（迁移待裁决）**，GATE-1 ✅ / GATE-2 ✅ PASS；P3 进行中。
 
 ---
 
@@ -1241,21 +1241,34 @@ for k,v in d['providers'].items():
 ### P3 · 去重生效与发送链路加固（高风险）
 
 #### T3.1 `entity_key` 归一化
-- **状态**：⬜ PENDING
+- **状态**：🟡 **PARTIAL**（2026-11-09）—— 代码已落地并验证；**生产库迁移待裁决**（存在 1 组冲突）
 - **依赖**：GATE-2
 - **风险等级**：**高**（影响历史数据比对）
-- **改动**：`src/hotspot_extractor.py` + 新增 `scripts/migrate_entity_key.py`
-- **执行**：
-  1. 归一化函数：`re.sub(r'-\d{10}$', '', key)`，生成处**不再拼时间戳**
-  2. 迁移脚本默认 dry-run，`--apply` 才写库；写前自动备份
-- **验收**：
-  ```bash
-  python3 scripts/migrate_entity_key.py
-  python3 scripts/migrate_entity_key.py --apply
-  sqlite3 data/pipeline_state.db "select count(*), count(distinct entity_key) from content_tasks;"
+- **改动**：`src/utils/normalize.py`（新增 `normalize_entity_key`）、`src/hotspot_extractor.py`、`scripts/hooks/persist_task.py`、新增 `scripts/migrate_entity_key.py`
+- **执行**（已完成）：
+  1. **归一化函数**：`normalize_entity_key()` 剥尾部 `-\d{10}`，且**只剥 16 亿~22 亿区间的 10 位数**（避免误伤 `gpt-4-0613` 这类版本号）；**不做小写化** —— 存储层保留历史原始大小写，比较时由调用方 `.lower()`
+     - ⚠️ 实测教训：初版在归一化里顺手 `lower()`，dry-run 直接指出会**多改 17 行**无关历史数据（`github:NousResearch/Hermes-Agent` 之类只有大小写差异的行）。已收回，迁移范围从 19 行降到 3 行。
+  2. **生成处不再拼时间戳**：`pick_and_convert_hotspot()` 写库前统一过 `normalize_entity_key`；SYSTEM_PROMPT 增加硬约束「entity_key 严禁拼接时间戳/序号/随机串」
+  3. **比对处统一口径**：`check_topic_duplicate()` 两侧都先归一化再比
+  4. **迁移脚本**默认 dry-run，`--apply` 才写库，写前自动备份到 `.backup/<日期>/pipeline_state_before_entity_key_<ts>.db`；冲突时 `--apply` **默认拒绝**，需 `--resolve-conflicts` 才按建议方案执行（落败行改 `<key>~dupN`），并生成 `.backup/entity_key_migration_report.json`
+- **dry-run 实测（生产库，只读）**：
   ```
-- **预期输出**：dry-run 报告"N 行将变更"；apply 后无 `UNIQUE constraint failed`
-- **回滚**：`cp .backup/20261109/pipeline_state.db data/pipeline_state.db`
+  总行数 163 · 将变更 3 行 · 冲突 1 组
+  hotspot_1_claudecode_leak_1794114373  hackernews:...-1794114373 → hackernews:claude-code-dont-ask-again-leak
+  hotspot_1_claudecode_leak_1794114400  hackernews:...-1794114400 → hackernews:claude-code-dont-ask-again-leak
+  hotspot_1_qwen9b_local_1794129836     twitter:...-5.6gb-1794129836 → twitter:qwen35-9b-deepseek-distill-5.6gb
+  ! 冲突: hackernews:claude-code-dont-ask-again-leak
+        保留: hotspot_1_claudecode_leak_1794114400（DISPATCHED）
+        落败: hotspot_1_claudecode_leak_1794114373（SCRIPTED）→ ...-leak~dup2
+  ```
+  生产库 SHA256 `58d33ed9…` 前后一致 —— **dry-run 未写库**
+- **副本库实跑（`/tmp/ek.db`，不是生产）**：
+  - `--apply` 无 `--resolve-conflicts` → **拒绝执行 EXIT=1**（符合"冲突必须人工裁决"）
+  - `--apply --resolve-conflicts` → 写库 3 行，`总行 163 · 唯一 key 163`，无 `UNIQUE constraint failed`
+  - 二次 dry-run → `将变更 0 行`（幂等）
+- **去重生效验证**：候选 `entity_key=hackernews:claude-code-dont-ask-again-leak-1799999999` 对历史带时间戳 key → `True / 事件标识 entity_key 重复`（旧逻辑会漏判）
+- **待决策**：是否对**生产库**执行 `--apply --resolve-conflicts`（冲突落败行为 `hotspot_1_claudecode_leak_1794114373`，状态 SCRIPTED）
+- **回滚**：`cp .backup/20261109/pipeline_state.db data/pipeline_state.db` 或还原 `pipeline_state_before_entity_key_*.db`
 - **失败处理**：出现 UNIQUE 冲突 → 立即回滚，冲突行进人工裁决
 
 #### T3.2 发送链路加固

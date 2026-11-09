@@ -13,6 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
 
+sys.path.insert(0, str(C.PROJ))   # T3.1：要 import src.utils.normalize
+
 
 def main() -> None:
     p = C.load_payload()
@@ -25,7 +27,10 @@ def main() -> None:
     task_id = str(p.get("task_id") or man.get("task_id") or "")
     if not task_id:
         C.fail("persist_task: 缺 task_id")
-    entity_key = C.normalize_text(title)[:120]
+    # T3.1：entity_key 统一走 normalize_entity_key（剥尾部 unix 时间戳 + 小写），
+    # 保证同一事件重跑命中的是同一个 key，UNIQUE(entity_key) 才能生效
+    from src.utils.normalize import normalize_entity_key
+    entity_key = normalize_entity_key(str(man.get("entity_key") or "")) or C.normalize_text(title)[:120]
     db = C.db_path(p)
     if not db.exists():
         C.fail(f"persist_task: 数据库不存在 {db}（先跑 T2.2 迁移）")
