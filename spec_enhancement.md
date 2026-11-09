@@ -1386,7 +1386,24 @@ for k,v in d['providers'].items():
   因此「同一物料跑两次 + 断言台账只 +1」无法通过 runner 复现。
 - **已完成的替代验证（覆盖 GATE-3 的断言内核）**：
   | 断言 | 证据来源 | 结果 |
-  | :--- | :--- | :--- |
+  | :
+- **独立复核（2026-11-09，commit `4c33c9e` 后重跑）**：`bash scripts/gate3.sh` → **12/12 断言全绿**
+  ```
+  [A] 首跑：runner rc=0 · 飞书发送 1 次 · send_ledger 1 行 · 产物 video.mp4 + video_16_9.mp4 齐全
+  [B] 同物料再跑：命中 uq_run_content 幂等跳过 · 未新增发送 · 台账仍 1 行
+  [C] 抹掉 dispatch 完成标记后重发：命中 already_sent · 未新增发送 · 台账仍 1 行
+  → GATE-3 PASS
+  ```
+- **复核时修掉的取样窗口 bug（否则 GATE-3 会假失败）**：
+  `_common.DEFAULT_SAMPLE_TS` 原为 `(0.1,0.2,0.3,0.4)`，**整段落在开场动画里**（标题逐个入场）。
+  同一支横版成片实测：0.1~0.4s 横向跨度恒为 **18.8%**，1.0s 之后稳定 **89.8%** ——
+  用动画帧取中位数会把正常横版封面判成「竖版塞横屏」，`external_truth` 直接 block。
+  已改为 `(1.0,1.5,2.0,2.5)`，`landscape_guard` 同步多采样取最大值；实测 `ok=True, span=0.898`。
+- **GATE-2 断言随契约更新**：`3f8a319` 起 `send_ledger` hook 改为**只读预检**（抢占由执行体
+  `claim_send_slot` 独占，否则 hook 先 INSERT → 执行体必然 already_sent → 台账有行却没发出去）。
+  `gate2.sh` 第二项改为断言「两次调用都 ok 且台账不落行」，幂等仍由第 1 项 `claim×3` 覆盖。
+
+--- | :--- | :--- |
   | 同内容重复投递只发一次 | T3.2 worker 级 E2E（副本库 + 假 Provider） | 首次 4 行台账 → 第 2/3 次重跑 4 渠道全部「台账命中」，台账仍 4 行 |
   | `send_ledger` 增量正确 | 同上 | 3 次运行台账增量 = 4（首轮），后续 0 |
   | 第二次运行出现 `already_sent` | `send_ledger` hook / worker claim | 命中时返回 `already_sent` / `台账命中` |
