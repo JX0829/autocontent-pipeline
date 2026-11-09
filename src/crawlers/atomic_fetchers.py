@@ -96,11 +96,144 @@ def _strip_md_noise(text: str) -> str:
     return t.strip()
 
 
+_PUNCT_SET = "。，；：！？、,;:!?"
+_CLOSE_QUOTES = "”\"』」）)】]"
+
+
+def _collapse_word_repeats(text: str) -> str:
+    """按词块折叠重复（处理 'Claude Quickstarts Claude Quickstarts' 这类带空格的英文重复）"""
+    words = text.split(" ")
+    if len(words) < 2:
+        return text
+    out, i = [], 0
+    while i < len(words):
+        matched = False
+        max_n = min(12, (len(words) - i) // 2)
+        for n in range(2, max_n + 1):
+            block = words[i:i + n]
+            if words[i + n:i + 2 * n] == block:
+                j = i
+                while words[j:j + n] == block:
+                    j += n
+                out.extend(block)
+                i = j
+                matched = True
+                break
+        if not matched:
+            out.append(words[i])
+            i += 1
+    return " ".join(out)
+
+
+def _collapse_repeats(text: str) -> str:
+    """折叠短语级重复：字符级 + 词块级双通道"""
+    if not text:
+        return ""
+    cur = text
+    for _ in range(5):
+        prev = cur
+        cur = re.sub(r'(.{2,40}?)\1+', r'\1', cur)      # 结尾结尾结尾 -> 结尾
+        cur = _collapse_word_repeats(cur)               # 词块重复
+        if prev == cur:
+            break
+    return cur
+
+
+def _dedupe_sentences(text: str) -> str:
+    """按句去重：连续重复句只保留一次"""
+    parts = re.split(r'(?<=[。！？；!?;])', text)
+    out, seen = [], set()
+    for p in parts:
+        k = re.sub(r'[\s。！？；!?;，,]', '', p)
+        if not k:
+            continue
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(p)
+    return "".join(out)
+
+
+def _normalize_punct(text: str) -> str:
+    """标点整形：消除叠加、错配与首尾冗余标点"""
+    if not text:
+        return ""
+    t = text
+    t = re.sub(r'([。，；：！？、,;:!?])\1+', r'\1', t)          # 。。 -> 。
+    t = re.sub(r'[。．]\s*(?=[，；：！？、,;:!?])', '', t)        # 。， -> ，
+    t = re.sub(r'([！？!?])\s*[。．，、]', r'\1', t)             # ！。 -> ！
+    t = re.sub(r'([”"』」])\s*[。．]', r'\1', t)                # ”。 -> ”（仅引号，括号后句号保留）
+    t = re.sub(r'[，、；]\s*[。．]', r'。', t)                    # ，。 -> 。
+    t = re.sub(r'\s+', ' ', t)
+    return t.strip().strip("，、；：,;:").strip()
+
+
+def _looks_like_noise(text: str) -> bool:
+    """判断一段文本是否属于无信息噪声（占位符/符号堆/翻译残渣）"""
+    if not text or len(text) < 8:
+        return True
+    zh = len(re.findall(r'[\u4e00-\u9fa5]', text))
+    en = len(re.findall(r'[A-Za-z]', text))
+    digit = len(re.findall(r'\d', text))
+    content = zh + en + digit
+    if content / max(len(text), 1) < 0.5:
+        return True                     # 符号/乱码占比过高
+    if "�" in text:
+        return True
+    if zh == 0 and en < 6:
+        return True                     # 既无中文也无有效英文词
+    return False
+
+
+def _drop_noise_clauses(text: str) -> str:
+    """按句剔除翻译残渣：纯中文+数字+斜杠拼接、无实际语义的碎片句"""
+    parts = re.split(r'(?<=[。！？；!?;])', text)
+    kept = []
+    for p in parts:
+        if not p.strip():
+            continue
+        zh = len(re.findall(r'[\u4e00-\u9fa5]', p))
+        has_ascii_word = bool(re.search(r'[A-Za-z]{2,}', p))
+        has_slash_digit = ('/' in p) and bool(re.search(r'\d', p))
+        # 形如「为你/新舒适7240的消毒干杯」的机翻碎片：有中文有数字有斜杠、却没有任何英文词
+        if has_slash_digit and zh >= 4 and not has_ascii_word and len(p) <= 24:
+            continue
+        kept.append(p)
+    return "".join(kept)
+
+
+def _clean_desc_text(text: str) -> str:
+    """正文清洗：去 md 噪声 -> 去占位符 -> 剔除残渣句 -> 折叠重复 -> 句级去重 -> 标点整形"""
+    t = _strip_md_noise(text)
+    # 正文里的裸链接一律剔除（每条本身都单独带原文链接，正文重复外链既占篇幅又易失效）
+    t = re.sub(r'https?://\S+', ' ', t)
+    # 去掉 [国家]、[?]、[1] 这类占位/引用标记（保留正常中英文内容）
+    t = re.sub(r'\[[^\[\]]{0,10}\]', '', t)
+    t = re.sub(r'（\s*）|\(\s*\)', '', t)
+    t = _drop_noise_clauses(t)
+    t = _collapse_repeats(t)
+    t = _dedupe_sentences(t)
+    t = _normalize_punct(t)
+    return t.strip()
+
+
+def _overlap_ratio(a: str, b: str, n: int = 4) -> float:
+    """4-gram 重叠率：判断补充段是否在语义上重复了已有内容"""
+    def grams(s):
+        s = re.sub(r'\s+', '', s)
+        return {s[i:i + n] for i in range(max(len(s) - n + 1, 0))}
+    ga, gb = grams(a), grams(b)
+    if not gb:
+        return 0.0
+    return len(ga & gb) / len(gb)
+
+
 def shape_desc(core: str, extras=None, suffix: str = "",
                min_chars: int = DESC_MIN_CHARS, max_chars: int = DESC_MAX_CHARS) -> str:
     """
     把「一句话简介 + 补充信息」整形成统一长度的摘要：
-    - 不足 min_chars 时按顺序拼接 extras 补足；
+    - 清洗重复短语、占位符与叠加标点；
+    - 不足 min_chars 时按顺序拼接 extras 补足（自动去重、拒绝噪声段）；
     - 超过 max_chars 时在标点处收口，绝不出现半句残词；
     - suffix（如热度标记）不占用正文预算。
     """
@@ -108,15 +241,30 @@ def shape_desc(core: str, extras=None, suffix: str = "",
     suffix = suffix or ""
     budget = max(max_chars - len(suffix), 40)
 
-    buf = (core or "").strip().rstrip("。")
+    buf = _clean_desc_text(core or "").rstrip("。")
+    buf_keys = {re.sub(r'[\s。！？；，、!?;,]', '', s) for s in re.split(r'(?<=[。！？；])', buf) if s.strip()}
+
     for e in extras:
         if len(buf) >= min_chars:
             break
-        e = _strip_md_noise(str(e)).strip().rstrip("。")
-        if not e or e in buf:
+        e = _clean_desc_text(str(e))
+        if not e or _looks_like_noise(e):
             continue
-        buf = f"{buf}。{e}" if buf else e
+        e_key = re.sub(r'[\s。！？；，、!?;,]', '', e)
+        # 已整体包含 / 与已有句子重复 -> 跳过，杜绝重复拼接
+        if e_key and (e_key in re.sub(r'[\s。！？；，、!?;,]', '', buf) or e_key in buf_keys):
+            continue
+        # 语义重复（4-gram 重叠超过 55%）-> 跳过，避免同一句话换个说法再说一遍
+        if buf and _overlap_ratio(buf, e) > 0.42:
+            continue
+        if not buf:
+            buf = e.rstrip("。")
+        else:
+            sep = "" if buf[-1] in _PUNCT_SET or buf[-1] in _CLOSE_QUOTES else "。"
+            buf = f"{buf}{sep}{e.rstrip('。')}"
+        buf_keys.add(e_key)
 
+    buf = _normalize_punct(buf)
     if len(buf) > budget:
         cut = buf[:budget]
         for p in ("。", "；", "！", "？", "，", "、"):
@@ -126,7 +274,10 @@ def shape_desc(core: str, extras=None, suffix: str = "",
                 break
         else:
             buf = cut
-    return f"{buf}{suffix}".strip()
+        buf = _normalize_punct(buf)
+
+    total = f"{buf}{suffix}".strip()
+    return _normalize_punct(total) if not suffix else total
 
 
 def fetch_github_readme_snippet(repo: str, timeout: float = 3.0, max_len: int = 400) -> str:
@@ -250,11 +401,13 @@ def fetch_github_trending(limit: int = 10, timeout_sec: int = 6) -> List[Dict[st
                     readme = fetch_github_readme_snippet(repo)
                     if readme:
                         extras.append(translate_to_zh(readme))
-                # 仍不足时用客观事实补齐（语言/当日涨星），不做无信息填充
-                if len(zh_desc) + sum(len(x) for x in extras) < DESC_MIN_CHARS:
+                # 先整形；若因去重收口后仍偏短，再用客观事实（语言/当日涨星）补齐
+                suffix = f" (今日暴涨 +{stars_today}⭐)"
+                core_raw = zh_desc or "GitHub 今日热门开源项目"
+                zh_desc = shape_desc(core_raw, extras, suffix=suffix)
+                if len(zh_desc) < DESC_MIN_CHARS:
                     extras.append(f"主要语言 {lang}，今日单日新增 {stars_today} 星")
-                zh_desc = shape_desc(zh_desc or "GitHub 今日热门开源项目", extras,
-                                     suffix=f" (今日暴涨 +{stars_today}⭐)")
+                    zh_desc = shape_desc(core_raw, extras, suffix=suffix)
 
                 items.append({
                     "title": f"开源爆款: {repo}",
