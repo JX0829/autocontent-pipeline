@@ -24,7 +24,6 @@ import json
 import os
 import shutil
 import sqlite3
-from src.utils.accounts import default_account
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +34,7 @@ os.chdir(PROJ)
 
 # ---------------------------------------------------------------- 假传输
 import src.feishu.approval_service as _svc  # noqa: E402
+from src.utils.accounts import default_account  # noqa: E402
 
 SENT: list[dict] = []
 
@@ -66,6 +66,10 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 def run(rid: str, extra: list[str] | None = None) -> tuple[int, str]:
+    # 审批渠道固定 cli + 显式放行：验收环境不该真发飞书审批卡片，
+    # 也不允许"非交互静默通过"（必须由 APPROVAL_NONINTERACTIVE 明确表态）
+    os.environ.setdefault("APPROVAL_MODE", "cli")
+    os.environ.setdefault("APPROVAL_NONINTERACTIVE", "approve")
     argv = ["runner", "--material", str(MATERIAL), "--db", str(DB), "--run-id", rid]
     argv += extra or []
     old = sys.argv[:]

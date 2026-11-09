@@ -224,12 +224,20 @@ def exec_render(ctx: StepContext) -> dict[str, str]:
 
 
 def exec_approval(ctx: StepContext) -> dict[str, str]:
-    """gate.approval：auto 直接放行；feishu/cli 走人工（未接入前明确拒绝，不假装通过）。"""
-    mode = str((ctx.step.get("params") or {}).get("mode") or "auto")
-    if mode == "auto":
-        return {"approval": str(_write_json(ctx.out("approval.json"),
-                                            {"mode": "auto", "decision": "approve"}))}
-    raise ExecutorError(f"审批模式 {mode} 尚未接入（T4.6）：拒绝静默放行")
+    """gate.approval：走适配层（feishu / cli / auto），runner 不再关心渠道细节。"""
+    from src.approval import request_approval
+
+    params = ctx.step.get("params") or {}
+    mode = str(params.get("mode") or "auto")
+    message = str(params.get("message") or "请确认成片")
+    result = request_approval(ctx.run_id, ctx.artifacts, message, mode=mode)
+
+    out = _write_json(ctx.out("approval.json"), result)
+    if result.get("decision") != "approve":
+        raise ExecutorError(
+            f"审批未通过（{result.get('decision')}，渠道={result.get('mode')}，"
+            f"依据={result.get('decided_by')}）：{result.get('reason') or ''}")
+    return {"approval": str(out)}
 
 
 def exec_dispatch(ctx: StepContext) -> dict[str, str]:
