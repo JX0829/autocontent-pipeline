@@ -212,7 +212,7 @@
 | P0 | T0.2 模型调用点与环境盘点 | ✅ DONE | 2026-11-09 | `94c2636` | QA#4；产出 `model_inventory.md`（4 调用点/网关 2 模型/7 job） |
 | P0 | T0.3 工作区卫生与提交边界 | ✅ DONE | 2026-11-09 | `94c2636` | 条目 12 → 6；`_deprecated/` 归档 5 个一次性脚本 |
 | P0 | T0.4 运行时自举 | ✅ DONE | 2026-11-09 | `2b40da1` | **v1.3 新增；G-A 阻断项已解除（system-fallback）** |
-| P1 | T1.1 落 pipeline.yaml | ✅ DONE | 2026-11-09 | 待回填 | 11 段 contract / 6 槽位 / 7 步 / 22 hooks，零模型名 |
+| P1 | T1.1 落 pipeline.yaml | ✅ DONE | 2026-11-09 | `98bdbce` | 11 段 contract / 6 槽位 / 7 步 / 22 hooks，零模型名 |
 | P1 | T1.2 契约校验器 | ⬜ PENDING | — | — | 依赖 T1.1 |
 | P1 | T1.3 薄 Runner | ⬜ PENDING | — | — | 依赖 T1.2 |
 | P1 | T1.4 model_profile 能力契约 | ⬜ PENDING | — | — | QA#2②#3#9 核心 |
