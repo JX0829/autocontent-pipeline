@@ -246,9 +246,9 @@
 
 **当前进度**：**35/35**（快照表 31 DONE + 4 GATE PASS 全绿），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅ / GATE-5 ✅。
 **收尾项（不在任务表内，来自实测发现的遗留）**：
-1. 飞书 media 消息 `duration` 回显为 0（视频卡片可能显示 00:00）
-2. T4.4 第 6 条「三卡静默」只做了文案兜底清理，`if (!text) return null` 占位卡 + `cover.card_source` 声明式配置 + `any` 类型收窄未做
-3. feishu 审批渠道的裁决回写（`data/approvals/<run_id>.json`）尚无回调服务，端到端未实跑
+1. ~~飞书 media 消息 `duration` 回显为 0~~ → **已查明是平台限制**：客户端传值被服务端忽略，SDK 上传接口无 duration 字段；传「秒」会让消息变 `nonsupport` 坏消息。结论已写入 `approval_service.py` 注释，不再追。
+2. ~~T4.4 第 6 条「三卡静默」~~ → **已完成**（`f44bd7f`）：占位卡 + console.warn、去 `any`、`cover.card_source` 由 yaml 声明并在渲染前注入 props。
+3. ~~feishu 审批渠道端到端未实跑~~ → **已完成**（`fa09ab4`）：适配层改为**自动扫描飞书回复**（主路径）+ 裁决文件（辅助路径），两轮真机验证通过（`feishu_reply:ou_bc83…`，evidence_msg_id 留证）。
 
 ---
 
