@@ -119,10 +119,14 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
 
 
 def normalize_text(s: str) -> str:
-    """去空白/标点/表情，用于去重与指纹比对。"""
-    s = re.sub(r"[\s\u200b]+", "", s or "")
-    s = re.sub(r"[，。！？、；：“”‘’（）【】《》,.!?;:\"'()\[\]<>~`@#$%^&*_+=|\\/-]", "", s)
-    return s.lower()
+    """归一化文本 —— **委托给全仓唯一实现** `src.utils.normalize`（T2.4）。"""
+    try:
+        sys.path.insert(0, str(PROJ))
+        from src.utils.normalize import normalize_text as _norm
+        return _norm(s)
+    except Exception:  # 兜底：保证 hook 不因导入问题整体失效
+        s = re.sub(r"\[[^\]]{1,8}R?\]", "", s or "").lower()
+        return "".join(c for c in s if c.isalnum() or "\u4e00" <= c <= "\u9fff")
 
 
 # ------------------------------------------------------------------ 外部命令
@@ -186,6 +190,23 @@ def frame_gray(path: Path, ts: float = 0.2, timeout: float = 25.0) -> tuple[byte
     if p.returncode != 0 or len(data) < w * h:
         return None
     return data[: w * h], w, h
+
+
+def frame_gray32(path: Path, ts: float = 0.5, timeout: float = 25.0) -> bytes | None:
+    """抽一帧并缩放到 32x32 灰度（T2.4 视觉指纹：抗分辨率/码率差异）。"""
+    try:
+        p = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(ts), "-i", str(path),
+             "-frames:v", "1", "-vf", "scale=32:32:flags=area",
+             "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            capture_output=True, timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    data = p.stdout or b""
+    if p.returncode != 0 or len(data) < 32 * 32:
+        return None
+    return data[: 32 * 32]
 
 
 # ------------------------------------------------------------------ 数据面

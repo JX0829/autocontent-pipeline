@@ -224,8 +224,8 @@
 | P1 | GATE-1 声明层与模型契约验收 | ✅ PASS | 2026-11-09 | `7a89d0f` | 7/7 检查全绿；可进 P2 |
 | P2 | T2.1 Hook 执行引擎 | ✅ DONE | 2026-11-09 | `4dd146e` | 22/22 自检通过；runner 警告 20→0 |
 | P2 | T2.2 DB 四表迁移 | ✅ DONE | 2026-11-09 | `d27db94` | 四表就绪；claim True→False；状态流转/续跑/幂等跳过实测 |
-| P2 | T2.3 发送台账 Hook | ⬜ PENDING | — | — | 依赖 T2.2 |
-| P2 | T2.4 内容/视觉指纹 Hook | ⬜ PENDING | — | — | QA#11 |
+| P2 | T2.3 发送台账 Hook | ✅ DONE | 2026-11-09 | 待回填 | 首发 true→二次 already_sent；stale_artifact 实测 |
+| P2 | T2.4 内容/视觉指纹 Hook | ✅ DONE | 2026-11-09 | 待回填 | normalize True/True；3 帧指纹+artifacts 落库 |
 | P2 | T2.5 静默失败护栏 | ⬜ PENDING | — | — | QA#1#3#8 母题 |
 | P2 | T2.6 外部真值校验 Hook | ⬜ PENDING | — | — | QA#7#10 |
 | P2 | GATE-2 台账幂等验收 | ⬜ PENDING | — | — | 3 发 1 落地才可进 P3 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**15/35**（P1 完成 + T2.1/T2.2 完成），GATE-1 ✅ PASS；下一步 T2.3 发送台账 hook。
+**当前进度**：**17/35**（P1 完成 + T2.1–T2.4 完成），GATE-1 ✅ PASS；下一步 T2.5 静默失败护栏。
 
 ---
 
@@ -1075,37 +1075,62 @@ for k,v in d['providers'].items():
 - **回滚**：`git checkout src/db.py src/pipeline/runner.py` + 手动 drop 四表
 
 #### T2.3 发送台账与来源校验 Hook
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T2.2
-- **改动**：新增 `scripts/hooks/send_ledger.py`、`scripts/hooks/provenance_check.py`
-- **`send_ledger.py`**：`dedupe_key = sha256(content_hash|video_sha256|account)` → `claim_send_slot` → 失败返回 `{ok:false, reason:"already_sent"}`
-- **`provenance_check.py`**：待发产物**必须位于本次 `run_root` 内**；命中 `output/<历史日期>/` 一律 `{ok:false, reason:"stale_artifact"}`
-- **验收**：连续两次投递同一 payload，第一次 `ok:true`，第二次 `ok:false / already_sent`
-- **回滚**：删除两个 hook 文件 + `git checkout src/db.py`
+- **改动**：`scripts/hooks/send_ledger.py`（重写）、`scripts/hooks/provenance_check.py`（重写）
+- **`send_ledger.py`**（全部落地）：
+  - `dedupe_key = sha256(content_hash | video_sha256 | account)`
+  - 走 T2.2 的 `claim_send_slot()`（`INSERT ... ON CONFLICT DO NOTHING`），抢到才算首发
+  - 抢不到 → `{ok:false, reason:"already_sent"}`
+  - 台账不可用 → **失败关闭**（`fail closed`）：宁可发不出去，也不冒重复发的风险
+  - key 里带 `video_sha256` 的理由：同内容**重渲染的新片**（换封面/字幕）应允许发，同一份视频文件重复投递必须拦
+- **`provenance_check.py`**（两层判据）：
+  - A. **产物来源**：待发产物必须位于本次 `run_root` 内；落在 `output/<日期>/...` 而非本次 run → `{ok:false, reason:"stale_artifact"}`
+  - B. **事实溯源**（保留 M1 闸门）：draft 正文的每个数字必须能在物料原文找到，否则 block
+- **验收**（连续两次同 payload）：
+  ```bash
+  # 实测脚本：同 payload 连投两次
+  ```
+- **实测输出（2026-11-09）**：
+  | 场景 | 结果 |
+  | :--- | :--- |
+  | 首次投递 | `ok=true`，`send_ledger` 落 1 行 |
+  | 二次同 payload | `ok=false, reason="already_sent"` |
+  | 产物在本次 run_root | `ok=true` |
+  | 产物在 `output/20200101/run_old/video.mp4` | `ok=false, reason="stale_artifact: 不在本次 run_root 内"` |
+  | 正文含物料没有的数字（`120`、`4`） | `ok=false, reason="正文含物料中不存在的数字 → 120, 4"` |
+- **回滚**：`git checkout scripts/hooks/send_ledger.py scripts/hooks/provenance_check.py`
 
 #### T2.4 内容与视觉指纹 Hook
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T2.2
 - **QA 来源**：#11 判重精确匹配失效
-- **改动**：新增 `scripts/hooks/content_fingerprint.py`、`scripts/hooks/frame_fingerprint.py`、`src/utils/normalize.py`
-- **`src/utils/normalize.py`**（**唯一归一化实现，评论判重与内容指纹共用**）：
-  ```python
-  def normalize_text(s: str) -> str:
-      s = re.sub(r"\[[^\]]{1,8}R?\]", "", s or "")        # 剥离 [捂脸R] 类表情码
-      s = s.lower()
-      return "".join(c for c in s if c.isalnum() or "\u4e00" <= c <= "\u9fff")
-  ```
-- **`content_fingerprint.py`**（gate / `on_fail: warn`）：`sha256(normalize_text(title+slug+正文))[:16]` → 查 `pipeline_runs`
-- **`frame_fingerprint.py`**（transform）：抽 3 帧（0.5s / 中段 / 末-1s）→ `scale=32:32` 灰度 → `md5[:16]` → 写 `artifacts.frame_hash`
+- **改动**：新增 `src/utils/normalize.py`；重写 `scripts/hooks/content_fingerprint.py`、`scripts/hooks/frame_fingerprint.py`；`scripts/hooks/_common.py`（归一化改为委托）
+- **`src/utils/normalize.py`**（**唯一归一化实现，评论判重与内容指纹共用**）：按 spec 实现（剥离 `[捂脸R]` 类表情码 → lower → 只保留 alnum + CJK），另提供 `content_hash(title, body, slug)`
+  - `_common.normalize_text()` 改为**委托**该实现（保留兜底分支，防 hook 因导入问题整体失效）
+- **`content_fingerprint.py`**（gate / `on_fail: warn`）：
+  - `fp = sha256(normalize_text(title+slug+正文))[:16]`
+  - 先查 `pipeline_runs.content_hash`（同 account），再查本地台账 `data/content_fingerprints.jsonl`
+  - 命中其它 task → `ok=false`（warn 记录续行），同时把本次指纹登记进台账
+- **`frame_fingerprint.py`**（transform）：
+  - 抽 **3 帧**（0.5s / 中段 / 末-1s）→ 每帧 `scale=32:32` 灰度 → 拼接取 `md5[:16]`
+  - 同时 `record_artifact(task_id, kind, path, sha256, frame_hash)` **写库**，事后可用 SQL 查"是不是重渲染的老片"
 - **验收**：
   ```bash
   python3 -c "
-from src.utils.normalize import normalize_text as n
-print(n('DeepSeek V4 发布！')==n('DeepSeek  V4 发布  '))     # True 排版变体
-print(n('好用[捂脸R]')==n('好用'))                            # True 表情码剥离"
+  from src.utils.normalize import normalize_text as n
+  print(n('DeepSeek V4 发布！')==n('DeepSeek  V4 发布  '))     # True 排版变体
+  print(n('好用[捂脸R]')==n('好用'))                            # True 表情码剥离"
   ```
-- **预期输出**：两行均 `True`
-- **回滚**：删除新增文件
+- **实测输出（2026-11-09）**：`True` / `True` / 幂等 `True` ✅
+  指纹实测（真视频 4s / 640x360）：
+  ```
+  frame_fp = b27a12dde78a447e
+  per_frame = {0.5s: d0d81d54, 2.0s: 6c7426ec, 3.0s: 26fe04b5}
+  artifacts 行 = (t23, landscape, a1b644e34c91, b27a12dde78a447e)
+  content_fp#1 ok=True；换 task_id 同内容 → ok=False「内容指纹重复（历史任务 t23）」
+  ```
+- **回滚**：删除 `src/utils/normalize.py`，`git checkout scripts/hooks/content_fingerprint.py scripts/hooks/frame_fingerprint.py scripts/hooks/_common.py`
 
 #### T2.5 静默失败护栏（v1.1 新增）
 - **状态**：⬜ PENDING
