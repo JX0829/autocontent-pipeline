@@ -63,6 +63,7 @@ def _assert_has_audio(path: Path) -> None:
     实测背景：T4.1 把 public 根换到 run 目录后，只要软链缺失，Remotion 会
     渲染出**没有音轨**的视频而不报错（ffprobe 只看到 h264）。所以这里硬断言。
     """
+    path = Path(path)   # 容忍 str 入参：否则 path.name 会抛 AttributeError 掩盖真实错误
     try:
         out = subprocess.check_output(
             ["ffprobe", "-v", "error", "-select_streams", "a",
