@@ -291,115 +291,6 @@ export const CoverStill: React.FC<AlignedRenderPayload> = (props) => {
   );
 };
 
-export const XhsCardStill: React.FC<AlignedRenderPayload & { frameIndex?: number }> = (
-  props
-) => {
-  return (
-    <TemplateProvider templateId={props.template_id} theme={props.theme}>
-      <XhsCardStillInner {...props} />
-    </TemplateProvider>
-  );
-};
-
-const XhsCardStillInner: React.FC<AlignedRenderPayload & { frameIndex?: number }> = (
-  props
-) => {
-  const { tokens, layout } = useTemplate();
-
-  return (
-    <div
-      style={{
-        width: 1242,
-        height: 1660,
-        background: tokens.canvasBg,
-        color: tokens.textPrimary,
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'space-between',
-        padding: '80px 70px',
-        boxSizing: 'border-box',
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* 顶部标题栏 */}
-      <div>
-        <div
-          style={{
-            display: 'inline-block',
-            padding: '10px 24px',
-            background: tokens.badgeBg,
-            border: tokens.badgeBorder || 'none',
-            borderRadius: 30,
-            color: tokens.badgeText,
-            fontSize: 24,
-            fontWeight: 800,
-            marginBottom: 24,
-          }}
-        >
-          {props.cover_sub_text}
-        </div>
-        <div
-          style={{
-            fontSize: 54,
-            fontWeight: 900,
-            color: tokens.textPrimary,
-            lineHeight: 1.3,
-            letterSpacing: 1,
-            textShadow: tokens.cardShadow,
-            fontFamily: layout.useSerifHeadline ? 'Georgia, serif' : 'inherit',
-          }}
-        >
-          {props.title}
-        </div>
-      </div>
-
-      {/* 中央核心代码/卡片展示 */}
-      <div
-        style={{
-          width: '100%',
-          borderRadius: tokens.cardRadius,
-          background: tokens.cardBg,
-          border: tokens.cardBorder,
-          padding: 40,
-          boxShadow: tokens.cardShadow,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 28,
-            color: tokens.codeText,
-            fontFamily: 'monospace',
-            lineHeight: 1.6,
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {props.scenes[0]?.code_snippet ||
-            '# 一键转换各种复杂文档\nmarkitdown report.xlsx -o output.md'}
-        </div>
-      </div>
-
-      {/* 底部互动栏：纯技术交流 */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          padding: '20px 30px',
-          background: tokens.cardBg,
-          borderRadius: 20,
-          border: tokens.cardBorder,
-        }}
-      >
-        <span style={{ fontSize: 24, color: tokens.accentPrimary, fontWeight: 800 }}>
-          {props.footer_callout || '💡 欢迎评论区交流'}
-        </span>
-        <span style={{ fontSize: 20, color: tokens.textSecondary }}>科技极客速递</span>
-      </div>
-    </div>
-  );
-};
-
 const defaultMockProps: AlignedRenderPayload = {
   task_id: 'default_demo',
   template_id: 'linear_obsidian',
@@ -487,13 +378,6 @@ export const RemotionRoot: React.FC = () => {
           width: 1920,
           height: 1080,
         }}
-      />
-      <Still
-        id="XhsCardStill"
-        component={XhsCardStill}
-        width={1242}
-        height={1660}
-        defaultProps={defaultMockProps}
       />
     </>
   );

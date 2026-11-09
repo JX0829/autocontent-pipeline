@@ -207,7 +207,7 @@ steps:
     artifact_kind: vertical            # v1.4：external_truth 按此分派校验口径
     params: {aspect: vertical, composition: GeekShortVideo, width: 1080, height: 1920}
     reads: ["draft_script.json"]
-    produces: ["video.mp4", "cover.png", "xhs_cards/"]
+    produces: ["video.mp4", "cover.png"]
     before_hooks: [hook.sensitive_scan, hook.material_check, hook.expand_narration]
     after_hooks: [hook.frame_fingerprint, hook.frame_sample_check, hook.external_truth, hook.audio_duration_check]
 

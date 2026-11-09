@@ -38,7 +38,6 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
     time_prefix = now.strftime("%H%M%S")
     output_dir = os.path.join(PROJECT_ROOT, "output", date_folder, f"{time_prefix}_{task_id}")
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "xhs_cards"), exist_ok=True)
 
     db = PipelineDB(os.path.join(PROJECT_ROOT, "data", "pipeline_state.db"))
     with open(script_path, "r", encoding="utf-8") as f:
@@ -92,7 +91,6 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
     print("\n[3/4] 启动 Remotion 渲染 9:16 1080P 视频...")
     video_out_path = os.path.join(output_dir, "video.mp4")
     cover_out_path = os.path.join(output_dir, "cover.png")
-    xhs_card_out_path = os.path.join(output_dir, "xhs_cards", "card_0.png")
 
     props_rel_path = f"./public/tasks/{task_id}/aligned_render.json"
     renderer_dir = os.path.join(PROJECT_ROOT, "renderer")
@@ -110,18 +108,12 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
     ]
     subprocess.check_call(cmd_cover, cwd=renderer_dir)
 
-    cmd_xhs = [
-        "npx", "remotion", "still", "src/index.ts", "XhsCardStill", xhs_card_out_path,
-        f"--props={props_rel_path}", "--image-format=png"
-    ]
-    subprocess.check_call(cmd_xhs, cwd=renderer_dir)
 
     db.update_task_status(
         task_id,
         "RENDERED",
         video_path=video_out_path,
-        cover_path=cover_out_path,
-        xhs_cards_dir=os.path.join(output_dir, "xhs_cards")
+        cover_path=cover_out_path
     )
     print(f"\n[4/4] 渲染完成！成片路径: {video_out_path}")
     return video_out_path, cover_out_path, output_dir, total_sec, aligned_payload.template_id

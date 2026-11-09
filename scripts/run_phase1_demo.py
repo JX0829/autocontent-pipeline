@@ -44,7 +44,6 @@ async def run_phase1_demo(template: str = "auto"):
     time_prefix = now.strftime("%H%M%S")
     output_dir = os.path.join(PROJECT_ROOT, "output", date_folder, f"{time_prefix}_{task_id}")
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "xhs_cards"), exist_ok=True)
 
     # 1. 初始化 SQLite 状态机
     print("\n[Step 1/5] 初始化 SQLite 状态机...")
@@ -97,7 +96,6 @@ async def run_phase1_demo(template: str = "auto"):
     print("\n[Step 4/5] 启动 Remotion 无状态渲染子进程...")
     video_out_path = os.path.join(output_dir, "video.mp4")
     cover_out_path = os.path.join(output_dir, "cover.png")
-    xhs_card_out_path = os.path.join(output_dir, "xhs_cards", "card_0.png")
 
     props_rel_path = f"./public/tasks/{task_id}/aligned_render.json"
     renderer_dir = os.path.join(PROJECT_ROOT, "renderer")
@@ -117,12 +115,6 @@ async def run_phase1_demo(template: str = "auto"):
     ]
     subprocess.check_call(cmd_cover, cwd=renderer_dir)
 
-    print(f"  -> 导出小红书 3:4 极客图文卡片: {xhs_card_out_path}")
-    cmd_xhs = [
-        "npx", "remotion", "still", "src/index.ts", "XhsCardStill", xhs_card_out_path,
-        f"--props={props_rel_path}", "--image-format=png"
-    ]
-    subprocess.check_call(cmd_xhs, cwd=renderer_dir)
 
     # 5. 更新状态机并验证成果
     print("\n[Step 5/5] 验证成果并同步状态机...")
@@ -130,8 +122,7 @@ async def run_phase1_demo(template: str = "auto"):
         task_id,
         "RENDERED",
         video_path=video_out_path,
-        cover_path=cover_out_path,
-        xhs_cards_dir=os.path.join(output_dir, "xhs_cards")
+        cover_path=cover_out_path
     )
 
     video_size_mb = os.path.getsize(video_out_path) / (1024 * 1024)
@@ -140,7 +131,6 @@ async def run_phase1_demo(template: str = "auto"):
     print(f"  归档目录: {output_dir}")
     print(f"  1. 抖音短视频 MP4: {video_out_path} ({video_size_mb:.2f} MB)")
     print(f"  2. 抖音封面海报:   {cover_out_path}")
-    print(f"  3. 小红书 3:4 卡片: {xhs_card_out_path}")
     print("=" * 60)
 
 if __name__ == "__main__":

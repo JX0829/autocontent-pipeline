@@ -30,8 +30,7 @@ async def main():
         TASK_ID,
         "WAITING_APPROVAL",
         video_path=video_path,
-        cover_path=cover_path,
-        xhs_cards_dir=os.path.join(output_dir, "xhs_cards")
+        cover_path=cover_path
     )
     print(f"✅ 视频重新渲染完成: {video_path}")
 

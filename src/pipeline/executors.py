@@ -177,21 +177,15 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
 
     video = ctx.out("video.mp4")
     cover = ctx.out("cover.png")
-    xhs_dir = ctx.out("xhs_cards")
-    xhs_dir.mkdir(parents=True, exist_ok=True)
-    xhs = xhs_dir / "card_0.png"
 
     _remotion("render", "src/index.ts", "GeekShortVideo", str(video),
               f"--props={props_path.resolve()}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p")
     _remotion("still", "src/index.ts", "CoverStill", str(cover),
               f"--props={props_path.resolve()}", "--image-format=png")
-    _remotion("still", "src/index.ts", "XhsCardStill", str(xhs),
-              f"--props={props_path.resolve()}", "--image-format=png")
 
     _assert_has_audio(video)   # 无声片零容忍：缺音轨直接失败，不进入分发
 
-    return {"video": str(video), "cover": str(cover), "xhs_cards": str(xhs_dir),
-            "props": str(props_path)}
+    return {"video": str(video), "cover": str(cover), "props": str(props_path)}
 
 
 def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
