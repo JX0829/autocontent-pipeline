@@ -405,6 +405,7 @@ def _make_fixtures(root: Path) -> dict[str, Any]:
             "account": "douyin-tech-main",
             "platform": "douyin",
             "aspect": "16:9",
+            "artifact_kind": "landscape",   # T2.6 external_truth 按 kind 分派
             "db_path": str(db),
             "cover_text": SELFTEST_MANIFEST["title"],
             "expect_text": "",           # 空串：guard 跳过 OCR 命中判定，只校验尺寸/覆盖度

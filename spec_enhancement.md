@@ -226,9 +226,9 @@
 | P2 | T2.2 DB 四表迁移 | ✅ DONE | 2026-11-09 | `d27db94` | 四表就绪；claim True→False；状态流转/续跑/幂等跳过实测 |
 | P2 | T2.3 发送台账 Hook | ✅ DONE | 2026-11-09 | `8444872` | 首发 true→二次 already_sent；stale_artifact 实测 |
 | P2 | T2.4 内容/视觉指纹 Hook | ✅ DONE | 2026-11-09 | `8444872` | normalize True/True；3 帧指纹+artifacts 落库 |
-| P2 | T2.5 静默失败护栏 | ⬜ PENDING | — | — | QA#1#3#8 母题 |
-| P2 | T2.6 外部真值校验 Hook | ⬜ PENDING | — | — | QA#7#10 |
-| P2 | GATE-2 台账幂等验收 | ⬜ PENDING | — | — | 3 发 1 落地才可进 P3 |
+| P2 | T2.5 静默失败护栏 | ✅ DONE | 2026-11-09 | 待回填 | 基线 37/37 新增 0；silence_guard degraded:1 实测 | QA#1#3#8 母题 |
+| P2 | T2.6 外部真值校验 Hook | ✅ DONE | 2026-11-09 | 待回填 | 4 种 kind 实测；CLI text_span 0.992 | QA#7#10 |
+| P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | 待回填 | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
 | P3 | T3.1 entity_key 归一化 | ⬜ PENDING | — | — | **高风险，需备份** |
 | P3 | T3.2 发送链路加固 | ⬜ PENDING | — | — | QA#8#10 |
 | P3 | T3.3 废弃 resend 脚本 | ⬜ PENDING | — | — | 依赖 T3.2 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**17/35**（P1 完成 + T2.1–T2.4 完成），GATE-1 ✅ PASS；下一步 T2.5 静默失败护栏。
+**当前进度**：**20/35**（P1 完成 + P2 全部完成），GATE-1 ✅ / GATE-2 ✅ PASS；下一步 P3 · T3.1 entity_key 归一化。
 
 ---
 
@@ -1133,60 +1133,93 @@ for k,v in d['providers'].items():
 - **回滚**：删除 `src/utils/normalize.py`，`git checkout scripts/hooks/content_fingerprint.py scripts/hooks/frame_fingerprint.py scripts/hooks/_common.py`
 
 #### T2.5 静默失败护栏（v1.1 新增）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T2.2
 - **QA 来源**：#1 #3 #8（共同母题"静默失败"）
-- **改动**：新增 `scripts/hooks/silence_guard.py` + `scripts/audit_silent_failure.py`
-- **`silence_guard.py`**（gate / `on_fail: warn`）：检查本步骤是否产生了 `degraded_events`；有则汇总返回 `{ok:false, reason:"degraded:N"}`，并触发告警
-- **`audit_silent_failure.py`**（**静态扫描器，防复发主力**）扫描四类反模式并在 CI/手跑时报告：
-  | 反模式 | 正则 |
+- **改动**：重写 `scripts/hooks/silence_guard.py`；新增 `scripts/audit_silent_failure.py` + `config/silent_baseline.json`
+- **`silence_guard.py`**（gate / `on_fail: warn`）4 条判据：
+  1. `degraded_events` 里本 task/step 有记录 → `reason="degraded:N"`
+  2. 声明的产物一个都不在磁盘（或存在但 0 字节）
+  3. `draft.body` < 20 字 / `narration` 近乎为空
+  4. `context.degraded_count > 0`
+  - 告警落 `data/alerts.jsonl`（append-only，可统计"这条片子降级过几次"）
+- **`audit_silent_failure.py`**（静态扫描器，防复发主力）：四类反模式
+  | 反模式 | 判定 |
   |---|---|
-  | 吞异常 | `except\s*[^:]*:\s*(pass\|continue\|return\s+(None\|""\|\[\]))` |
-  | 静默跳过 | `if\s+not\s+\w+:\s*continue` |
-  | 兜底默认值 | `return\s+"D"\b` |
-  | 截断当正常 | `finish_reason[^=]*==\s*["']length["'][^)]*\)` 无 raise |
-- **CLI**：`python3 scripts/audit_silent_failure.py [--baseline .backup/20260909/silent_baseline.json]`
-  - 首次运行生成基线（当前存量违例白名单），之后只报告**新增**违例
-  - 退出码：无新增违例 `0`，有新增 `1`
+  | 吞异常 | `except ...: pass / continue / return None\|""\|[]` |
+  | 静默跳过 | `if not X: continue` |
+  | 兜底默认值 | `return "D"` |
+  | 截断当正常 | `finish_reason == "length"` 且 ±6 行内无 `raise` |
+  - 支持基线：首次 `--init-baseline` 固化存量，之后**只报新增**
+  - 退出码：新增违例 `0` 条 → `0`；有新增 → `1`
+- **⚠️ 两处实现修正（相对原 spec 设计）**：
+  1. **基线键不含行号**：原设计 `file:line:pattern` 一旦在违例上方插几行代码，老问题就会被误报成"新增"。改为 `file::pattern::snippet指纹#occurrence` —— 插注释不误报（实测 37/37 新增 0），同一文件多一处一模一样的问题仍能抓到（实测 37→38 新增 1）。
+  2. **基线文件放 `config/silent_baseline.json`**（spec 原写 `.backup/...`）：`.backup/` 在 `.gitignore` 里，放那里 CI 拿不到基线。
 - **验收**：
   ```bash
   python3 scripts/audit_silent_failure.py --init-baseline
   python3 scripts/audit_silent_failure.py; echo "EXIT=$?"
   ```
-- **预期输出**：首次生成基线并列出存量违例清单；第二次 `新增违例: 0`，`EXIT=0`
-- **回滚**：删除两个文件与基线
-- **说明**：此任务**不要求一次性清理所有存量违例**（那属于 N4），只要求"不再新增"
+- **实测输出（2026-11-09）**：
+  ```
+  首次：存量违例 37（swallow_exception 36 / truncation_ignored 1）
+  第二次：当前违例 37  基线 37  新增违例 0  →  EXIT=0
+  ```
+  - `silence_guard` 无降级 → `ok=true`；写入 1 条 degraded 后 → `ok=false, reason="silence_guard: degraded:1"`，并落 `alerts.jsonl`
+- **回滚**：`git checkout scripts/hooks/silence_guard.py`；删除 `scripts/audit_silent_failure.py` 与基线
+- **说明**：本任务**不清理存量 37 条**（属 N4 债务），只保证"不再新增"
 
 #### T2.6 外部真值校验 Hook（v1.1 新增）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T2.2
 - **QA 来源**：#7 封面假数据、#10 seen 提前写
-- **改动**：新增 `scripts/hooks/external_truth.py`
-- **必须实现**：按 `context.artifact_kind` 分派真值校验
+- **改动**：重写 `scripts/hooks/external_truth.py`；`scripts/hooks/_common.py`（新增 `ocr_text` / `ocr_text_span`）
+- **按 `context.artifact_kind` 分派**（全部落地）：
   | kind | 校验手段 | 断言 |
   |---|---|---|
-  | `vertical` | `ffprobe` | 1080×1920 |
-  | `landscape` | `ffprobe` + 抽帧 OCR | 1920×1080 **且** 封面文字 bbox 横向跨度 ≥75% |
-  | `cover_text` | tesseract OCR | OCR 文本与 `draft_script.json` 的 `title`/`resource_keyword` 有 ≥1 个公共 token（**防 QA#7 硬编码假数据**） |
-  | `sent` | 飞书 `message_id` 回查 | 消息真实存在 |
-- **验收**：
-  ```bash
-  python3 scripts/hooks/external_truth.py --kind landscape \
-    --video output/20261108/<run>/video_16_9.mp4 --dry-run
+  | `vertical` | ffprobe | 1080×1920 |
+  | `landscape` | ffprobe + 抽帧 OCR | 1920×1080 **且** 封面文字 bbox 横向跨度 ≥75% |
+  | `cover_text` | tesseract OCR | OCR 文本与 draft 的 `title`/`resource_keyword` 有 ≥1 个公共 token |
+  | `sent` | 台账 + 飞书回查 | `send_ledger` 行存在且 `feishu_msg_id` 非空；配了凭据再调 API 回查 |
+- **CLI 形态**（spec 原样支持）：`--kind landscape --video <path> --dry-run`
+- **实测输出（2026-11-09）**：
+  ```json
+  # python3 scripts/hooks/external_truth.py --kind landscape --video /tmp/lg.mp4 --dry-run
+  {"ok": true, "ffprobe": {"width": 1920, "height": 1080}, "text_span": 0.992, "kind": "landscape"}
   ```
-- **预期输出**：JSON 含 `ffprobe: {width:1920,height:1080}`、`text_span: 0.8x`、`ok: true`
-- **回滚**：删除文件
-- **注意**：OCR 路径必须用相对路径或 `/private/tmp`（QA#12 实测 `/tmp/xxx.png` 读不了）
+  其余用例：
+  | 用例 | 结果 |
+  | :--- | :--- |
+  | 竖版 1080×1920 | `ok=true` |
+  | 竖版给成 1920×1080 | `ok=false, reason="竖版分辨率错误 1920x1080，应为 1080x1920"` |
+  | 横版纯图形（OCR 无文字） | `ok=false, reason="封面 OCR 失败，无法判定版式（不许当作通过）"` |
+  | 封面文案命中 | `ok=true`，公共 token `cover/co/ca…` |
+  | 封面文案无关 | `ok=false` + OCR 前 40 字 |
+  | `sent` 无台账 | `ok=false`「send_ledger 无 task=… 的发送记录（seen 提前写？）」 |
+  | `sent` 有行无 msg_id | `ok=false`「消息未经确认」 |
+  | `sent` 台账+msg_id | `ok=true`（`api_checked=false`，未配飞书凭据） |
+- **踩坑（已修，写进 `_common` 注释）**：
+  1. 对静态图片不能带 `-ss`（抽不到帧）→ 图片走 `shutil.copyfile` 到真实临时路径再 OCR
+  2. **macOS 上 tesseract 打不开 `/tmp/xxx.png`**（`/tmp` 是软链，QA#12）→ 必须复制到 `tempfile`（`/var/folders/…`）后再 OCR
+- **回滚**：`git checkout scripts/hooks/external_truth.py scripts/hooks/_common.py`
 
 #### GATE-2 · 台账幂等验收
-- **状态**：⬜ PENDING
-- **准入条件**：T2.1–T2.6 全部 `✅`
-- **验收命令**：连续投递同一 `dedupe_key` 3 次，断言 `send_ledger` 仅 1 行
+- **状态**：✅ **PASS**（2026-11-09）
+- **准入条件**：T2.1–T2.6 全部 `✅`（6/6 满足）
+- **验收命令**（已封装）：
   ```bash
-  sqlite3 data/pipeline_state.db "select count(*) from send_ledger where dedupe_key='k_test';"
+  bash scripts/gate2.sh; echo "GATE-2 EXIT=$?"
   ```
-- **预期输出**：`1`
-- **不通过处理**：回退 T2.2，检查 `dedupe_key PRIMARY KEY` 是否生效
+- **4 项断言（实测全绿）**：
+  ```
+  ✅ claim_send_slot ×3        claim=[True, False, False] rows=1
+  ✅ hook 二次投递             first=True second=False already_sent
+  ✅ 静默失败扫描              新增违例 0
+  ✅ hook 引擎自检             SELFTEST PASS
+  GATE-2 PASS   EXIT=0
+  ```
+- **与原 spec 命令的关系**：原命令 `sqlite3 data/pipeline_state.db "select count(*) from send_ledger where dedupe_key='k_test'"` 期望 `1`，但会往**生产台账**写测试行。`gate2.sh` 改为在临时库里跑同一断言（结果一致，且不污染生产），另外补了 hook 层与静态扫描两项。
+- **不通过处理**：回退 T2.2，检查 `send_ledger.dedupe_key PRIMARY KEY` 是否生效
 
 ---
 

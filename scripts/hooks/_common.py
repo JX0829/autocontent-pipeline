@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 PROJ = Path(__file__).resolve().parent.parent.parent
+_log = logging.getLogger("hooks")
 
 
 # ------------------------------------------------------------------ 协议 IO
@@ -209,6 +211,82 @@ def frame_gray32(path: Path, ts: float = 0.5, timeout: float = 25.0) -> bytes | 
     return data[: 32 * 32]
 
 
+def ocr_text_span(path: Path, ts: float = 0.2, timeout: float = 60.0) -> float | None:
+    """OCR 取文字 bbox 的横向跨度占画面宽度比例（用于横版封面错版判定）。
+
+    返回 None = OCR 失败（无文字/引擎异常）。注意：临时文件用 tempfile（/var/folders），
+    不要写死 `/tmp/xxx.png` —— QA#12 实测 macOS 上会读不到。
+    """
+    import csv
+    import io
+    import tempfile
+    image_ext = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        png = Path(tf.name)
+    try:
+        if path.suffix.lower() in image_ext:
+            # 静态图片：复制到真实临时路径再 OCR。
+            # 不能直接用原路径 —— macOS 上 tesseract 打不开 /tmp/xxx（/tmp 是软链，QA#12）
+            import shutil
+            shutil.copyfile(path, png)
+        else:
+            rc, _, err = sh(["ffmpeg", "-y", "-ss", str(ts), "-i", str(path), "-vframes", "1",
+                             "-loglevel", "error", str(png)], timeout)
+            if rc != 0 or not png.exists():
+                return None
+        rc2, out, _ = sh(["tesseract", str(png), "stdout", "-l", "chi_sim+eng", "tsv"], timeout)
+        if rc2 != 0 or not out.strip():
+            return None
+        rows = list(csv.DictReader(io.StringIO(out), delimiter="\t"))
+        words = [r for r in rows if (r.get("text") or "").strip()]
+        if not words:
+            return None
+        size = video_size(png)  # 图片同样可被 ffprobe 读
+        if not size:
+            return None
+        width = size[0]
+        lefts = [int(r["left"]) for r in words if str(r.get("left", "")).strip().isdigit()]
+        rights = [int(r["left"]) + int(r["width"]) for r in words
+                  if str(r.get("left", "")).strip().isdigit() and str(r.get("width", "")).strip().isdigit()]
+        if not lefts:
+            return None
+        return (max(rights) - min(lefts)) / width
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("ocr_text_span 失败 %s: %s", path.name, exc)
+        return None
+    finally:
+        if png != path:
+            png.unlink(missing_ok=True)
+
+
+def ocr_text(path: Path, ts: float = 0.2, timeout: float = 60.0) -> str | None:
+    """OCR 抽取文本（用于封面文案真值校验）。"""
+    import tempfile
+    image_ext = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        png = Path(tf.name)
+    try:
+        if path.suffix.lower() in image_ext:
+            import shutil
+            shutil.copyfile(path, png)
+        else:
+            rc, _, _ = sh(["ffmpeg", "-y", "-ss", str(ts), "-i", str(path), "-vframes", "1",
+                           "-loglevel", "error", str(png)], timeout)
+            if rc != 0 or not png.exists():
+                return None
+        rc2, out, _ = sh(["tesseract", str(png), "stdout", "-l", "chi_sim+eng"], timeout)
+        if rc2 != 0:
+            _log.warning("tesseract 返回 %s（%s）", rc2, path.name)
+            return None
+        return out
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("ocr_text 失败 %s: %s", path.name, exc)
+        return None
+    finally:
+        if png != path:
+            png.unlink(missing_ok=True)
+
+
 # ------------------------------------------------------------------ 数据面
 
 def db_path(payload: dict[str, Any]) -> Path:
@@ -241,7 +319,8 @@ def read_jsonl(path: Path, limit: int = 5000) -> list[dict[str, Any]]:
             continue
         try:
             rows.append(json.loads(line))
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            _log.warning("台账坏行已跳过 %s: %s", path.name, exc)
             continue
     return rows
 
