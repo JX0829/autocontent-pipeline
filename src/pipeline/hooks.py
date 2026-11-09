@@ -160,7 +160,13 @@ def _degraded(kind: str, detail: dict[str, Any], payload: dict[str, Any] | None 
     task_id = str(payload.get("task_id") or detail.get("task_id") or "unknown")
     step_id = str(payload.get("step_id") or detail.get("step_id") or "-")
     hook_id = str(detail.get("hook") or "")
-    db_file = Path(os.getenv("SQLITE_DB_PATH") or PROJ / "data" / "pipeline_state.db")
+    # 优先用 payload 里的 db_path（自检/CI 会指向临时库），否则才落到默认库。
+    # 教训：早期只认 SQLITE_DB_PATH，导致 `--selftest` 把 selftest_t1 的降级行写进了生产库。
+    db_file = Path(
+        payload.get("context", {}).get("db_path")
+        or os.getenv("SQLITE_DB_PATH")
+        or PROJ / "data" / "pipeline_state.db"
+    )
     try:
         from src.db import PipelineDB
         PipelineDB(str(db_file)).log_degraded(task_id, step_id, hook_id or None, kind, detail)

@@ -229,7 +229,7 @@
 | P2 | T2.5 静默失败护栏 | ✅ DONE | 2026-11-09 | `b63678c` | 基线 37/37 新增 0；silence_guard degraded:1 实测 | QA#1#3#8 母题 |
 | P2 | T2.6 外部真值校验 Hook | ✅ DONE | 2026-11-09 | `b63678c` | 4 种 kind 实测；CLI text_span 0.992 | QA#7#10 |
 | P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | `b63678c` | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
-| P3 | T3.1 entity_key 归一化 | 🟡 PARTIAL | 2026-11-09 | 待回填 | 代码完成；dry-run 3 行/1 冲突；生产 apply 待裁决 |
+| P3 | T3.1 entity_key 归一化 | ✅ DONE | 2026-11-09 | 待回填 | 生产已迁移：3 行改写、163/163、残留时间戳 0 |
 | P3 | T3.2 发送链路加固 | ⬜ PENDING | — | — | QA#8#10 |
 | P3 | T3.3 废弃 resend 脚本 | ⬜ PENDING | — | — | 依赖 T3.2 |
 | P3 | T3.4 定时任务去模型依赖 | ⬜ PENDING | — | — | QA#1 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**20/35 + T3.1 代码完成（迁移待裁决）**，GATE-1 ✅ / GATE-2 ✅ PASS；P3 进行中。
+**当前进度**：**21/35**（P1、P2 完成 + T3.1 完成），GATE-1 ✅ / GATE-2 ✅ PASS；下一步 T3.2 发送链路加固。
 
 ---
 
@@ -1241,7 +1241,7 @@ for k,v in d['providers'].items():
 ### P3 · 去重生效与发送链路加固（高风险）
 
 #### T3.1 `entity_key` 归一化
-- **状态**：🟡 **PARTIAL**（2026-11-09）—— 代码已落地并验证；**生产库迁移待裁决**（存在 1 组冲突）
+- **状态**：✅ DONE（2026-11-09，含生产库迁移）
 - **依赖**：GATE-2
 - **风险等级**：**高**（影响历史数据比对）
 - **改动**：`src/utils/normalize.py`（新增 `normalize_entity_key`）、`src/hotspot_extractor.py`、`scripts/hooks/persist_task.py`、新增 `scripts/migrate_entity_key.py`
@@ -1267,7 +1267,22 @@ for k,v in d['providers'].items():
   - `--apply --resolve-conflicts` → 写库 3 行，`总行 163 · 唯一 key 163`，无 `UNIQUE constraint failed`
   - 二次 dry-run → `将变更 0 行`（幂等）
 - **去重生效验证**：候选 `entity_key=hackernews:claude-code-dont-ask-again-leak-1799999999` 对历史带时间戳 key → `True / 事件标识 entity_key 重复`（旧逻辑会漏判）
-- **待决策**：是否对**生产库**执行 `--apply --resolve-conflicts`（冲突落败行为 `hotspot_1_claudecode_leak_1794114373`，状态 SCRIPTED）
+- **生产库执行（已授权执行，2026-11-09）**：
+  ```
+  迁移前 163 行 / 163 唯一 key，带时间戳 key 3 条；SHA256 607a6bf5…
+  执行   python3 scripts/migrate_entity_key.py --apply --resolve-conflicts
+  结果   已写库 3 行 · 总行 163 · 唯一 key 163 · 无 UNIQUE constraint failed
+         备份 .backup/20261109/pipeline_state_before_entity_key_20261109_133413.db
+         报告 .backup/entity_key_migration_report.json
+  迁移后 带时间戳 key 0 条；SHA256 22a86ec9…
+         状态分布不变（ARCHIVED 111 / DISPATCHED 43 / RENDERED 5 / WAITING_APPROVAL 2 / SCRIPTED 2）
+         三行终值：…_1794114400 → hackernews:claude-code-dont-ask-again-leak（DISPATCHED，保留）
+                   …_1794114373 → hackernews:claude-code-dont-ask-again-leak~dup2（SCRIPTED）
+                   …_1794129836 → twitter:qwen35-9b-deepseek-distill-5.6gb
+         二次 dry-run → 将变更 0 行（幂等）
+  ```
+- **真实库判重验证**：`get_recent_pipeline_topics()` 取真历史 → 候选 `…-1799999999` 判 `True / entity_key 重复`；全新事件 `github:brand/new-project-1900000000` 放行 `False`
+- **顺带修掉一个生产污染**：`hooks._degraded()` 原先只认 `SQLITE_DB_PATH`，导致 `--selftest` 把 `selftest_t1` 的降级行写进**生产** `degraded_events`。已改为优先取 `payload.context.db_path`，并清掉那条测试行；实测自检跑完生产表仍为 0 行。
 - **回滚**：`cp .backup/20261109/pipeline_state.db data/pipeline_state.db` 或还原 `pipeline_state_before_entity_key_*.db`
 - **失败处理**：出现 UNIQUE 冲突 → 立即回滚，冲突行进人工裁决
 
