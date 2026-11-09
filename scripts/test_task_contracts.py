@@ -325,6 +325,25 @@ def test_t47() -> None:
     else:
         ok("runner 无登录态耦合")
 
+    # 交付契约：artifacts.txt 必须按 aspect 分组，交付脚本必须拒绝缺产物
+    tmp2 = Path(tempfile.mkdtemp())
+    sample = {"video": str(PROJ / "pipeline.yaml"), "cover": str(PROJ / "pipeline.yaml"),
+              "video_16_9": str(PROJ / "pipeline.yaml"), "cover_16_9": str(PROJ / "pipeline.yaml")}
+    p2 = write_artifacts_manifest(tmp2, sample, "output_only")
+    txt = p2.read_text(encoding="utf-8")
+    if "[vertical]" in txt and "[landscape]" in txt:
+        ok("artifacts.txt 按竖版/横版分组标注")
+    else:
+        bad("artifacts.txt 按竖版/横版分组标注", "缺分组标签")
+
+    r = subprocess.run([sys.executable, "scripts/send_run_artifacts.py",
+                        "--run-id", "__no_such_run__", "--dry-run"],
+                       cwd=str(PROJ), capture_output=True, text=True, timeout=60)
+    if r.returncode == 2:
+        ok("交付脚本拒绝不存在的 run")
+    else:
+        bad("交付脚本拒绝不存在的 run", f"rc={r.returncode}")
+
 
 def main() -> int:
     print("=== 任务契约回归（T4.1 / T4.2 / T4.5 / T4.7）===")

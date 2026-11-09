@@ -284,12 +284,32 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
     logger.info(f"Task '{task_id}' successfully transitioned to DISPATCHED")
 
     # 6. 向飞书播报整体分发汇总卡片（汇总卡不参与台账，属于汇报而非投递内容）
-    summary_msg = f"🎉 **任务 `{task_id}` 动态多平台分发执行完毕**:\n\n" + "\n".join(dispatch_results)
+    #    精简原则：只报状态，不重复平台明细；正文/标题仍保留在下方代码块，
+    #    因为这张卡同时承担「手机端发帖纯净素材」的复制用途，不能删。
+    def _compact(results: list[str]) -> str:
+        """把逐条明细压成一行状态：'抖音 ✅ · B站 ✅ · 视频号 ⏭️'"""
+        out = []
+        for line in results:
+            name = line.split("**")[1].split("(")[0].strip() if "**" in line else ""
+            if not name:
+                continue
+            if "⏭️" in line:
+                mark = "⏭️"
+            elif "❌" in line:
+                mark = "❌"
+            elif "⚠️" in line:
+                mark = "⚠️"
+            else:
+                mark = "✅"
+            out.append(f"{name.split(' ')[0]} {mark}")
+        return " · ".join(out) or "无"
+
+    summary_line = f"✅ **发布完成** · `{task_id}`\n{_compact(dispatch_results)}"
     try:
         summary_card = FeishuCardBuilder.build_mobile_copy_card(
             task_id=task_id, short_title=short_title, full_body=full_body,
-            heading=f"🎉 任务 {task_id} 发布完成汇报 & 📱 手机端纯净素材",
-            lead=summary_msg + "\n\n───────────────")
+            heading=f"✅ 发布完成 · {task_id}",
+            lead=summary_line + "\n───────────────")
         notify_feishu("", card=summary_card)
     except MissingChatIdError as e:
         logger.error(f"汇总播报跳过: {e}")

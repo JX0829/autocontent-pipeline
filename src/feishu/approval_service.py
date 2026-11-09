@@ -255,6 +255,42 @@ class FeishuApprovalService:
             logger.exception(f"Error in upload_and_send_video: {e}")
             return None
 
+    def send_image(self, receive_id: str, receive_id_type: str, image_path: str) -> Optional[str]:
+        """发送单张图片消息（msg_type=image），返回 message_id。
+
+        用于交付封面图：视频 media 消息里的 image_key 只是缩略封面，
+        审批人往往还需要看到原始封面大图。
+        """
+        try:
+            if not os.path.exists(image_path):
+                logger.error(f"[FEISHU] 图片不存在: {image_path}")
+                return None
+            with open(image_path, "rb") as f:
+                ireq = CreateImageRequest.builder().request_body(
+                    CreateImageRequestBody.builder().image_type("message").image(f).build()
+                ).build()
+                iresp = self.client.im.v1.image.create(ireq)
+            if not _ok(iresp, "upload_image") or not getattr(iresp, "data", None):
+                return None
+            image_key = iresp.data.image_key
+
+            req = CreateMessageRequest.builder() \
+                .receive_id_type(receive_id_type) \
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(receive_id)
+                    .msg_type("image")
+                    .content(json.dumps({"image_key": image_key}))
+                    .build()
+                ).build()
+            resp = self.client.im.v1.message.create(req)
+            if _ok(resp, "send_image_message") and getattr(resp, "data", None):
+                return resp.data.message_id
+            return None
+        except Exception as e:  # noqa: BLE001 — 发送失败返回 None，由调用方决定是否中断
+            logger.exception(f"Error in send_image: {e}")
+            return None
+
     def send_text_message_ex(self, receive_id: str, receive_id_type: str,
                              text: str) -> tuple[Optional[str], Optional[str]]:
         """同 send_text_message，但额外返回 chat_id。

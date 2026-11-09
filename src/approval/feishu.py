@@ -91,10 +91,7 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
         dp.unlink()          # 清掉上一轮残留裁决，避免"旧 approve 放行新一轮"
 
     svc = FeishuApprovalService()
-    text = (f"【待审批】{message}\n"
-            f"run_id: {run_id}\n"
-            f"产物: {', '.join(sorted(artifacts)) or '(无)'}\n"
-            f"请直接回复 approve / reject")
+    text = f"【待审批】{run_id}\n回 approve / reject"
     since_ms = int(time.time() * 1000) - 5000      # 容忍 5s 时钟偏差
     msg_id, chat_id = svc.send_text_message_ex(
         receive_id=receive_id, receive_id_type=rec_type, text=text)

@@ -137,6 +137,31 @@ output/<YYYYMMDD>/<run_id>/
 
 `renderer/public/runs/<run_id>` 是指向 `props/` 的软链（Remotion 只能读 `public/`）。
 
+### 5.1 output_only 之后怎么交付（**必读，踩过坑**）
+
+`output_only` 只出片不发送，**交付是调用方的事**。产物必须**竖版横版各 2 件全部发出**：
+
+| 组 | 视频 | 封面 |
+|---|---|---|
+| 竖版 1080×1920 | `video.mp4` | `cover.png` |
+| 横版 1920×1080 | `video_16_9.mp4` | `cover_16_9.png` |
+
+**别手工挑文件**——实际发生过「只发了竖版封面 + 横版视频，漏了另外两件」。
+用脚本，缺一件就拒绝发送：
+
+```bash
+# 先看计划（不发送）
+python3 scripts/send_run_artifacts.py --run-id <run_id> --dry-run
+
+# 真实发送（2 条视频 + 2 张封面大图，回执写 delivery.json）
+python3 scripts/send_run_artifacts.py --run-id <run_id>
+
+# 只要视频
+python3 scripts/send_run_artifacts.py --run-id <run_id> --videos-only
+```
+
+`artifacts.txt` 也已按 `[vertical]` / `[landscape]` 分组标注，可直接照着发。
+
 ---
 
 ## 6. 幂等与重跑（第二容易踩的坑）

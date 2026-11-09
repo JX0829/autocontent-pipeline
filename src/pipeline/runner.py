@@ -296,20 +296,44 @@ def dispatch_policy(cfg: dict[str, Any]) -> tuple[bool, str, list[str]]:
 
 
 def write_artifacts_manifest(run_root: Path, artifacts: dict[str, str], mode: str) -> Path:
-    """output_only 时把产物绝对路径落盘并打印。"""
-    lines: list[str] = []
+    """output_only 时把产物绝对路径落盘并打印。
+
+    按 aspect 分组输出（竖版/横版），避免交付方手工挑选时把
+    「竖版封面 + 横版视频」这种错配组合发出去。
+    """
+    ASPECT_LABEL = {
+        "video": ("vertical", "竖版视频"),
+        "cover": ("vertical", "竖版封面"),
+        "video_16_9": ("landscape", "横版视频"),
+        "cover_16_9": ("landscape", "横版封面"),
+    }
+    groups: dict[str, list[str]] = {"vertical": [], "landscape": [], "other": []}
     for key in sorted(artifacts):
         path = Path(artifacts[key])
-        if path.is_dir():
-            lines.extend(str(q.resolve()) for q in sorted(path.glob("*")) if q.is_file())
-        elif path.exists():
-            lines.append(str(path.resolve()))
+        targets = ([q for q in sorted(path.glob("*")) if q.is_file()]
+                   if path.is_dir() else ([path] if path.exists() else []))
+        for q in targets:
+            group, label = ASPECT_LABEL.get(key, ("other", key))
+            groups[group].append(f"{label if key in ASPECT_LABEL else key}={q.resolve()}")
+
+    lines: list[str] = []
+    for group, title in (("vertical", "竖版 1080x1920"), ("landscape", "横版 1920x1080")):
+        if groups[group]:
+            lines.append(f"[{group}] {title}")
+            lines.extend(groups[group])
+    if groups["other"]:
+        lines.append("[other] 非交付物（脚本/中间态）")
+        lines.extend(groups["other"])
+
     out = run_root / "artifacts.txt"
     out.parent.mkdir(parents=True, exist_ok=True)   # run_root 可能尚未创建（独立调用/测试场景）
     out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     print(f"\n=== 只出片（mode={mode}）产物清单 ===")
     for line in lines:
         print(f"  {line}")
+    media = len(groups["vertical"]) + len(groups["landscape"])
+    if media:
+        print(f"  ⚠️ 交付时竖版与横版各 {media // 2} 个文件都要发，别只挑其中一半")
     print(f"  清单文件: {out}")
     return out
 
