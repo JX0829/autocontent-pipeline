@@ -233,7 +233,7 @@
 | P3 | T3.2 发送链路加固 | ✅ DONE | 2026-11-09 | `0734803` | 5 条验收 grep 全绿；台账幂等 3 次重跑拦截 |
 | P3 | T3.3 废弃 resend 脚本 | ✅ DONE | 2026-11-09 | `cef5e4b` | 无 resend_*.py；归档区 6 个 .py |
 | P3 | T3.4 定时任务去模型依赖 | ✅ DONE | 2026-11-09 | `cef5e4b` | 7 job 全 pinned/script-only；2 个断流 job 已修 |
-| P3 | GATE-3 端到端不重发 | 🚫 BLOCKED | — | — | 全链执行体未接线（runner EXIT=64）；worker 级 E2E 已覆盖断言内核 |
+| P3 | GATE-3 端到端不重发 | ✅ PASS | 2026-11-09 | `3f8a319` | `bash scripts/gate3.sh` 12/12 断言：A 首跑发 1 次 / B 幂等跳过 / C 台账拦截 | QA#7#10#12 |
 | P4 | T4.1 run_root 隔离 + 横版命名统一 | ⬜ PENDING | — | — | **必做；GATE-3 后第一优先** |
 | P4 | T4.2 去硬编码 | ⬜ PENDING | — | — | 依赖 T4.1 |
 | P4 | T4.3 状态机归位 | ⬜ PENDING | — | — | 依赖 T4.2 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**24/35**（P1、P2 完成 + T3.1–T3.4 完成），GATE-1 ✅ / GATE-2 ✅ PASS / GATE-3 🚫 BLOCKED（全链执行体未接线）；下一步 P4 隔离与解耦。
+**当前进度**：**25/35**（P1、P2 完成 + T3.1–T3.4 完成 + GATE-3 PASS），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅；下一步 P4 隔离与解耦。
 
 ---
 
