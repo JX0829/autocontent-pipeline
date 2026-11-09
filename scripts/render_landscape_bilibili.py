@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+# DEPRECATED: A1–A3 断言无法识别「竖版封面塞横屏」（首帧与封面同图，像素差恒 0），
+#   已由 scripts/landscape_guard.check_landscape（像素列覆盖率 + 左右边缘留白 + 首帧=封面）取代。
+#   横屏请统一走 scripts/render_landscape.py::render_landscape()。本文件仅作历史参考，不再接线。
 """
 scripts/render_landscape_bilibili.py
-B 站横屏成片统一渲染入口（唯一权威通道）
+B 站横屏成片统一渲染入口（**已废弃，见文件头 DEPRECATED**）
 
 职责：
 1. 横屏视频统一使用 BilibiliLandscapeVideo（1920x1080，内嵌 0.5s 封面定格）；

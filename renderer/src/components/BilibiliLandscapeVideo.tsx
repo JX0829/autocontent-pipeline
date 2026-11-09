@@ -57,7 +57,7 @@ const LandscapeSceneContent: React.FC<{
             🔥 B站前沿科技速递
           </span>
           <span style={{ color: tokens.textSecondary || '#94a3b8', fontSize: 22, fontWeight: 600 }}>
-            {entityKey || '开源爆款'}
+            {entityKey || ''}
           </span>
         </div>
 
@@ -73,7 +73,7 @@ const LandscapeSceneContent: React.FC<{
               border: '1px solid rgba(255, 255, 255, 0.1)',
             }}
           >
-            {scene.highlight_text || '极客首发'}
+            {scene.highlight_text || '—'}
           </span>
         </div>
       </div>

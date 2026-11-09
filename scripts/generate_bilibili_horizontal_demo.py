@@ -117,9 +117,9 @@ async def render_horizontal_demo():
     cover_out = str(output_dir / 'cover_horizontal.png')
     props_rel_path = f'./public/tasks/{task_id}/aligned_render.json'
     
-    # 横屏统一走权威入口 render_landscape_bilibili（BilibiliLandscapeVideo + BilibiliCoverStill + 三项出厂断言）
-    print(f"[2/3] 通过统一入口渲染 16:9 横屏短视频成片与封面...")
-    from scripts.render_landscape_bilibili import render_landscape
+    # 横屏统一走权威入口 render_landscape（landscape_guard：像素覆盖 + 边缘留白 + 首帧=封面）
+    # 旧入口 render_landscape_bilibili 的 A1–A3 断言抓不到「竖版封面塞横屏」，已废弃
+    from scripts.render_landscape import render_landscape
     _lr = render_landscape(
         task_id=task_id,
         props_rel=props_rel_path,

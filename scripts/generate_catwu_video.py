@@ -143,9 +143,9 @@ async def render_catwu_video():
     ]
     subprocess.check_call(cmd_c_portrait, cwd=renderer_dir)
     
-    # 横屏统一走权威入口 render_landscape_bilibili（BilibiliLandscapeVideo + BilibiliCoverStill + 三项出厂断言）
+    # 横屏统一走权威入口 render_landscape（旧 render_landscape_bilibili 的 A1–A3 断言已废弃）
     print(f"[3/4] 通过统一入口渲染 16:9 横屏成片与封面...")
-    from scripts.render_landscape_bilibili import render_landscape
+    from scripts.render_landscape import render_landscape
     landscape_res = render_landscape(
         task_id=task_id,
         props_rel=props_rel_path,
