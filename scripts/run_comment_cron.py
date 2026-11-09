@@ -213,6 +213,11 @@ def inspect_and_reply_task(task_id: str, db: PipelineDB, funnel: CommentSafetyFu
     ]
 
     for c in sample_incoming_comments:
+        # T5.1 判重前置：归一化比对，IGNORED 也参与（否则 C/D 类每轮重复进模型）
+        if db.comment_already_handled(task_id, c["text"]):
+            logger.info(f"Skip already-handled comment: {c['text'][:30]}")
+            continue
+
         res = funnel.process_comment_safe(
             raw_comment=c["text"],
             fact_summary_150=fact_summary,
@@ -220,11 +225,20 @@ def inspect_and_reply_task(task_id: str, db: PipelineDB, funnel: CommentSafetyFu
             private_domain_hook=hook
         )
 
-        # 写入数据库记录与去重
+        # T5.1 状态写入时机：
+        #   · 有回复文案但**还没发** → QUEUED（等平台回执才能升 REPLIED）
+        #   · 判定不该回（分类 D/E 等）→ IGNORED（本来就不需要外部确认）
+        #   绝不能再按"有没有生成 reply 文本"直接写 REPLIED —— 那是 QA#10 的根因：
+        #   状态说已回复，实际一条没发出去，下一轮又因为"已回复"而永远不再处理。
+        if res["reply"]:
+            status = "QUEUED"
+        else:
+            status = "IGNORED"
+
         with db.get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
-            INSERT OR REPLACE INTO comment_interactions
+            INSERT OR IGNORE INTO comment_interactions
             (comment_id, task_id, published_video_id, raw_comment, sanitized_comment, classification, reply_content, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
@@ -235,7 +249,7 @@ def inspect_and_reply_task(task_id: str, db: PipelineDB, funnel: CommentSafetyFu
                 res["sanitized_comment"],
                 res["classification"],
                 res["reply"],
-                "REPLIED" if res["reply"] else "IGNORED"
+                status
             ))
             conn.commit()
 

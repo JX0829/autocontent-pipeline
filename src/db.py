@@ -76,6 +76,13 @@ class PipelineDB:
             cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_comment_task_id ON comment_interactions(task_id);
             """)
+            # T5.1：外部确认凭据（平台返回的 message_id / 子楼层 ID）。
+            # 没有它就无法区分"生成好待发"和"真的发出去了"，REPLIED 只能靠猜。
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(comment_interactions)")}
+            for col, decl in (("external_msg_id", "TEXT"),
+                              ("replied_at", "DATETIME")):
+                if col not in cols:
+                    cur.execute(f"ALTER TABLE comment_interactions ADD COLUMN {col} {decl}")
 
             # ---------------- T2.2 四表（spec §4.3）----------------
             cur.execute("""
@@ -168,6 +175,36 @@ class PipelineDB:
             ))
             conn.commit()
             return cur.rowcount == 0
+
+    def mark_comment_replied(self, comment_id: str, external_msg_id: str) -> bool:
+        """T5.1：只有拿到平台侧回执（message_id / 子楼层 ID）才允许把状态推进到 REPLIED。
+
+        返回 True = 已确认；False = 缺回执，状态保持 QUEUED（拒绝无凭据的"已回复"）。
+        """
+        if not external_msg_id:
+            return False
+        with self.get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE comment_interactions SET status='REPLIED', external_msg_id=?, "
+                "replied_at=CURRENT_TIMESTAMP WHERE comment_id=?",
+                (external_msg_id, comment_id))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def comment_already_handled(self, task_id: str, raw_comment: str) -> bool:
+        """T5.1 判重：归一化后比对，且 **IGNORED 也参与判重**。
+
+        原实现只看未回复的评论，导致已判为 IGNORED 的 C/D 类每轮重复进模型。
+        """
+        from src.utils.normalize import normalize_text
+
+        target = normalize_text(raw_comment)
+        with self.get_conn() as conn:
+            rows = conn.execute(
+                "select raw_comment from comment_interactions where task_id=?", (task_id,)
+            ).fetchall()
+        return any(normalize_text(r[0] or "") == target for r in rows)
 
     def update_task_status(self, task_id, status, **kwargs):
         with self.get_conn() as conn:

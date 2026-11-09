@@ -245,14 +245,27 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
                 "reply_mode": "manual_approval"
             })
 
-        # 状态持久化入库
-        status = "REPLIED" if reply_success else ("DRY_RUN" if dry_run and reply_content else ("IGNORED" if not reply_content else "FAILED"))
+        # 状态持久化入库（T5.1）
+        # 铁律：REPLIED 只代表"平台侧已确认"。CDP 点击发送只能证明"点了"，
+        # 拿不到回执 id → 记 SENT_UNVERIFIED，不冒充 REPLIED（QA#10 的教训）。
+        external_msg_id = None      # CDP 通道暂无可回读的 message_id
+        if reply_success and external_msg_id:
+            status = "REPLIED"
+        elif reply_success:
+            status = "SENT_UNVERIFIED"
+        elif dry_run and reply_content:
+            status = "DRY_RUN"
+        elif not reply_content:
+            status = "IGNORED"
+        else:
+            status = "FAILED"
+
         with db.get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
             INSERT OR REPLACE INTO comment_interactions
-            (comment_id, task_id, published_video_id, raw_comment, sanitized_comment, classification, reply_content, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (comment_id, task_id, published_video_id, raw_comment, sanitized_comment, classification, reply_content, status, external_msg_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 comment_id,
                 f"xhs_{feed_id}",
@@ -261,7 +274,8 @@ def poll_and_reply_xhs_comments(dry_run: bool = False):
                 res.get("sanitized_comment", comment_text),
                 classification,
                 reply_content,
-                status
+                status,
+                external_msg_id
             ))
             conn.commit()
 

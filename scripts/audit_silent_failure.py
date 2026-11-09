@@ -68,6 +68,18 @@ def scan_file(path: Path) -> list[dict]:
     return hits
 
 
+def _iter_files():
+    for d in SCAN_DIRS:
+        if not d.exists():
+            continue
+        for py in sorted(d.rglob("*.py")):
+            if SKIP_PARTS & set(py.parts):
+                continue
+            if py.name == "audit_silent_failure.py":
+                continue
+            yield py
+
+
 def scan() -> list[dict]:
     hits: list[dict] = []
     for d in SCAN_DIRS:
@@ -103,12 +115,56 @@ def key_of(h: dict) -> str:
     return h["key"]
 
 
+def check_seen_before_send() -> list[dict]:
+    """T5.1 专用检查：状态写 REPLIED / seen 时，同一 SQL 块内必须有外部回执凭据。
+
+    反模式（QA#10 的根因）：
+        cur.execute("INSERT ... status) VALUES (..., 'REPLIED')")   # 一条都没发就标已回复
+    合规形态：
+        UPDATE comment_interactions SET status='REPLIED', external_msg_id=? WHERE ...
+    """
+    hits: list[dict] = []
+    for path in _iter_files():
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        for i, line in enumerate(lines):
+            if "REPLIED" not in line:
+                continue
+            if line.lstrip().startswith(("#", "//", "*")):
+                continue
+            lo, hi = max(0, i - 8), min(len(lines), i + 8)
+            block = "\n".join(lines[lo:hi])
+            writes = ("INSERT" in block.upper()) or ("UPDATE" in block.upper())
+            if not writes:
+                continue
+            if "external_msg_id" in block:
+                continue
+            hits.append({"file": str(path.relative_to(PROJ)), "line": i + 1,
+                         "pattern": "seen_before_send",
+                         "snippet": line.strip()[:100]})
+    return hits
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="静默失败反模式扫描")
     ap.add_argument("--baseline", default=str(DEFAULT_BASELINE))
     ap.add_argument("--init-baseline", action="store_true", help="生成/覆盖基线")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--check", choices=["seen-before-send"],
+                    help="专项检查（T5.1）：REPLIED 是否在无外部回执时就写入")
     args = ap.parse_args(argv)
+
+    if args.check == "seen-before-send":
+        hits = check_seen_before_send()
+        if args.json:
+            print(json.dumps(hits, ensure_ascii=False, indent=2))
+        else:
+            if hits:
+                print(f"=== seen-before-send 违规 {len(hits)} 处 ===")
+                for h in hits:
+                    print(f"  {h['file']}:{h['line']}  {h['snippet']}")
+            else:
+                print("seen-before-send 检查通过：REPLIED 均带外部回执")
+        return 1 if hits else 0
 
     baseline_path = Path(args.baseline)
     hits = scan()
