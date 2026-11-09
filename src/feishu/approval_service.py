@@ -255,6 +255,33 @@ class FeishuApprovalService:
             logger.exception(f"Error in upload_and_send_video: {e}")
             return None
 
+    def send_text_message_ex(self, receive_id: str, receive_id_type: str,
+                             text: str) -> tuple[Optional[str], Optional[str]]:
+        """同 send_text_message，但额外返回 chat_id。
+
+        T4.6 审批需要拿 chat_id 去回查消息（p2p 场景只有 open_id，无法直接列消息）。
+        """
+        try:
+            req = CreateMessageRequest.builder() \
+                .receive_id_type(receive_id_type) \
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(receive_id)
+                    .msg_type("text")
+                    .content(json.dumps({"text": text}, ensure_ascii=False))
+                    .build()
+                ).build()
+            resp = self.client.im.v1.message.create(req)
+            if not _ok(resp, "send_text_message_ex"):
+                return None, None
+            msg_id = resp.data.message_id
+            chat_id = getattr(resp.data, "chat_id", None)
+            logger.info(f"Feishu text sent, message_id={msg_id}, chat_id={chat_id}")
+            return msg_id, chat_id
+        except Exception as e:
+            logger.exception(f"Error in send_text_message_ex: {e}")
+            return None, None
+
     def send_text_message(self, receive_id: str, receive_id_type: str, text: str) -> Optional[str]:
         """
         向指定用户或群聊发送普通文本通知消息
