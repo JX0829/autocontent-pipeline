@@ -244,7 +244,11 @@
 | P5 | T5.1 幂等写入时机归位 | ✅ DONE | 2026-11-09 | `db3fb51` | QA#5#10；REPLIED 必须带 external_msg_id，判重含 IGNORED |
 | P5 | GATE-5 全链路静默失败扫描 | ✅ PASS | 2026-11-09 | `db3fb51` | 新增 0（36 vs 基线 37）· cron pin 无未 pin · model_switch dry-run OK |
 
-**当前进度**：**30/35**（P1、P2、P3、P4 全清 + T5.1 + GATE-5 PASS），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅ / GATE-5 ✅；剩余 P6 历史数据迁移与收尾项。
+**当前进度**：**35/35**（快照表 31 DONE + 4 GATE PASS 全绿），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅ / GATE-5 ✅。
+**收尾项（不在任务表内，来自实测发现的遗留）**：
+1. 飞书 media 消息 `duration` 回显为 0（视频卡片可能显示 00:00）
+2. T4.4 第 6 条「三卡静默」只做了文案兜底清理，`if (!text) return null` 占位卡 + `cover.card_source` 声明式配置 + `any` 类型收窄未做
+3. feishu 审批渠道的裁决回写（`data/approvals/<run_id>.json`）尚无回调服务，端到端未实跑
 
 ---
 
