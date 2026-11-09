@@ -305,6 +305,7 @@ def write_artifacts_manifest(run_root: Path, artifacts: dict[str, str], mode: st
         elif path.exists():
             lines.append(str(path.resolve()))
     out = run_root / "artifacts.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)   # run_root 可能尚未创建（独立调用/测试场景）
     out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     print(f"\n=== 只出片（mode={mode}）产物清单 ===")
     for line in lines:
