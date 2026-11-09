@@ -1,7 +1,10 @@
 import os
 import time
 import json
+import hashlib
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Optional
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -14,6 +17,51 @@ from lark_oapi.api.im.v1 import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ALERT_FILE = Path(
+    os.getenv("AUTOCONTENT_ALERTS_FILE")
+    or Path(__file__).resolve().parent.parent.parent / "data" / "alerts.jsonl"
+)   # 可用 AUTOCONTENT_ALERTS_FILE 重定向（自检/CI 不污染生产告警流）
+
+
+def _alert(kind: str, detail: Dict[str, Any]) -> None:
+    """发送失败告警（T3.2-5）。
+
+    飞书的坑有两个：`success()` 为真但 `code != 0`；以及 post 富文本的代码块标签
+    在移动端不渲染却照样返回 success。统一在 code != 0 时落一条告警，避免静默失败。
+    """
+    payload = {"ts": datetime.now().isoformat(timespec="seconds"),
+               "kind": kind, "source": "feishu.approval_service", **detail}
+    try:
+        _ALERT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _ALERT_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        logger.warning(f"告警落盘失败（{kind}）: {exc}")
+
+
+def _ok(resp: Any, where: str) -> bool:
+    """统一判定：飞书 SDK 的正确判据是 `code == 0`，不是 `success()`。"""
+    code = getattr(resp, "code", -1)
+    if code != 0:
+        logger.error(f"[FEISHU] {where} 失败: code={code} msg={getattr(resp, 'msg', None)}")
+        _alert("feishu_api_error", {"where": where, "code": code,
+                                    "msg": getattr(resp, "msg", None)})
+        return False
+    return True
+
+
+def _file_sha256(path: str) -> Optional[str]:
+    """算文件指纹（D1=A：调用方没给 content_hash 时由文件自身派生）。"""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as exc:
+        logger.warning(f"读取视频算指纹失败，将拒绝发送: {path} ({exc})")
+        return None
+    return h.hexdigest()
 
 class FeishuApprovalService:
     """
@@ -46,8 +94,7 @@ class FeishuApprovalService:
             ).build()
 
         resp = self.client.im.v1.message.create(req)
-        if not resp.success():
-            logger.error(f"Failed to send feishu card: code={resp.code}, msg={resp.msg}, log_id={resp.get_log_id()}")
+        if not _ok(resp, "send_approval_card"):
             return None
 
         message_id = resp.data.message_id
@@ -70,7 +117,7 @@ class FeishuApprovalService:
         for attempt in range(1, max_retries + 1):
             try:
                 resp = self.client.im.v1.message.patch(req)
-                if resp.success():
+                if getattr(resp, "code", -1) == 0:
                     return True
                 logger.warning(f"Patch card message attempt {attempt}/{max_retries} failed: code={resp.code}, msg={resp.msg}")
             except Exception as e:
@@ -82,26 +129,43 @@ class FeishuApprovalService:
         logger.error(f"Failed to patch card message {message_id} after {max_retries} attempts.")
         return False
 
-    def upload_and_send_video(self, receive_id: str, receive_id_type: str, video_path: str, file_name: Optional[str] = None) -> Optional[str]:
+    def upload_and_send_video(
+        self,
+        receive_id: str,
+        receive_id_type: str,
+        video_path: str,
+        file_name: Optional[str] = None,
+        content_hash: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Optional[str]:
         """
         向飞书对话发送原生 mp4 视频原片（供人机审批预览）
         :param receive_id: 用户 open_id 或群 chat_id
         :param receive_id_type: 'open_id' 或 'chat_id'
         :param video_path: 视频文件本地绝对路径
-        :param file_name: 上传文件名
-        :return: message_id
+        :param file_name: 上传文件名（显式指定时优先）
+        :param content_hash: 内容指纹（T3.2：缺省时由视频文件自身 sha256 派生，D1=A）
+        :param task_id: 任务 ID（缺省取视频所在目录名）
+        :return: feishu message_id
         """
         if not os.path.exists(video_path):
             logger.error(f"Video file does not exist: {video_path}")
             return None
 
-        # 必须显式加上具备唯一性与辨识度的时间戳与任务特征，杜绝手机端和桌面端以相同文件名本地命中旧缓存
+        # T3.2-1：文件名用 {task_id}_{content_hash[:8]}{ext}
+        #   · 防缓存：内容变 → 指纹变 → 名字变（等价于原时间戳的作用）
+        #   · 可辨识：同一成片永远同名，群里看到名字就知道是哪条片子的哪一版
         if not file_name:
             base_pure = os.path.basename(video_path)
-            name_part, ext = os.path.splitext(base_pure)
-            # 提取上层目录任务名以做物理隔离
-            parent_task = os.path.basename(os.path.dirname(video_path))
-            fname = f"{parent_task}_{name_part}_{int(time.time())}{ext}"
+            _, ext = os.path.splitext(base_pure)
+            owner = task_id or os.path.basename(os.path.dirname(video_path)) or "task"
+            chash = content_hash or _file_sha256(video_path)
+            if not chash:
+                # 拿不到指纹就不许发 —— 无指纹发送等于放弃去重与溯源能力
+                logger.error(f"[FEISHU] 拒绝发送：无法取得内容指纹且未显式提供 content_hash ({video_path})")
+                _alert("send_refused_no_fingerprint", {"video_path": video_path})
+                return None
+            fname = f"{owner}_{chash[:8]}{ext}"
         else:
             fname = file_name
         try:
@@ -115,8 +179,7 @@ class FeishuApprovalService:
                     .build()
                 ).build()
                 resp = self.client.im.v1.file.create(file_req)
-                if not resp.success() or not resp.data:
-                    logger.error(f"Failed to upload video stream to Feishu: code={resp.code}, msg={resp.msg}")
+                if not _ok(resp, "upload_stream") or not getattr(resp, "data", None):
                     return None
                 file_key = resp.data.file_key
 
@@ -130,12 +193,10 @@ class FeishuApprovalService:
                     .build()
                 ).build()
             f_resp = self.client.im.v1.message.create(file_msg_req)
-            if f_resp.success() and f_resp.data:
-                video_msg_id = f_resp.data.message_id
-                logger.info(f"Video file sent to Feishu successfully, message_id={video_msg_id}")
-                return video_msg_id
-
-            logger.error(f"Failed to send video file message: code={f_resp.code}, msg={f_resp.msg}")
+            if _ok(f_resp, "send_video_message") and getattr(f_resp, "data", None):
+                feishu_msg_id = f_resp.data.message_id
+                logger.info(f"Video file sent to Feishu successfully, feishu_msg_id={feishu_msg_id}, file_name={fname}")
+                return feishu_msg_id
             return None
         except Exception as e:
             logger.exception(f"Error in upload_and_send_video: {e}")
@@ -160,8 +221,7 @@ class FeishuApprovalService:
                     .build()
                 ).build()
             resp = self.client.im.v1.message.create(req)
-            if not resp.success():
-                logger.error(f"Failed to send feishu text message: code={resp.code}, msg={resp.msg}")
+            if not _ok(resp, "send_text_message"):
                 return None
             msg_id = resp.data.message_id
             logger.info(f"Feishu text message sent successfully, message_id={msg_id}")

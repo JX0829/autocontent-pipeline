@@ -59,6 +59,7 @@ contract:
       - TWITTER_AUTH_TOKEN
       - AUTOCONTENT_ENV_FILE
       - AUTOCONTENT_DATA_DIR
+      - AUTOCONTENT_ALERTS_FILE
       - FEISHU_DEFAULT_CHAT_ID
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py

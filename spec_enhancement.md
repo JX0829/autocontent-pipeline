@@ -230,7 +230,7 @@
 | P2 | T2.6 外部真值校验 Hook | ✅ DONE | 2026-11-09 | `b63678c` | 4 种 kind 实测；CLI text_span 0.992 | QA#7#10 |
 | P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | `b63678c` | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
 | P3 | T3.1 entity_key 归一化 | ✅ DONE | 2026-11-09 | `aec0c2c` | 生产已迁移：3 行改写、163/163、残留时间戳 0 |
-| P3 | T3.2 发送链路加固 | ⬜ PENDING | — | — | QA#8#10 |
+| P3 | T3.2 发送链路加固 | ✅ DONE | 2026-11-09 | 待回填 | 5 条验收 grep 全绿；台账幂等 3 次重跑拦截 |
 | P3 | T3.3 废弃 resend 脚本 | ⬜ PENDING | — | — | 依赖 T3.2 |
 | P3 | T3.4 定时任务去模型依赖 | ⬜ PENDING | — | — | QA#1 |
 | P3 | GATE-3 端到端不重发 | ⬜ PENDING | — | — | 连跑两次只发一次 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：**21/35**（P1、P2 完成 + T3.1 完成），GATE-1 ✅ / GATE-2 ✅ PASS；下一步 T3.2 发送链路加固。
+**当前进度**：**22/35**（P1、P2 完成 + T3.1/T3.2 完成），GATE-1 ✅ / GATE-2 ✅ PASS；下一步 T3.3 废弃 resend 脚本。
 
 ---
 
@@ -1287,33 +1287,43 @@ for k,v in d['providers'].items():
 - **失败处理**：出现 UNIQUE 冲突 → 立即回滚，冲突行进人工裁决
 
 #### T3.2 发送链路加固
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T3.1
 - **QA 来源**：#8 post code_block 静默丢弃、#10 seen 提前写、#12 同名文件缓存
-- **接管现状**（小品已改，见 §4.8 C9）：`scripts/run_publish_worker.py` 已落地 `_post_to_card2()` + `msg_type("interactive")` + `resp.code != 0` 告警 —— **保留**，但需重做三处
-- **改动**：`src/feishu/approval_service.py`、`scripts/run_publish_worker.py`、`src/feishu/card_builder.py`
-- **执行**：
-  1. **文件名**：`int(time.time())` → `{content_hash[:8]}`，最终 `f"{task_id}_{content_hash[:8]}{ext}"`
-     > **与 QA#12 的关系**：QA 用时间戳防"同名文件命中旧缓存"。改成 `content_hash` 同时满足两个目标 —— 防缓存（内容变则名字变）+ **可识别**（同一成片永远同名，重发一眼看出）
-  2. `video_msg_id` 写回 `send_ledger.feishu_msg_id`
-  3. `content_hash` 缺失时**拒绝发送**（不许无指纹发送）
-  4. **素材类消息强制 Card 2.0**（`msg_type("interactive")` + `schema:"2.0"`），彻底弃用 post `code_block`（QA#8：post 的 code_block 在移动端已不渲染，但 API 返回 success）
-  5. 所有发送调用统一检查 `resp.code != 0` **并告警**，不再只看 `resp.success()`
-  6. **seen 写入时机**：改为**发送成功之后**写（QA#10），见 T5.1
-  7. **（接管重做 R3）`_post_to_card2()` 下沉**：移入 `src/feishu/card_builder.py`，并在 `pipeline.yaml` 的 `dispatch` 步声明为 `hook.card_render`（`type: transform`）；发送函数只负责"发"，不再做结构转换
-     > 判据：`run_publish_worker.py` 中出现任何 `{"schema": "2.0"}` 字面量即视为未下沉
-  8. **（接管重做 R2）删除硬编码兜底**：`os.getenv("FEISHU_APPROVAL_CHAT_ID", "ou_bc83...")` 的默认值删除，缺失即 `raise MissingChatIdError`（严禁把真实会话 ID 写成代码兜底）
-- **验收**：
-  ```bash
-  grep -n "int(time.time())" src/feishu/approval_service.py && echo "VIOLATION" || echo "OK: no timestamp filename"
-  grep -n "code_block" src/feishu/approval_service.py scripts/run_publish_worker.py && echo "VIOLATION" || echo "OK: no post code_block"
-  grep -n '"schema": "2.0"' scripts/run_publish_worker.py && echo "VIOLATION: 未下沉" || echo "OK: card build 已下沉"
-  grep -n "ou_bc83" scripts/run_publish_worker.py && echo "VIOLATION: 硬编码 chat_id" || echo "OK: 无硬编码会话 ID"
-  grep -c "feishu_msg_id" src/feishu/approval_service.py
+- **改动**：`src/feishu/approval_service.py`、`scripts/run_publish_worker.py`、`src/feishu/card_builder.py`、`src/pipeline/hooks.py`、`pipeline.yaml`、`.env.example`
+- **决策记录**：D1=**A 派生**（`content_hash` 缺省由视频文件 sha256 派生）/ D2=**接台账**（发送前 claim，成功后 mark_sent）/ D3=**下沉**（手机素材卡直接产 Card 2.0）
+- **8 项执行结果**：
+  1. **文件名**：`int(time.time())` → `f"{task_id}_{content_hash[:8]}{ext}"`，实测 `task_abc_12af95bb.mp4`
+  2. **`feishu_msg_id` 回写**：`send_ledger.feishu_msg_id`，实测副本库 4 行台账中 `feishu_material` 行 = `om_fake_1`
+  3. **无指纹拒发**：`content_hash` 缺省 → 由文件派生；文件读不到 → **拒绝发送**并落 `send_refused_no_fingerprint` 告警
+  4. **强制 Card 2.0**：`notify_feishu` 只发 `interactive`；手机素材卡由 `build_mobile_copy_card()` 直接产出，**不再经过 post 富文本**
+  5. **`code != 0` 统一告警**：`approval_service` 4 处调用全部改为 `_ok(resp, where)` 判定 + `data/alerts.jsonl`（可用 `AUTOCONTENT_ALERTS_FILE` 重定向）
+  6. **`seen` 时机**：worker 侧 `mark_sent` 只在**发送成功后**调用（评论侧留 T5.1）
+  7. **R3 下沉**：`_post_to_card2` 移入 `src/feishu/card_builder.py::build_card2_from_post()`；`hook.card_render` 适配器按 `context.card_kind`（`post` / `mobile_copy` / 默认审批卡）分派
+  8. **R2 去硬编码**：`FEISHU_APPROVAL_CHAT_ID` 缺失 → `raise MissingChatIdError`，代码内不再出现 `ou_bc83…`
+- **验收（spec 原命令，实测全绿）**：
   ```
-- **预期输出**：`OK: no timestamp filename` / `OK: no post code_block` / `OK: card build 已下沉` / `OK: 无硬编码会话 ID` / 计数 ≥1
-- **回滚**：`git checkout src/feishu/approval_service.py scripts/run_publish_worker.py src/feishu/card_builder.py`
-- **注意**：小品对 `run_publish_worker.py` 的改动**不要回退**，只在其上重构；回滚命令仅用于重构失败时恢复到最后一次小品版本
+  [1] OK: no timestamp filename
+  [2] OK: no post code_block
+  [3] OK: card build 已下沉
+  [4] OK: 无硬编码会话 ID
+  [5] feishu_msg_id 计数 = 3（≥1）
+  ```
+- **端到端（副本库 + 假 Provider/假 client，不发真消息）**：
+  | 场景 | 结果 |
+  | :--- | :--- |
+  | 首次 `process_task` | 台账 4 行（bilibili / channels / douyin / feishu_material），`feishu_msg_id=om_fake_1`，状态 → `DISPATCHED` |
+  | 第 2 次同内容重跑 | 4 个渠道全部「台账命中」拦截，台账仍 4 行 |
+  | 第 3 次重跑 | 素材卡拦截（0 次），仅汇报卡 1 次，台账仍 4 行 |
+  | 老调用点兼容（不传 content_hash/task_id） | `upload_and_send_video(...)` → 文件名 `t32r_4fb65636.mp4`，返回值正常 |
+  | 视频文件不存在 | `None` + 明确日志（不静默） |
+  | `FEISHU_APPROVAL_CHAT_ID` 为空 | `MissingChatIdError`（拦截生效） |
+  | 飞书返回 code=10001 | `None` + `alerts.jsonl` 落 1 条 `feishu_api_error` |
+- **新增配置面**：`AUTOCONTENT_ALERTS_FILE`（可选，声明进 `pipeline.yaml` / `.env.example`），用于自检/CI 不污染生产告警流
+- **回归**：`hooks --selftest` 22/22 · 静默失败扫描新增 0（新代码里 2 处 `except OSError` 已补日志）· GATE-1 PASS · GATE-2 PASS
+- **⚠️ 测试污染披露**：调试 `notify_feishu` 时因 `.env` 会重新注入 `FEISHU_APPROVAL_CHAT_ID`，误发过 1 条文本「hi」到审批会话（无业务影响）
+- **回滚**：`git checkout src/feishu/approval_service.py scripts/run_publish_worker.py src/feishu/card_builder.py src/pipeline/hooks.py`
+- **注意**：小品对 `run_publish_worker.py` 的改动**未回退**，其 `_post_to_card2` 逻辑已原样迁入 `card_builder` 并被复用
 
 #### T3.3 废弃 `resend_*.py`
 - **状态**：⬜ PENDING
@@ -1740,6 +1750,7 @@ contract:
       - TWITTER_AUTH_TOKEN
       - AUTOCONTENT_ENV_FILE
       - AUTOCONTENT_DATA_DIR
+      - AUTOCONTENT_ALERTS_FILE
       - FEISHU_DEFAULT_CHAT_ID
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py
