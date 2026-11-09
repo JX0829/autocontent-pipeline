@@ -49,18 +49,33 @@ subprocess.run(["ffmpeg","-y","-v","error","-f","lavfi","-i","testsrc=size=640x3
 payload = {"task_id":"gate2","run_root":str(tmp),"step_id":"dispatch",
            "artifacts":{"video_16_9":"v.mp4"},
            "context":{"account":"douyin-tech-main","channel":"feishu","content_hash":"g"*64}}
+def rows():
+    import sqlite3
+    db = tmp / "data" / "pipeline_state.db"
+    if not db.exists():
+        return -1
+    try:
+        return sqlite3.connect(str(db)).execute("select count(*) from send_ledger").fetchone()[0]
+    except sqlite3.Error:
+        return -1
 def run():
     r = subprocess.run([sys.executable,"scripts/hooks/send_ledger.py"], input=json.dumps(payload),
                        capture_output=True, text=True)
     line = [l for l in r.stdout.strip().splitlines() if l.strip()]
     return json.loads(line[-1]) if line else {"ok":None,"reason":r.stderr[-120:]}
+r0 = rows()
 a, b = run(), run()
-print(json.dumps({"first": a.get("ok"), "second": b.get("ok"), "reason": b.get("reason")}, ensure_ascii=False))
+r1 = rows()
+# 契约（3f8a319 起变更）：hook 只做**只读预检**、绝不抢槽位；抢占由执行体
+# claim_send_slot 独占完成（否则 hook 先 INSERT → 执行体必然 already_sent →
+# 台账有行却一条没发出去）。幂等由上面第 1 项断言。
+print(json.dumps({"first": a.get("ok"), "second": b.get("ok"),
+                  "rows_before": r0, "rows_after": r1}, ensure_ascii=False))
 PY
 )
-FIRST=$(echo "$HK" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['first'],d['second'],d['reason'])" 2>/dev/null)
-if [ "$FIRST" = "True False already_sent" ]; then
-  printf '  ✅ %-26s first=True second=False already_sent\n' "hook 二次投递"
+FIRST=$(echo "$HK" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['first'],d['second'],d['rows_before'],d['rows_after'])" 2>/dev/null)
+if [ "$FIRST" = "True True -1 -1" ] || [ "$FIRST" = "True True 0 0" ]; then
+  printf '  ✅ %-26s 只读预检不落行（幂等由 claim_send_slot 保证）\n' "hook 二次投递"
 else
   printf '  ❌ %-26s %s\n' "hook 二次投递" "$FIRST"
   fail=1

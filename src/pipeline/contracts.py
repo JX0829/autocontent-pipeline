@@ -14,6 +14,9 @@
 """
 from __future__ import annotations
 
+import os
+import re
+
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -59,8 +62,36 @@ class ContractError(RuntimeError):
 
 # ------------------------------------------------------------------ 1. 加载
 
+_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env(value: Any) -> Any:
+    """把 `${VAR}` / `${VAR:-默认值}` 解析成真实值（递归 dict/list）。
+
+    T3.x 发现的死配置：`pipeline.yaml` 里 `mode: "${DISPATCH_MODE:-publish}"`、
+    `carrier: "${INTAKE_CARRIER:-cli}"`、`mode: "${APPROVAL_MODE:-auto}"` 这些声明
+    在代码里从来没被解析过 —— 等于配置写了但不生效。这里统一在加载期展开。
+    变量未设置且无默认值 → 保留原样（交给下游 fail-fast 报错，不静默吞掉）。
+    """
+    if isinstance(value, dict):
+        return {k: expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_env(v) for v in value]
+    if not isinstance(value, str):
+        return value
+
+    def repl(m: re.Match) -> str:
+        name, default = m.group(1), m.group(2)
+        val = os.getenv(name)
+        if val is not None and val != "":
+            return val
+        return default if default is not None else m.group(0)
+
+    return _ENV_RE.sub(repl, value)
+
+
 def load_pipeline(path: str | Path = "pipeline.yaml") -> dict[str, Any]:
-    """解析 pipeline.yaml 并校验 schema_version。"""
+    """解析 pipeline.yaml，校验 schema_version，并展开 `${VAR:-default}` 占位符。"""
     p = Path(path)
     if not p.is_absolute():
         p = (PROJ / p) if (PROJ / p).exists() else Path.cwd() / p
@@ -78,7 +109,7 @@ def load_pipeline(path: str | Path = "pipeline.yaml") -> dict[str, Any]:
     for key in ("pipeline", "contract", "providers", "steps", "hooks"):
         if key not in cfg:
             raise ContractError(f"缺少顶层段: {key}")
-    return cfg
+    return expand_env(cfg)          # ${VAR:-default} 在加载期展开（否则声明了也不生效）
 
 
 # ------------------------------------------------------------------ 2. 结构

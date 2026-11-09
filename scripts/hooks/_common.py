@@ -291,7 +291,10 @@ def ocr_text(path: Path, ts: float = 0.2, timeout: float = 60.0) -> str | None:
 
 # 封面定格段 [0, 0.5s] 内的采样点。单点 OCR 会被单帧噪声（转场、抗锯齿抖动、
 # tesseract 单帧误识）带偏，官方错版判定必须取多点统计量。
-DEFAULT_SAMPLE_TS: tuple[float, ...] = (0.10, 0.20, 0.30, 0.40)
+# 采样窗口必须落在**版式稳定段**：0.1~0.4s 还在开场动画里（标题逐个入场）。
+# 实测同一支横版成片：0.1~0.4s 跨度恒为 18.8%，1.0s 之后稳定在 89.8%。
+# 用动画帧取中位数，会把正常横版封面判成「竖版塞横屏」。
+DEFAULT_SAMPLE_TS: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 

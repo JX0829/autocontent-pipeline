@@ -40,7 +40,13 @@ def main() -> None:
     if not isinstance(draft, dict):
         C.fail("expand_narration: 缺 draft_script（context.draft / artifacts.draft_script）")
 
-    body = str(draft.get("body") or draft.get("narration") or draft.get("content") or "")
+    scenes = draft.get("scenes") or []
+    body = str(
+        draft.get("body") or draft.get("narration") or draft.get("content")
+        or draft.get("content_text")
+        or " ".join(str(s.get("segment_narration") or "") for s in scenes if isinstance(s, dict))
+        or ""
+    )
     if len(body) < 20:
         C.fail(f"expand_narration: 正文过短（{len(body)} 字），无法切分")
 

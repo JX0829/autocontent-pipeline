@@ -46,6 +46,7 @@ def main() -> None:
         C.fail("dedupe_entity: 缺 title，无法排他")
 
     history: list[str] = []
+    self_task = str(p.get("task_id") or "")      # 排除自己：persist_task 已在本轮把当前任务写进库
     db = C.db_path(p)
     if db.exists():
         try:
@@ -57,14 +58,15 @@ def main() -> None:
                 if has:
                     for theme, key in conn.execute(
                         "select coalesce(theme,''), coalesce(entity_key,'') from content_tasks "
-                        "order by created_at desc limit 60"
+                        "where task_id != ? order by created_at desc limit 60", (self_task,)
                     ):
                         history.extend(x for x in (theme, key) if x)
             finally:
                 conn.close()
         except sqlite3.Error:
             history = []
-    history.extend(str(r.get("title") or "") for r in C.read_jsonl(C.ledger_path("send_ledger"))[-200:])
+    history.extend(str(r.get("title") or "") for r in C.read_jsonl(C.ledger_path("send_ledger"))[-200:]
+                   if str(r.get("task_id") or "") != self_task)
 
     for old in history:
         dup, why = _similar(title, old)
