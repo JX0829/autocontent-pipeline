@@ -217,7 +217,7 @@
 | P1 | T1.3 薄 Runner | ✅ DONE | 2026-11-09 | `437c23d` | dry-run 全绿 EXIT=0；5 项负向退出码全对 |
 | P1 | T1.4 model_profile 能力契约 | ✅ DONE | 2026-11-09 | `a25d06c` | 实测 reasoning 1023~1259；main 6144/fast 2048 |
 | P1 | T1.5 LLM 统一调用层 | ✅ DONE | 2026-11-09 | `505417e` | 4 调用点收口；6 项异常路径实测；删静默判D |
-| P1 | T1.6 模型切换自检脚本 | ⬜ PENDING | — | — | 换模型前必跑 |
+| P1 | T1.6 模型切换自检脚本 | ✅ DONE | 2026-11-09 | 待回填 | 4 槽位真实自检 4/4 PASS；抓到预算过紧并回调 8192/2560 |
 | P1 | T1.7 物料契约 `manifest.schema.json` | ⬜ PENDING | — | — | **v1.2 新增，P-2；内聚前提** |
 | P1 | T1.8 投料通道实现 | ⬜ PENDING | — | — | **v1.3 新增；G-C，3 种载体** |
 | P1 | T1.9 配置面收敛 | ⬜ PENDING | — | — | **v1.3 新增；G-B，死键+fail-fast** |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P1 进行中，9/35 完成（T0.1–T0.4、T1.1–T1.5 ✅），下一步 T1.6 模型切换自检。
+**当前进度**：P1 进行中，10/35 完成（T0.1–T0.4、T1.1–T1.6 ✅），下一步 T1.7 物料契约。
 
 ---
 
@@ -709,10 +709,11 @@ print('errors:', e)"
 
   | 槽位 | `max_tokens` | `reasoning_reserve` | 推导 | `timeout_sec` | `expected_latency_sec` | `json_mode` | `min_output_chars` |
   |---|---|---|---|---|---|---|---|
-  | `llm.main` | **6144** | **1536** | 1536（reasoning 上界+22% 余量）+ 4608（覆盖 4000 visible） | 120 | 25 | true | 80 |
-  | `llm.fast` | **2048** | **1536** | 1536 + 512（分类/短回复） | 120 | 20 | false | 1 |
+  | `llm.main` | **8192** | **2560** | 2560（reasoning 实测上界 2215 +15% 余量）+ 5632 visible（真实 draft ≈4000，留 40% 峰值余量） | 120 | 25 | true | 80 |
+  | `llm.fast` | **2048** | **1536** | 1536（实测上界 1099 +40%）+ 512（分类/短回复） | 120 | 20 | false | 1 |
 
-  `reasoning_reserve` 取实测上界 1259 向上取整到 1536（≈+22% 余量），避免同一 prompt 的 reasoning 抖动导致偶发截断（实测同一 JSON prompt 三次为 1146/1182/1259，波动 10%）。
+  `reasoning_reserve` 取实测上界向上取整，三轮标定逐次上调：T1.4 首轮 1259 → 1536；T1.6 自检 1840 → 2048；同脚本复跑 **2215** → 最终 **2560**。
+  **⚠️ 关键教训**：同一 JSON prompt 的 reasoning 在 1056~2215 之间波动（**2.1 倍**），`llm.fast` 同类提示在 40~1099 之间（**27 倍**）。**单次采样定预算必然偶发截断**，必须按多轮最坏值 + 余量。
 
 - **验收**：
   ```bash
@@ -788,26 +789,43 @@ for k,v in d['providers'].items():
 - **失败处理**：改造后评论分类实测若出现 `TruncatedOutput` → 说明 `max_tokens` 仍不足，回 T1.4 上调后重验，**禁止在调用点硬编码兜底**
 
 #### T1.6 模型切换自检脚本 `scripts/model_switch_check.py`（v1.1 新增）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09，含预算回调）
 - **依赖**：T1.5
 - **QA 来源**：#1 #2（切换即事故）
-- **改动**：新增文件（约 180 行）
-- **必须实现**：对每个能力槽位跑一次**真实最小调用**，断言：
+- **改动**：新增 `scripts/model_switch_check.py`（约 300 行）
+- **必须实现**（全部落地）：对每个能力槽位跑一次**真实最小调用**，断言：
   1. 调用成功（无 `unknown provider`）
   2. `content` 非空
   3. `finish_reason != "length"`
   4. `json_mode` 槽位的返回可被 `json.loads` 解析
   5. 延迟 ≤ `expected_latency_sec × 2`
   6. 输出长度 ≥ `min_output_chars`
-- **CLI**：`python3 scripts/model_switch_check.py [--slot llm.main] [--dry-run]`
-  - `--dry-run`：只打印将校验的槽位与 profile，不发请求
-  - 退出码：`0` 全通过 / `1` 有失败（**CI 与人工切换都必须看这个码**）
+
+  另对 `kind: tts` 槽位：真实合成 6 字短句，断言音频字节 > 0 且延迟 ≤ `timeout_sec`。
+- **CLI**：`python3 scripts/model_switch_check.py [--slot llm.main]... [--dry-run] [--json]`
+  - `--dry-run`：只打印槽位与 profile 摘要，不发请求
+  - `--json`：机器可读（表头自动改走 stderr，保证 stdout 是纯 JSON）
+  - 退出码：`0` 全通过 / `1` 有失败 / 未知槽位 `1`
 - **验收**：
   ```bash
   python3 scripts/model_switch_check.py --dry-run; echo "EXIT=$?"
+  python3 scripts/model_switch_check.py;            echo "EXIT=$?"
   ```
-- **预期输出**：打印 3 个槽位及其 profile 摘要，`EXIT=0`
-- **回滚**：`rm scripts/model_switch_check.py`
+- **实测输出（2026-11-09）**：
+  - `--dry-run` → 打印 **4 个槽位**及 profile 摘要，`DRY RUN OK`，`EXIT=0`
+  - 真实自检 → **4/4 PASS**，`EXIT=0`：
+
+    | 槽位 | model | 延迟 | 结果 | 明细 |
+    |---|---|---|---|---|
+    | `llm.main` | `deepseek-v4.1-flash` | 14.4s | PASS | 162 字 / reasoning 2215 / visible 96（上限 50s） |
+    | `llm.fast` | `deepseek-v4.1-flash` | 2.6s | PASS | 11 字 / reasoning 179（上限 40s） |
+    | `tts.tech` | `zh-CN-YunxiNeural @ +10%` | 1.4s | PASS | 音频 13968 字节 |
+    | `tts.news` | `zh-CN-XiaoxiaoNeural @ +10%` | 1.3s | PASS | 音频 11376 字节 |
+
+  - `--slot no.such` → `EXIT=1`；`--slot llm.fast` → `EXIT=0`（单槽位可用）
+- **⚠️ 与原描述的差异**：原写「3 个槽位」是 v1.1 口径，v1.2 新增 `tts.news` 后为 **4 个**（2×llm + 2×tts）。`feishu`/`db` 属 `saas`/`storage`，不参与模型自检。
+- **自检直接抓到的问题（并已修正）**：首轮 `llm.main` 实测 `reasoning=1840`，超出当时 `reasoning_reserve=1536`；复跑更高到 **2215**。说明 `max_tokens=6144` 的可见预算只剩 4304，离真实 draft 需求 4000 仅 7% 余量 → 已回调为 `max_tokens 8192 / reasoning_reserve 2560`（visible 5632，余量 40%）。**这是自检脚本的真正价值：它在上线前暴露了预算过紧。**
+- **回滚**：`rm scripts/model_switch_check.py && git checkout pipeline.yaml`
 - **强制**：写进附录 B，任何模型变更前必须 `EXIT=0` 才能继续
 
 #### T1.7 物料契约 `manifest.schema.json`（v1.2 新增，P-2）
@@ -1560,9 +1578,9 @@ providers:
     env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_MAIN}
     schema_out: DraftScriptPayload
     profile:
-      # T1.4 实测标定：reasoning 1023~1259，真实 draft ≈4000 visible token
-      max_tokens: 6144          # = reasoning_reserve(1536) + visible(4608)
-      reasoning_reserve: 1536
+      # T1.4/T1.6 实测标定：reasoning 40~2215（强依赖 prompt 形态），真实 draft ≈4000 visible token
+      max_tokens: 8192          # = reasoning_reserve(2560) + visible(5632)
+      reasoning_reserve: 2560
       timeout_sec: 120
       json_mode: true
       min_output_chars: 80

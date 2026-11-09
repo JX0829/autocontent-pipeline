@@ -80,10 +80,10 @@ providers:
     schema_out: DraftScriptPayload
     profile:
       # T1.4 实测标定（2026-11-09，deepseek-v4.1-flash @ 8317）
-      #   reasoning 实测 1023~1259；真实 draft ≈6100~6700 字符 ≈4000 visible token
-      #   → max_tokens = reasoning_reserve(1536) + visible(4608)
-      max_tokens: 6144
-      reasoning_reserve: 1536
+      #   reasoning 实测 1056~2215（JSON 扩写形态）；真实 draft ≈6100~6700 字符 ≈4000 visible token
+      #   → max_tokens = reasoning_reserve(2560) + visible(5632)
+      max_tokens: 8192
+      reasoning_reserve: 2560
       timeout_sec: 120
       json_mode: true
       min_output_chars: 80
