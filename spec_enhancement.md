@@ -236,15 +236,15 @@
 | P3 | GATE-3 端到端不重发 | ✅ PASS | 2026-11-09 | `3f8a319` | `bash scripts/gate3.sh` 12/12 断言：A 首跑发 1 次 / B 幂等跳过 / C 台账拦截 | QA#7#10#12 |
 | P4 | T4.1 run_root 隔离 + 横版命名统一 | ✅ DONE | 2026-11-09 | `2be932e` | props 落 run_root + 软链供 Remotion；命名统一零残留 |
 | P4 | T4.2 去硬编码 | ✅ DONE | 2026-11-09 | `a5168b9` | 账号/来源全部从配置与物料解析，grep 零残留 |
-| P4 | T4.3 状态机归位 | ⬜ PENDING | — | — | 依赖 T4.2 |
-| P4 | T4.4 横屏出厂治理 | ⬜ PENDING | — | — | QA#6#7，二次复发项 |
+| P4 | T4.3 状态机归位 | ✅ DONE | 2026-11-09 | `a6fd66c` | INGESTED 默认 + 冲突不覆盖 |
+| P4 | T4.4 横屏出厂治理 | ✅ DONE | 2026-11-09 | `891e587` | 双入口收敛 + 假数据检测 0 处 + 静默兜底清零 |
 | P4 | T4.5 TTS 配置接线 | ✅ DONE | 2026-11-09 | `65d742c` | 槽位化 10 处调用；改 TTS_RATE 实测时长 6.41s→7.03s |
-| P4 | T4.6 审批渠道抽象 | ⬜ PENDING | — | — | **v1.2 新增，P-4** |
+| P4 | T4.6 审批渠道抽象 | ✅ DONE | 2026-11-09 | `0286284` | 三渠道 feishu/cli/auto + fail-closed；单测 6 项 |
 | P4 | T4.7 出片与发片解耦 | ✅ DONE | 2026-11-09 | `65d742c` | output_only 跳过审批/发送 + artifacts.txt；aspects 门控 |
-| P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
-| P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
+| P5 | T5.1 幂等写入时机归位 | ✅ DONE | 2026-11-09 | `db3fb51` | QA#5#10；REPLIED 必须带 external_msg_id，判重含 IGNORED |
+| P5 | GATE-5 全链路静默失败扫描 | ✅ PASS | 2026-11-09 | `db3fb51` | 新增 0（36 vs 基线 37）· cron pin 无未 pin · model_switch dry-run OK |
 
-**当前进度**：**26/35**（P1、P2 完成 + T3.1–T3.4 完成 + GATE-3 PASS + T4.1 收口），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅；下一步 T4.2 去硬编码。
+**当前进度**：**30/35**（P1、P2、P3、P4 全清 + T5.1 + GATE-5 PASS），GATE-1 ✅ / GATE-2 ✅ / GATE-3 ✅ / GATE-5 ✅；剩余 P6 历史数据迁移与收尾项。
 
 ---
 
