@@ -77,7 +77,7 @@ async def run_phase1_demo(template: str = "auto"):
 
     # 3. 两阶段音画同步与精确时间轴生成 (TTS Aligner)
     print("\n[Step 3/5] 执行 Edge-TTS 音频合成与句级字幕对齐...")
-    aligner = TTSAligner(voice="zh-CN-YunxiNeural", rate="+10%")
+    aligner = TTSAligner.from_slot("tts.tech")
     aligned_payload = await aligner.align_draft(
         draft=draft_payload,
         task_id=task_id,

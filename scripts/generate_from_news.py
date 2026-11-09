@@ -179,8 +179,9 @@ async def process_task(task_data):
     )
 
     # TTS 对齐
-    voice = "zh-CN-YunxiNeural" if task_data["target_account_type"] == "tech" else "zh-CN-XiaoxiaoNeural"
-    aligner = TTSAligner(voice=voice, rate="+10%")
+    # T4.5：账号类型 → 槽位名映射，音色/语速全部来自 pipeline.yaml 的 env 槽位
+    _slot = "tts.tech" if task_data["target_account_type"] == "tech" else "tts.news"
+    aligner = TTSAligner.from_slot(_slot)
     aligned_payload = await aligner.align_draft(draft_payload, task_id, renderer_public_dir)
 
     task_json_path = os.path.join(renderer_public_dir, "tasks", task_id, "aligned_render.json")

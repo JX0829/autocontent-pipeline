@@ -275,6 +275,44 @@ def _resolve_pending(step: dict[str, Any]) -> str:
     return f"{executor or '未知执行体'} 尚未实现"
 
 
+def dispatch_policy(cfg: dict[str, Any]) -> tuple[bool, str, list[str]]:
+    """T4.7 出片/发片解耦：返回 (output_only, mode, aspects)。"""
+    steps = cfg.get("steps") or []
+    dparams = next((s.get("params") or {} for s in steps if s.get("id") == "dispatch"), {})
+    mode = str(dparams.get("mode") or "publish")
+    enabled = bool(dparams.get("enabled", True))
+    output_only = (not enabled) or mode == "output_only"
+
+    raw = (cfg.get("inputs") or {}).get("aspects") or []
+    if isinstance(raw, dict):
+        raw = raw.get("default") or []
+    aspects = [str(a) for a in raw]
+    if not aspects:
+        raise ContractError("inputs.aspects 为空：必须至少声明 vertical 或 landscape")
+    bad = [a for a in aspects if a not in ("vertical", "landscape")]
+    if bad:
+        raise ContractError(f"inputs.aspects 含非法取值: {bad}")
+    return output_only, mode, aspects
+
+
+def write_artifacts_manifest(run_root: Path, artifacts: dict[str, str], mode: str) -> Path:
+    """output_only 时把产物绝对路径落盘并打印。"""
+    lines: list[str] = []
+    for key in sorted(artifacts):
+        path = Path(artifacts[key])
+        if path.is_dir():
+            lines.extend(str(q.resolve()) for q in sorted(path.glob("*")) if q.is_file())
+        elif path.exists():
+            lines.append(str(path.resolve()))
+    out = run_root / "artifacts.txt"
+    out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    print(f"\n=== 只出片（mode={mode}）产物清单 ===")
+    for line in lines:
+        print(f"  {line}")
+    print(f"  清单文件: {out}")
+    return out
+
+
 def _hook_block_severity(cfg: dict[str, Any], name: str) -> str:
     """hook 的阻断语义：`on_fail: block` 才拦流程，`warn`/observe 只记录。"""
     spec = ((cfg.get("hooks") or {}).get(name) or {})
@@ -341,7 +379,20 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
     db = _db(db_path)
     steps = cfg["steps"]
     artifacts: dict[str, str] = _discover_artifacts(run_root) if start_index > 0 else {}
+
+    # T4.7 出片/发片解耦：output_only 不审批不发送；aspects 决定要哪几版成片
+    output_only, dispatch_mode, aspects = dispatch_policy(cfg)
+    skip: dict[str, str] = {}
+    if output_only:
+        skip["approval"] = "output_only 不审批"
+        skip["dispatch"] = "output_only 不发片"
+    if "vertical" not in aspects:
+        skip["render_vertical"] = "aspects 未包含 vertical"
+    if "landscape" not in aspects:
+        skip["render_landscape"] = "aspects 未包含 landscape"
+
     print("\n=== 执行 ===")
+    print(f"  出片策略: mode={dispatch_mode} · output_only={output_only} · aspects={aspects}")
     if db:
         db.update_run_status(run_id, "RUNNING")
 
@@ -349,6 +400,12 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
         sid = step["id"]
         if i < start_index and not rerun_done:
             print(f"  [{sid}] SKIP（断点已过）")
+            if db:
+                db.set_step_status(run_id, sid, "SKIPPED")
+            continue
+
+        if sid in skip:
+            print(f"  [{sid}] SKIP（{skip[sid]}）")
             if db:
                 db.set_step_status(run_id, sid, "SKIPPED")
             continue
@@ -424,6 +481,9 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
 
         if db:
             db.set_step_status(run_id, sid, "DONE")
+
+    if output_only:
+        write_artifacts_manifest(run_root, artifacts, dispatch_mode)
 
     if db:
         db.update_run_status(run_id, "DONE")

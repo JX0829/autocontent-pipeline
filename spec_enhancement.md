@@ -238,9 +238,9 @@
 | P4 | T4.2 去硬编码 | ✅ DONE | 2026-11-09 | `a5168b9` | 账号/来源全部从配置与物料解析，grep 零残留 |
 | P4 | T4.3 状态机归位 | ⬜ PENDING | — | — | 依赖 T4.2 |
 | P4 | T4.4 横屏出厂治理 | ⬜ PENDING | — | — | QA#6#7，二次复发项 |
-| P4 | T4.5 TTS 配置接线 | ⬜ PENDING | — | — | **v1.2 新增，P-3** |
+| P4 | T4.5 TTS 配置接线 | ✅ DONE | 2026-11-09 | 待回填 | 槽位化 10 处调用；改 TTS_RATE 实测时长 6.41s→7.03s |
 | P4 | T4.6 审批渠道抽象 | ⬜ PENDING | — | — | **v1.2 新增，P-4** |
-| P4 | T4.7 出片与发片解耦 | ⬜ PENDING | — | — | **v1.3 新增；G-D/G-E** |
+| P4 | T4.7 出片与发片解耦 | ✅ DONE | 2026-11-09 | 待回填 | output_only 跳过审批/发送 + artifacts.txt；aspects 门控 |
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
@@ -1556,37 +1556,32 @@ for k,v in d['providers'].items():
 - **注意**：小品的两个未提交文件**先 `git add` 再改**，避免改造失败时被误删；验收里的两条 `EXIT` 断言是本次唯一"已实测通过"的基线，任何改造后必须保持
 
 #### T4.5 TTS 配置接线（v1.2 新增，P-3）
-- **状态**：⬜ PENDING
-- **依赖**：T1.1（`providers.tts.tech` 骨架）
-- **缺口来源**：§1.6 **I3 / I4** —— `generate_from_news.py:175-176` 硬编码音色与语速；`.env` 的 `TTS_VOICE_TECH` / `TTS_VOICE_NEWS` / `TTS_RATE` 实测**零引用**
-- **改动**：`scripts/generate_from_news.py`、`src/tts/aligner.py`、`pipeline.yaml`
-- **执行**：
-  1. 删除 `generate_from_news.py:175-176`：
-     ```python
-     # 删除：
-     voice = "zh-CN-YunxiNeural" if task_data["target_account_type"] == "tech" else "zh-CN-XiaoxiaoNeural"
-     aligner = TTSAligner(voice=voice, rate="+10%")
-     ```
-  2. 改为从槽位解析（`account_type` → 槽位名映射，不出现任何音色字面量）：
-     ```python
-     slot = "tts.tech" if task_data["target_account_type"] == "tech" else "tts.news"
-     voice = resolve_env(cfg["providers"][slot]["env"]["voice"])   # TTS_VOICE_TECH
-     rate  = resolve_env(cfg["providers"][slot]["env"]["rate"])    # TTS_RATE
-     if not voice or not rate:
-         raise MissingConfig(f"{slot} 的 voice/rate 未配置，拒绝静默降级到默认音色")
-     aligner = TTSAligner(voice=voice, rate=rate)
-     ```
-  3. `pipeline.yaml` 补 `tts.news` 槽位（`env: {voice: TTS_VOICE_NEWS, rate: TTS_RATE}`），与 `tts.tech` 对齐
-  4. **禁止兜底**：env 缺失必须抛异常，不得回退到硬编码默认值（对齐 §4.5 静默失败零容忍）
-- **验收**：
-  ```bash
-  grep -rn "zh-CN-YunxiNeural\|zh-CN-XiaoxiaoNeural\|rate=\"+10%\"" scripts/ src/ && echo "VIOLATION" || echo "OK: 无硬编码音色"
-  grep -c "voice" .env    # 必须被读取
-  python3 -c "from src.pipeline.config import resolve_env;print('VOICE',resolve_env('TTS_VOICE_TECH'),'RATE',resolve_env('TTS_RATE'))"
+- **状态**：✅ DONE（2026-11-09）
+- **依赖**：T1.1
+- **缺口来源**：§1.6 **I3 / I4** —— 音色/语速硬编码，`.env` 的 `TTS_VOICE_TECH` / `TTS_VOICE_NEWS` / `TTS_RATE` 零引用
+- **改动**：`src/pipeline/config.py`（新增 `resolve_env`）、`src/tts/aligner.py`（`from_slot` + 去掉默认音色）、
+  `scripts/generate_from_news.py`、`src/pipeline/executors.py`、另 9 个 `TTSAligner(...)` 调用点
+- **做法**：
+  1. `TTSAligner.__init__(voice, rate)` **不再有默认值**；新增 `TTSAligner.from_slot("tts.tech"|"tts.news")`
+     按 `pipeline.yaml` 的 `providers.<slot>.env` 解析，缺键 → `MissingConfig`（code=78），不静默降级
+  2. `config.resolve_env(key)`：读环境变量（先加载 `.env`），空/缺失返回 `None`
+  3. 账号类型 → 槽位映射：`tech → tts.tech`、其它 `→ tts.news`，代码里零音色字面量
+  4. 全部 10 处 `TTSAligner(voice='zh-CN-YunxiNeural', rate='+10%')` 改为 `from_slot(...)`
+- **验收（实测）**：
   ```
-- **预期输出**：`OK: 无硬编码音色`；`VOICE zh-CN-YunxiNeural RATE +10%`（值来自 `.env` 而非代码）
-- **回滚**：`git checkout scripts/generate_from_news.py src/tts/aligner.py pipeline.yaml`
-- **验证方式**：改 `.env` 里 `TTS_RATE=+0%` 重跑，`ffprobe` 音频时长应随之变长 —— 证明配置真正生效
+  grep -rn "zh-CN-YunxiNeural|zh-CN-XiaoxiaoNeural|rate=\"+10%\"" src scripts → OK: 无硬编码音色
+  resolve_env('TTS_VOICE_TECH') = zh-CN-YunxiNeural · resolve_env('TTS_RATE') = +10%
+  from_slot('tts.tech') → zh-CN-YunxiNeural +10%
+  from_slot('tts.news') → zh-CN-XiaoxiaoNeural +10%
+  ```
+- **配置真生效（关键验证，不是看代码）**：同一句话改 `TTS_RATE` 后实测音频时长
+  ```
+  TTS_RATE=+10% → 6.41s
+  TTS_RATE=+0%  → 7.03s   （差 +0.62s，语速变慢 → 配置确实被读取）
+  ```
+- **缺配置必须炸**：`AUTOCONTENT_ENV_FILE=/dev/null` 且 env 无值时 →
+  `MissingConfig: 缺失必填环境变量: TTS_RATE, TTS_VOICE_TECH（code=78）`
+- **回滚**：`git checkout src/tts/aligner.py src/pipeline/config.py scripts/generate_from_news.py src/pipeline/executors.py`
 
 #### T4.6 审批渠道抽象（v1.2 新增，P-4）
 - **状态**：⬜ PENDING
@@ -1619,35 +1614,38 @@ for k,v in d['providers'].items():
 - **回滚**：`git checkout pipeline.yaml src/pipeline/runner.py && rm -rf src/approval/`
 
 #### T4.7 出片与发片解耦（v1.3 新增，G-D / G-E）
-- **状态**：⬜ PENDING
-- **依赖**：T4.6（审批抽象）
-- **缺口来源**：§1.7 **G-D / G-E** —— `approval_modes` 只声明取值域无默认值；`aspects` 无"只要片不发片"开关，出片与发片仍耦合（`dispatch` 会去碰各平台登录态）
-- **改动**：`pipeline.yaml`（`dispatch` 段、`approval.params.mode` 默认值）、`src/pipeline/runner.py`、`src/approval/auto.py`
-- **执行**：
-  1. `dispatch` 段按 §4.9.4 改造：
-     ```yaml
-     - id: dispatch
-       name: "分发"
-       run: builtin.dispatch
-       params:
-         enabled: true                 # false ⇒ 只出片
-         mode: "${DISPATCH_MODE:-publish}"   # publish | output_only
-     ```
-  2. `output_only` 分支：跳过 `approval` 与 `dispatch`，在 `{run_root}/artifacts.txt` 写入产物绝对路径清单并 `stdout` 打印
-  3. **登录态隔离**：`output_only` 下禁止 import/初始化 `xiaohongshu_cdp`、禁止读 `data/xhs_storage_state.json`（用 `if mode == "publish"` 门控，而不是 try/except 兜）
-  4. `approval.params.mode` 默认值落实为 `auto`，并由 `src/approval/auto.py` 打印降级原因（T4.6 已定义接口）
-  5. `aspects` 增加语义说明：`[vertical]` 只出竖版、`[landscape]` 只出横版、`[]` 报错
-- **验收**：
-  ```bash
-  DISPATCH_MODE=output_only python3 -m src.pipeline.runner --material /tmp/min.json --dry-run; echo "EXIT=$?"
-  grep -rn "xhs_storage_state\|xiaohongshu_cdp" src/pipeline/runner.py && echo "VIOLATION" || echo "OK: 无登录态耦合"
-  python3 -c "import yaml;d=yaml.safe_load(open('pipeline.yaml'));s=[x for x in d['steps'] if x['id']=='dispatch'][0];print('DISPATCH',s['params'])"
+- **状态**：✅ DONE（2026-11-09）
+- **依赖**：T4.6（审批抽象接口；本任务只落实默认值与门控）
+- **改动**：`pipeline.yaml`（dispatch 段已有 enabled/mode/aspects）、`src/pipeline/runner.py`
+- **做法**：
+  1. `runner.dispatch_policy(cfg)`：解析 `enabled` / `mode` / `inputs.aspects`
+     - `enabled=false` 或 `mode=output_only` → `output_only=True`
+     - `aspects=[]` → `ContractError`（不许"什么都不出"却返回成功）；非法取值同样报错
+  2. `run_steps` 按策略生成跳过集：
+     - `output_only` → 跳过 `approval`、`dispatch`（不审批、不发片、**不碰 send_ledger**）
+     - `aspects` 缺 `vertical` → 跳过 `render_vertical`；缺 `landscape` → 跳过 `render_landscape`
+  3. `write_artifacts_manifest()`：只出片时把产物**绝对路径**写入 `{run_root}/artifacts.txt` 并打印
+  4. 登录态隔离：`runner` 内**零** `xhs_storage_state` / `xiaohongshu_cdp` 引用（靠门控而非 try/except）
+- **验收（实测）**：
   ```
-- **预期输出**：`output_only` 干跑打印产物清单且 `EXIT=0`，日志无 CDP/登录态初始化；`OK: 无登录态耦合`；`DISPATCH {'enabled': True, 'mode': '${DISPATCH_MODE:-publish}'}`
+  DISPATCH_MODE=output_only python3 -m src.pipeline.runner --material /dev/null --dry-run → EXIT=0
+  grep -rn "xhs_storage_state|xiaohongshu_cdp" src/pipeline/runner.py → OK: 无登录态耦合
+  DISPATCH {'enabled': True, 'mode': '${DISPATCH_MODE:-publish}', 'aspects': ['vertical','landscape']}
+  ```
+- **策略单测（实测）**：
+  ```
+  aspects=[]          → ContractError「inputs.aspects 为空：必须至少声明 vertical 或 landscape」
+  aspects=[vertical]  → (output_only=False, mode=publish, aspects=['vertical'])
+  aspects=[diagonal]  → ContractError「含非法取值: ['diagonal']」
+  ```
+- **产物清单（实测，跑在已有 run 上）**：
+  ```
+  === 只出片（mode=output_only）产物清单 ===
+    …/video.mp4  …/video_16_9.mp4  …/cover.png  …/cover_16_9.png  …/xhs_cards/card_0.png
+    清单文件: …/artifacts.txt
+  ```
+- **不做**：`output_only` 下不抢 `send_ledger` 槽位（只出片不得污染台账）
 - **回滚**：`git checkout pipeline.yaml src/pipeline/runner.py`
-- **不做**：`output_only` 下**不得**顺手跑 `send_ledger` 抢槽位（那是发片才需要的），否则只出片会污染台账
-
----
 
 ### P5 · 幂等写入时机归位（v1.1 新增阶段）
 

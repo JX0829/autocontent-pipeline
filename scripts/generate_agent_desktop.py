@@ -104,7 +104,7 @@ async def render_agent_desktop():
     print(f"[0/4] 物理清空 Remotion 静态缓存完成")
     
     print(f"[1/4] 合成语音并对齐字级时间戳: {task_id}...")
-    aligner = TTSAligner(voice='zh-CN-YunxiNeural', rate='+10%')
+    aligner = TTSAligner.from_slot("tts.tech")
     aligned_payload = await aligner.align_draft(payload, task_id, renderer_public_dir)
     
     task_json_path = renderer_dir / 'public' / 'tasks' / task_id / 'aligned_render.json'

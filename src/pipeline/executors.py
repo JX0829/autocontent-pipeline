@@ -144,9 +144,9 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
     from src.tts.aligner import TTSAligner
 
     payload = DraftScriptPayload(**draft)
-    voice = os.getenv("TTS_VOICE_TECH") or "zh-CN-YunxiNeural"
-    rate = os.getenv("TTS_RATE") or "+10%"
-    aligner = TTSAligner(voice=voice, rate=rate)
+    # T4.5：音色/语速一律来自 pipeline.yaml 的 tts.* 槽位（缺配置即 MissingConfig）
+    slot = "tts.tech" if str(draft.get("target_account_type") or "tech") == "tech" else "tts.news"
+    aligner = TTSAligner.from_slot(slot)
 
     # T4.1：props（JSON + 分段音频）落在 {run_root}/props/，不再写 renderer/public/tasks/
     props_dir = ctx.run_root / "props"

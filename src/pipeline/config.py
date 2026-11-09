@@ -159,6 +159,17 @@ def code_read_keys(dirs: Iterable[Path] = SCAN_DIRS) -> set[str]:
     return found
 
 
+def resolve_env(key: str) -> str | None:
+    """读取单个环境变量（会先加载 .env）；未设置/空串返回 None。
+
+    T4.5：音色、语速这类「声明在 pipeline.yaml 的 env 槽位」必须经此解析，
+    调用方不得写死默认值 —— 缺就抛 MissingConfig，不静默降级。
+    """
+    load_env_file()
+    val = os.getenv(key)
+    return val if val else None
+
+
 def load_required(cfg: dict[str, Any] | None = None) -> dict[str, str]:
     """校验必填键，缺一即抛 `MissingConfig`。返回 {key: value}（值不打印）。"""
     if cfg is None:

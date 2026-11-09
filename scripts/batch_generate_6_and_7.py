@@ -170,7 +170,7 @@ async def process_batch():
 
         # 2. TTS 对齐
         print(f"[1/3] 合成语音并对齐时间戳...")
-        aligner = TTSAligner(voice='zh-CN-YunxiNeural', rate='+10%')
+        aligner = TTSAligner.from_slot("tts.tech")
         aligned_payload = await aligner.align_draft(payload, task_id, renderer_public_dir)
 
         task_json_path = renderer_dir / 'public' / 'tasks' / task_id / 'aligned_render.json'

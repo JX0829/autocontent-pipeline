@@ -99,7 +99,7 @@ async def render_bili_demo():
     renderer_public_dir = str(renderer_dir / 'public')
     
     print(f"[1/3] 合成语音并对齐字级时间戳: {task_id}...")
-    aligner = TTSAligner(voice='zh-CN-YunxiNeural', rate='+10%')
+    aligner = TTSAligner.from_slot("tts.tech")
     aligned_payload = await aligner.align_draft(payload, task_id, renderer_public_dir)
     
     task_json_path = renderer_dir / 'public' / 'tasks' / task_id / 'aligned_render.json'

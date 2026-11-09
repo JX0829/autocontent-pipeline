@@ -73,7 +73,7 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
     )
 
     print("\n[2/4] 执行 Edge-TTS 音频合成与字幕毫秒对齐...")
-    aligner = TTSAligner(voice="zh-CN-YunxiNeural", rate="+10%")
+    aligner = TTSAligner.from_slot("tts.tech")
     aligned_payload = await aligner.align_draft(
         draft=draft_payload,
         task_id=task_id,
