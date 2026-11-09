@@ -40,29 +40,36 @@ def main() -> None:
     man = c.get("manifest") or {}
     draft = c.get("draft") or {}
 
-    # 视频产物：优先 video_16_9 / vertical，取第一个存在的
-    video = None
-    for key in (c.get("video_key"), "video_16_9", "video", "vertical"):
-        if not key:
-            continue
-        cand = C.artifact(p, str(key))
+    # 待发产物：按 aspect 逐个预检（竖版 video.mp4 / 横版 video_16_9.mp4）
+    # 只有**全部** aspect 都已发过才阻断；部分已发时必须放行，
+    # 否则横版永远补不上（旧实现只取第一个存在的文件，横版被彻底跳过）。
+    aspect_files = [("vertical", "video", "video.mp4"),
+                    ("landscape", "video_16_9", "video_16_9.mp4")]
+    targets = []
+    for aspect, key, fname in aspect_files:
+        cand = C.artifact(p, str(c.get(f"{aspect}_key") or key))
+        if cand is None or not cand.exists():
+            cand = C.artifact(p, fname)
         if cand is not None and cand.exists():
-            video = cand
-            break
-    if video is None:
-        C.fail("send_ledger: 找不到待发视频产物（artifacts.video_16_9 / video）")
+            targets.append((aspect, cand))
+    if not targets:
+        C.fail("send_ledger: 找不到待发视频产物（video.mp4 / video_16_9.mp4）")
 
     account = str(c.get("account") or "")
     if not account:
         C.fail("send_ledger: 缺 context.account，无法判定投递对象")
 
     content_hash = _content_hash(p, c, man, draft)
-    video_sha = C.sha256_file(video)
     channel = str(c.get("channel") or c.get("platform") or "feishu")
     chat_id = str(c.get("chat_id") or c.get("account") or "")
-    dedupe_key = hashlib.sha256(
-        f"{content_hash}|{video_sha}|{account}".encode("utf-8")
-    ).hexdigest()
+
+    keys = {}
+    for aspect, path in targets:
+        keys[aspect] = hashlib.sha256(
+            f"{content_hash}|{C.sha256_file(path)}|{account}".encode("utf-8")
+        ).hexdigest()
+    # 兼容旧字段：主 key 取竖版（没有竖版则取第一个）
+    dedupe_key = keys.get("vertical") or next(iter(keys.values()))
 
     try:
         from src.db import PipelineDB
@@ -77,23 +84,30 @@ def main() -> None:
     # → 台账有行但一条没发出去（GATE-3 实测踩到过）。
     try:
         conn = db.get_conn()
-        row = conn.execute(
-            "select feishu_msg_id from send_ledger where dedupe_key=?", (dedupe_key,)
-        ).fetchone()
+        sent = {}
+        for aspect, k in keys.items():
+            row = conn.execute(
+                "select feishu_msg_id from send_ledger where dedupe_key=?", (k,)
+            ).fetchone()
+            if row is not None:
+                sent[aspect] = row[0]
     except Exception as exc:  # noqa: BLE001
         C.fail(f"send_ledger: 台账不可读，拒绝发送（fail closed）: {exc}")
-    if row is not None:
-        C.fail("already_sent", dedupe_key=dedupe_key[:16],
-               channel=channel, chat_id=chat_id, video_sha256=video_sha[:16],
-               feishu_msg_id=(row[0] if row else None))
+
+    pending = [a for a in keys if a not in sent]
+    if not pending:
+        C.fail("already_sent", dedupe_key=dedupe_key[:16], channel=channel,
+               chat_id=chat_id, aspects=list(sent), feishu_msg_id=next(iter(sent.values())))
 
     C.emit(True, patch={
         "dedupe_key": dedupe_key[:16],
         "dedupe_key_full": dedupe_key,
+        "dedupe_keys": {a: k[:16] for a, k in keys.items()},
         "channel": channel,
         "chat_id": chat_id,
-        "video_sha256": video_sha[:16],
         "content_hash": content_hash[:16],
+        "already_sent_aspects": sent,
+        "pending_aspects": pending,
         "claimed": False,   # 预检通过，实际抢占在执行体
     })
 

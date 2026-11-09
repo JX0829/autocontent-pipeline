@@ -220,32 +220,68 @@ def exec_dispatch(ctx: StepContext) -> dict[str, str]:
 
     draft_path = ctx.artifacts.get("draft_script") or str(ctx.out("draft_script.json"))
     draft = json.loads(Path(draft_path).read_text(encoding="utf-8"))
-    video = Path(ctx.artifacts.get("video") or ctx.out("video.mp4"))
-    if not video.exists():
-        raise ExecutorError(f"待发视频不存在: {video}")
+
+    # 按 aspect 遍历：pipeline.yaml 的 reads 声明了两个成片，就必须两个都发。
+    # dedupe 口径保持 {content_hash}|{video_sha256}|{account} 不变 ——
+    # 横竖版视频哈希本就不同，天然区分版本；把 aspect 加进口径会让
+    # 历史台账里的竖版行判成"新内容"从而重复发送（Dry Run 实测）。
+    aspects = params.get("aspects") or ["vertical", "landscape"]
+    aspect_files = {
+        "vertical": ("video", "cover", "video.mp4", "cover.png"),
+        "landscape": ("video_16_9", "cover_16_9", "video_16_9.mp4", "cover_16_9.png"),
+    }
 
     c_hash = compute_content_hash(str(draft.get("title") or ""), str(draft.get("content_text") or ""))
-    v_hash = sha256_file(video)
     account = str((ctx.material or {}).get("account") or "feishu")
-    dedupe_key = __import__("hashlib").sha256(f"{c_hash}|{v_hash}|{account}".encode()).hexdigest()
-
     chat_id = os.getenv("FEISHU_APPROVAL_CHAT_ID") or ""
-    if not db.claim_send_slot(dedupe_key, ctx.task_id, "feishu", chat_id, str(video)):
-        return {"dispatch": str(_write_json(ctx.out("dispatch.json"), {
-            "sent": False, "already_sent": True, "dedupe_key": dedupe_key}))}
-
-    from src.feishu.approval_service import FeishuApprovalService
-
-    svc = FeishuApprovalService()
     rec_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
-    msg_id = svc.upload_and_send_video(
-        receive_id=chat_id, receive_id_type=rec_type, video_path=str(video),
-        content_hash=c_hash, task_id=ctx.task_id)
 
-    record = {"sent": bool(msg_id), "already_sent": False, "dedupe_key": dedupe_key,
-              "feishu_msg_id": msg_id}
-    if msg_id:
-        db.mark_sent(dedupe_key, msg_id)          # 外部确认成功后才写台账
+    svc = None
+    results: list[dict[str, Any]] = []
+    for aspect in aspects:
+        spec = aspect_files.get(aspect)
+        if not spec:
+            results.append({"aspect": aspect, "sent": False, "reason": "未知 aspect"})
+            continue
+        vkey, ckey, vname, cname = spec
+        video = Path(ctx.artifacts.get(vkey) or ctx.out(vname))
+        cover = Path(ctx.artifacts.get(ckey) or ctx.out(cname))
+        if not video.exists():
+            results.append({"aspect": aspect, "sent": False, "reason": f"产物缺失 {vname}"})
+            continue
+
+        v_hash = sha256_file(video)
+        dedupe_key = __import__("hashlib").sha256(
+            f"{c_hash}|{v_hash}|{account}".encode()).hexdigest()
+
+        if not db.claim_send_slot(dedupe_key, ctx.task_id, "feishu", chat_id, str(video)):
+            results.append({"aspect": aspect, "sent": False, "already_sent": True,
+                            "dedupe_key": dedupe_key})
+            continue
+
+        if svc is None:
+            from src.feishu.approval_service import FeishuApprovalService
+            svc = FeishuApprovalService()
+        msg_id = svc.upload_and_send_video(
+            receive_id=chat_id, receive_id_type=rec_type, video_path=str(video),
+            content_hash=c_hash, task_id=ctx.task_id,
+            cover_path=str(cover) if cover.exists() else None)
+        if msg_id:
+            db.mark_sent(dedupe_key, msg_id)      # 外部确认成功后才写台账
+        results.append({"aspect": aspect, "sent": bool(msg_id), "already_sent": False,
+                        "dedupe_key": dedupe_key, "feishu_msg_id": msg_id,
+                        "file": video.name})
+
+    sent_any = any(r.get("sent") for r in results)
+    all_done = all(r.get("sent") or r.get("already_sent") for r in results)
+    record = {
+        "sent": sent_any,
+        "already_sent": all_done and not sent_any,
+        "aspects": results,
+        # 兼容旧消费方：单 aspect 时顶层直接给出 msg_id
+        "feishu_msg_id": next((r.get("feishu_msg_id") for r in results
+                               if r.get("feishu_msg_id")), None),
+    }
     return {"dispatch": str(_write_json(ctx.out("dispatch.json"), record))}
 
 

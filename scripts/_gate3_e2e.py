@@ -112,8 +112,8 @@ def main() -> int:
     rc_a, out_a = run("g3-a")
     print(out_a.strip().splitlines()[-1] if out_a.strip() else "(无输出)")
     check("A1 runner 退出码 0", rc_a == 0, f"rc={rc_a}")
-    check("A2 飞书发送调用 1 次", len(SENT) == 1, f"calls={len(SENT)}")
-    check("A3 send_ledger 1 行", rows("send_ledger") == 1, f"rows={rows('send_ledger')}")
+    check("A2 飞书发送调用 2 次（竖+横）", len(SENT) == 2, f"calls={len(SENT)}")
+    check("A3 send_ledger 2 行（每 aspect 一行）", rows("send_ledger") == 2, f"rows={rows('send_ledger')}")
     check("A4 产物齐全", all(
         (PROJ / "output" / today / "g3-a" / n).exists()
         or any((PROJ / "output" / today / "g3-a").glob(n))
@@ -124,8 +124,8 @@ def main() -> int:
     rc_b, out_b = run("g3-b")
     skipped = "幂等跳过" in out_b
     check("B1 命中 uq_run_content 幂等跳过", skipped)
-    check("B2 未新增发送", len(SENT) == 1, f"calls={len(SENT)}")
-    check("B3 send_ledger 仍 1 行", rows("send_ledger") == 1, f"rows={rows('send_ledger')}")
+    check("B2 未新增发送", len(SENT) == 2, f"calls={len(SENT)}")
+    check("B3 send_ledger 仍 2 行", rows("send_ledger") == 2, f"rows={rows('send_ledger')}")
 
     # ---------------------------------------------------------------- C
     print("\n[C] 抹掉 dispatch 完成标记后重发（应命中发送台账）")
@@ -147,8 +147,8 @@ def main() -> int:
     blocked_by_ledger = "already_sent" in out_c or already
     check("C1 命中 send_ledger already_sent", blocked_by_ledger,
           f"dispatch.json={dispatch_json.name} rc={rc_c}")
-    check("C2 未新增发送", len(SENT) == 1, f"calls={len(SENT)}")
-    check("C3 send_ledger 仍 1 行", rows("send_ledger") == 1, f"rows={rows('send_ledger')}")
+    check("C2 未新增发送", len(SENT) == 2, f"calls={len(SENT)}")
+    check("C3 send_ledger 仍 2 行", rows("send_ledger") == 2, f"rows={rows('send_ledger')}")
     check("C4 重跑被台账拦截（rc=64 属预期）", rc_c in (0, 64) and blocked_by_ledger, f"rc={rc_c}")
 
     # ---------------------------------------------------------------- 汇总
@@ -158,7 +158,7 @@ def main() -> int:
         for f in failures:
             print("  -", f)
         return 1
-    print("GATE-3 PASS  同一物料 3 次执行，飞书只收到 1 条，台账只 +1")
+    print(f"GATE-3 PASS  同一物料 3 次执行，飞书只收到 {len(SENT)} 条（竖+横各 1），台账只 +{len(SENT)}")
     return 0
 
 

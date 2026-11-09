@@ -233,6 +233,7 @@ steps:
     params:
       enabled: true                                # false ⇒ 只出片（v1.3 / T4.7）
       mode: "${DISPATCH_MODE:-publish}"             # publish | output_only
+      aspects: ["vertical", "landscape"]           # 两个成片都要发，与 reads 声明对齐
     reads: ["video.mp4", "video_16_9.mp4"]
     dedupe: send_ledger
     # external_truth 已在 render_vertical / render_landscape 的 after_hooks 各跑一次，

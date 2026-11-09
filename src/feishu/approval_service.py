@@ -13,7 +13,9 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequest,
     PatchMessageRequestBody,
     CreateFileRequest,
-    CreateFileRequestBody
+    CreateFileRequestBody,
+    CreateImageRequest,
+    CreateImageRequestBody,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,19 @@ def _ok(resp: Any, where: str) -> bool:
                                     "msg": getattr(resp, "msg", None)})
         return False
     return True
+
+
+def _probe_duration_ms(path: str) -> Optional[int]:
+    """取视频时长（毫秒）。media 消息用它显示时长；取不到就返回 None（不阻断发送）。"""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path], text=True, timeout=20,
+        ).strip()
+        return int(float(out) * 1000)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _file_sha256(path: str) -> Optional[str]:
@@ -137,6 +152,7 @@ class FeishuApprovalService:
         file_name: Optional[str] = None,
         content_hash: Optional[str] = None,
         task_id: Optional[str] = None,
+        cover_path: Optional[str] = None,
     ) -> Optional[str]:
         """
         向飞书对话发送原生 mp4 视频原片（供人机审批预览）
@@ -169,33 +185,63 @@ class FeishuApprovalService:
         else:
             fname = file_name
         try:
-            # 1. 优先作为 stream 文件上传并发送标准 file 消息（各端 100% 稳定可直接点开全屏播放）
+            # 1. 以 mp4 上传（msg_type=media 要求 file_type=mp4；用 stream 会被当成普通文件）
             with open(video_path, "rb") as f:
                 file_req = CreateFileRequest.builder().request_body(
                     CreateFileRequestBody.builder()
-                    .file_type("stream")
+                    .file_type("mp4")
                     .file_name(fname)
                     .file(f)
                     .build()
                 ).build()
                 resp = self.client.im.v1.file.create(file_req)
-                if not _ok(resp, "upload_stream") or not getattr(resp, "data", None):
+                if not _ok(resp, "upload_mp4") or not getattr(resp, "data", None):
                     return None
                 file_key = resp.data.file_key
 
-            file_msg_req = CreateMessageRequest.builder() \
+            # 2. 封面（可选）：带 image_key 的 media 消息在飞书里是"视频卡片"形态，
+            #    不带则只有播放器无封面
+            image_key = ""
+            if cover_path and os.path.exists(cover_path):
+                try:
+                    with open(cover_path, "rb") as cf:
+                        ireq = CreateImageRequest.builder().request_body(
+                            CreateImageRequestBody.builder()
+                            .image_type("message")
+                            .image(cf)
+                            .build()
+                        ).build()
+                        iresp = self.client.im.v1.image.create(ireq)
+                    if _ok(iresp, "upload_cover") and getattr(iresp, "data", None):
+                        image_key = iresp.data.image_key
+                except Exception as e:  # noqa: BLE001 — 封面失败不阻断发送
+                    logger.warning(f"[FEISHU] 封面上传失败，改为无封面发送: {e}")
+
+            # 3. 时长（毫秒）：media 消息需要，缺失时飞书仍可发送但不显示时长
+            duration_ms = _probe_duration_ms(video_path)
+
+            content: Dict[str, Any] = {"file_key": file_key}
+            if image_key:
+                content["image_key"] = image_key
+            if duration_ms:
+                content["duration"] = duration_ms
+
+            media_msg_req = CreateMessageRequest.builder() \
                 .receive_id_type(receive_id_type) \
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(receive_id)
-                    .msg_type("file")
-                    .content(json.dumps({"file_key": file_key}))
+                    .msg_type("media")
+                    .content(json.dumps(content))
                     .build()
                 ).build()
-            f_resp = self.client.im.v1.message.create(file_msg_req)
-            if _ok(f_resp, "send_video_message") and getattr(f_resp, "data", None):
+            f_resp = self.client.im.v1.message.create(media_msg_req)
+            if _ok(f_resp, "send_media_message") and getattr(f_resp, "data", None):
                 feishu_msg_id = f_resp.data.message_id
-                logger.info(f"Video file sent to Feishu successfully, feishu_msg_id={feishu_msg_id}, file_name={fname}")
+                logger.info(
+                    f"Video media sent to Feishu, feishu_msg_id={feishu_msg_id}, "
+                    f"file_name={fname}, image_key={bool(image_key)}, duration_ms={duration_ms}"
+                )
                 return feishu_msg_id
             return None
         except Exception as e:
