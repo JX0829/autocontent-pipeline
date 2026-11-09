@@ -16,6 +16,7 @@ import time
 import datetime
 import subprocess
 import hashlib
+import html as _html
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -38,9 +39,11 @@ def translate_to_zh(text: str) -> str:
 
     try:
         query_text = clean_key[:300]
+        # 长文本（README/论文摘要）放宽超时，避免长句被截成未翻译英文
+        to = 0.8 if len(query_text) <= 120 else 3.0
         url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=" + urllib.parse.quote(query_text)
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=0.8) as resp:
+        with urllib.request.urlopen(req, timeout=to) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             res = "".join([part[0] for part in data[0] if part[0]])
             final_res = res.strip() if res else clean_key
@@ -67,6 +70,118 @@ def translate_to_zh(text: str) -> str:
         if k.lower() in res.lower():
             res = re.sub(re.escape(k), v, res, flags=re.IGNORECASE)
     return res.strip()
+
+# ─────────────────────────────────────────────────────────────
+# 摘要整形（方案 A）：统一 80~120 字，信息密度优先
+# ─────────────────────────────────────────────────────────────
+DESC_MIN_CHARS = 80
+DESC_MAX_CHARS = 120
+
+
+def _strip_md_noise(text: str) -> str:
+    """清理 README / 正文里的 markdown、HTML 实体与徽章噪音"""
+    if not text:
+        return ""
+    t = _html.unescape(text)                             # ＆32； / &amp; 等实体还原
+    t = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', t)          # 图片
+    t = re.sub(r'\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)', '', t)  # 徽章链接
+    t = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', t)       # 链接保留文字
+    t = re.sub(r'<[^>]+>', ' ', t)                       # HTML 标签
+    t = re.sub(r'[`*_>#|]+', ' ', t)                     # md 标记
+    t = re.sub(r'\[(链接|评论|link|comments)\]', ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'submitted by\s*/u/\S+', ' ', t, flags=re.IGNORECASE)
+    t = re.sub(r'提交者\s*/u/\S+', ' ', t)
+    t = t.replace('\u00a0', ' ')
+    t = re.sub(r'\s+', ' ', t)
+    return t.strip()
+
+
+def shape_desc(core: str, extras=None, suffix: str = "",
+               min_chars: int = DESC_MIN_CHARS, max_chars: int = DESC_MAX_CHARS) -> str:
+    """
+    把「一句话简介 + 补充信息」整形成统一长度的摘要：
+    - 不足 min_chars 时按顺序拼接 extras 补足；
+    - 超过 max_chars 时在标点处收口，绝不出现半句残词；
+    - suffix（如热度标记）不占用正文预算。
+    """
+    extras = extras or []
+    suffix = suffix or ""
+    budget = max(max_chars - len(suffix), 40)
+
+    buf = (core or "").strip().rstrip("。")
+    for e in extras:
+        if len(buf) >= min_chars:
+            break
+        e = _strip_md_noise(str(e)).strip().rstrip("。")
+        if not e or e in buf:
+            continue
+        buf = f"{buf}。{e}" if buf else e
+
+    if len(buf) > budget:
+        cut = buf[:budget]
+        for p in ("。", "；", "！", "？", "，", "、"):
+            idx = cut.rfind(p)
+            if idx >= min_chars:
+                buf = cut[:idx]
+                break
+        else:
+            buf = cut
+    return f"{buf}{suffix}".strip()
+
+
+def fetch_github_readme_snippet(repo: str, timeout: float = 3.0, max_len: int = 400) -> str:
+    """补拉 GitHub README 首段正文（raw 直连，不占 API 配额）"""
+    for name in ("README.md", "readme.md", "README.rst", "README"):
+        url = f"https://raw.githubusercontent.com/{repo}/HEAD/{name}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+            text = _strip_md_noise(raw)
+            # 跳过标题/徽章行后取第一段有实质内容的文字
+            for para in re.split(r'(?<=[.。!?！？])\s+|(?<=\.)\n', text):
+                para = para.strip()
+                if len(para) >= 30:
+                    return para[:max_len]
+            if len(text) >= 30:
+                return text[:max_len]
+        except Exception:
+            continue
+    return ""
+
+
+def fetch_github_topics(repo: str, timeout: float = 3.0) -> list:
+    """补拉 GitHub 仓库 topics 标签（best-effort，403/限流则静默跳过）"""
+    url = f"https://api.github.com/repos/{repo}/topics"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        names = data.get("names") or []
+        return [n for n in names if isinstance(n, str)][:5]
+    except Exception:
+        return []
+
+
+def fetch_reddit_selftext(sub: str, post_id: str, timeout: float = 3.0, max_len: int = 600) -> str:
+    """补拉 Reddit 帖子正文（RSS 只有标题的链接帖才需要，best-effort）"""
+    if not post_id:
+        return ""
+    url = f"https://www.reddit.com/r/{sub}/comments/{post_id}.json?limit=1"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        post = data[0]["data"]["children"][0]["data"]
+        return _strip_md_noise(post.get("selftext") or "")[:max_len]
+    except Exception:
+        return ""
+
 
 def verify_link_alive(url: str, timeout: float = 2.0) -> bool:
     """验证链接真实可用性，拦截 404 / 403"""
@@ -123,12 +238,27 @@ def fetch_github_trending(limit: int = 10, timeout_sec: int = 6) -> List[Dict[st
                 if any(w in desc.lower() for w in ["acquire", "acquisition", "lawsuit", "funding", "valuation"]):
                     continue
 
-                zh_desc = translate_to_zh(desc) if desc else "GitHub 今日热门开源项目"
+                zh_desc = translate_to_zh(desc) if desc else ""
                 item_url = f"https://github.com/{repo}"
+
+                # 方案 A：补拉 README 首段 + topics，补足到 80~120 字
+                extras = []
+                topics = fetch_github_topics(repo)
+                if topics:
+                    extras.append("涉及 " + "、".join(topics[:4]))
+                if len(zh_desc) < DESC_MIN_CHARS:
+                    readme = fetch_github_readme_snippet(repo)
+                    if readme:
+                        extras.append(translate_to_zh(readme))
+                # 仍不足时用客观事实补齐（语言/当日涨星），不做无信息填充
+                if len(zh_desc) + sum(len(x) for x in extras) < DESC_MIN_CHARS:
+                    extras.append(f"主要语言 {lang}，今日单日新增 {stars_today} 星")
+                zh_desc = shape_desc(zh_desc or "GitHub 今日热门开源项目", extras,
+                                     suffix=f" (今日暴涨 +{stars_today}⭐)")
 
                 items.append({
                     "title": f"开源爆款: {repo}",
-                    "desc": f"{zh_desc} (今日暴涨 +{stars_today}⭐)",
+                    "desc": zh_desc,
                     "url": item_url,
                     "source": "github",
                     "author": repo.split("/")[0],
@@ -234,6 +364,7 @@ def fetch_reddit_tech(
         subreddits = ["technology", "programming", "SideProject"]
 
     items: List[Dict[str, Any]] = []
+    candidates: List[Dict[str, Any]] = []   # 先全量收集，再按「有正文优先」择优
 
     # 优先尝试官方 RSS
     for sub in subreddits:
@@ -249,7 +380,7 @@ def fetch_reddit_tech(
             with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 content = resp.read()
                 root = ET.fromstring(content)
-                entries = root.findall("{http://www.w3.org/2005/Atom}entry")
+                entries = root.findall("{http://www.w3.org/2005/Atom}entry")[:8]   # 限流：每社区只看前 8 条，控制翻译与请求开销
                 for entry in entries:
                     title_elem = entry.find("{http://www.w3.org/2005/Atom}title")
                     link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
@@ -270,9 +401,18 @@ def fetch_reddit_tech(
 
                     zh_title = translate_to_zh(raw_title)
 
+                    # 方案 A：补抓帖子正文（RSS Atom content 节点自带 selftext，零额外请求）
+                    selftext_html = ""
+                    content_elem = entry.find("{http://www.w3.org/2005/Atom}content")
+                    if content_elem is not None and content_elem.text:
+                        selftext_html = content_elem.text
+                    body_text = _strip_md_noise(selftext_html)
+                    # 注：Reddit 帖子 JSON 接口对无头请求返回 403，故不再逐帖补拉，仅用 RSS 自带正文
+                    zh_body = translate_to_zh(body_text[:600]) if body_text else ""
+
                     items.append({
                         "title": f"社区热议: {zh_title}",
-                        "desc": f"Reddit r/{sub} 热门开发者探讨：{zh_title}",
+                        "desc": shape_desc(zh_title, [zh_body]),
                         "url": post_url,
                         "source": "reddit",
                         "author": f"r/{sub}",
@@ -281,11 +421,13 @@ def fetch_reddit_tech(
                         "unique_id": unique_id,
                         "raw": {
                             "subreddit": sub,
-                            "raw_title": raw_title
+                            "raw_title": raw_title,
+                            "selftext": body_text[:800],
+                            "_has_body": len(body_text) >= 40
                         }
                     })
-                    if len(items) >= limit:
-                        break
+                    candidates.append(items[-1])
+                    items.pop()
         except Exception:
             # 官方 RSS 若触发 429 或限流，平滑降级至开源 Reddit 实时归档 API
             try:
@@ -302,9 +444,11 @@ def fetch_reddit_tech(
                         pub_str = datetime.datetime.fromtimestamp(created_utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         zh_title = translate_to_zh(raw_title)
+                        st = post.get("selftext") or ""
+                        st = _strip_md_noise(st)
                         items.append({
                             "title": f"社区热议: {zh_title}",
-                            "desc": f"Reddit r/{sub} 热门探讨：{zh_title}",
+                            "desc": shape_desc(zh_title, [translate_to_zh(st[:600])] if st else []),
                             "url": post_url,
                             "source": "reddit",
                             "author": f"r/{sub}",
@@ -313,11 +457,24 @@ def fetch_reddit_tech(
                             "unique_id": f"rd_{post_id}" if post_id else f"rd_{abs(hash(post_url)) & 0xffffffff}",
                             "raw": post
                         })
-                        if len(items) >= limit:
-                            break
+                        candidates.append(items[-1])
+                        items.pop()
             except Exception as e2:
                 print(f"[Warning: Reddit fallback API failed for r/{sub}]: {e2}", file=sys.stderr)
 
+    # 方案 A 收口：正文丰富的候选优先，再按原始顺序补齐
+    with_body = [c for c in candidates if c.get("raw", {}).get("_has_body")]
+    without_body = [c for c in candidates if not c.get("raw", {}).get("_has_body")]
+    ordered = with_body + without_body
+    seen_ids = set()
+    for c in ordered:
+        if len(items) >= limit:
+            break
+        uid = c.get("unique_id")
+        if uid in seen_ids:
+            continue
+        seen_ids.add(uid)
+        items.append(c)
     return items[:limit]
 
 # ─────────────────────────────────────────────────────────────
@@ -347,12 +504,13 @@ def fetch_huggingface_daily_papers(limit: int = 5, timeout_sec: int = 5) -> List
                     continue
 
                 zh_title = translate_to_zh(title)
-                zh_desc = translate_to_zh(summary[:120].replace("\n", " "))
+                # 方案 A：截断放宽到 300 字符，摘要统一 80~120 字
+                zh_desc = translate_to_zh(summary[:300].replace("\n", " "))
                 paper_url = f"https://huggingface.co/papers/{paper_id}"
 
                 items.append({
                     "title": f"顶会论文: {zh_title}",
-                    "desc": f"{zh_desc} (全球点赞 +{upvotes}⭐)",
+                    "desc": shape_desc(zh_desc or zh_title, suffix=f" (全球点赞 +{upvotes}⭐)"),
                     "url": paper_url,
                     "source": "huggingface",
                     "author": "HuggingFace",
@@ -406,12 +564,13 @@ def fetch_arxiv_ai_papers(
                 pub_date = (pub_elem.text or "今日提交")[:10] if pub_elem is not None else "今日提交"
 
                 zh_title = translate_to_zh(raw_title)
-                zh_desc = translate_to_zh(raw_summary[:120])
+                # 方案 A：截断放宽到 300 字符，摘要统一 80~120 字（前缀不再挤占正文）
+                zh_desc = translate_to_zh(raw_summary[:300])
                 clean_id = raw_id.split("/")[-1]
 
                 items.append({
                     "title": f"学术预印: {zh_title}",
-                    "desc": f"arXiv 前沿算法突破：{zh_desc}",
+                    "desc": shape_desc(zh_desc or zh_title),
                     "url": raw_id,
                     "source": "arxiv",
                     "author": "arXiv",
