@@ -52,6 +52,11 @@ contract:
       - FEISHU_APP_ID
       - FEISHU_APP_SECRET
       - FEISHU_APPROVAL_CHAT_ID
+      # T4.6 审批渠道（src/approval/*）：缺省走 auto，不配也能跑
+      - APPROVAL_MODE                    # feishu | cli | auto（默认 auto）
+      - APPROVAL_NONINTERACTIVE          # cli 非 tty 时必须显式 approve/reject，否则 fail closed
+      - APPROVAL_TIMEOUT_SEC             # 等待裁决超时秒数（默认 600）
+      - APPROVAL_ALLOWED_USERS           # 逗号分隔 open_id，限定谁能批（缺省不限）
       - XHS_PROBE_PROXY
       - XHS_PROBE_COOKIE
       - TWITTER_PROXY

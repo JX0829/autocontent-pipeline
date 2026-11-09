@@ -51,6 +51,8 @@ def _scan_chat_reply(svc, chat_id: str, since_ms: int) -> dict[str, Any] | None:
         try:
             create_ms = int(getattr(item, "create_time", "0"))
         except (TypeError, ValueError):
+            print(f"  [approval] 消息 create_time 非法，跳过该条: "
+                  f"{getattr(item, 'create_time', None)!r}")
             continue
         if create_ms < since_ms:
             continue
@@ -118,8 +120,8 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
                             "decided_by": f"feishu_file:{data.get('by', '?')}",
                             "feishu_msg_id": msg_id,
                             "evidence_msg_id": data.get("evidence_msg_id")}
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                print(f"  [approval] 裁决文件格式非法，忽略并继续等待: {dp.name} ({e})")
         # 2) 飞书回复扫描（主路径），每 3s 一次，避免打爆 API
         if chat_id and time.time() - last_scan >= 3:
             last_scan = time.time()
