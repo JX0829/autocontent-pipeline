@@ -38,6 +38,7 @@ from src.pipeline.contracts import (
     validate_structure,
     verify_produces,
 )
+from src.pipeline.manifest import load_manifest, validate
 
 PROJ = Path(__file__).resolve().parent.parent.parent
 
@@ -274,20 +275,29 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
 # ------------------------------------------------------------------ 入口
 
 def _read_material(path: str) -> dict[str, Any] | None:
-    """dry-run 场景允许 /dev/null 或 -（无物料）。真实校验在 T1.7/T1.8。"""
-    if path in ("-", "/dev/null", "NUL"):
+    """dry-run 场景允许 /dev/null 或 -（无物料）。
+
+    物料合法性由 T1.7 的 manifest 契约判定：不符合 `manifest.schema.json` 直接拒绝，
+    不进入后续步骤（禁止让模型凭空编造事实）。
+    """
+    if path in ("NUL",) or path == "/dev/null":
         return None
-    p = Path(path)
-    if not p.exists():
-        raise ContractError(f"物料文件不存在: {p}")
-    text = p.read_text(encoding="utf-8").strip()
-    if not text:
-        return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ContractError(f"物料不是合法 JSON: {exc}") from exc
-    return data if isinstance(data, dict) else {"raw": data}
+    if path == "-":
+        raw = json.load(sys.stdin)
+        data = load_manifest(raw)
+    else:
+        p = Path(path)
+        if not p.exists():
+            raise ContractError(f"物料文件不存在: {p}")
+        try:
+            data = load_manifest(p)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ContractError(f"物料无法解析: {exc}") from exc
+
+    errors = validate(data)
+    if errors:
+        raise ContractError("物料不符合 manifest.schema.json：\n  - " + "\n  - ".join(errors))
+    return data.raw
 
 
 def main(argv: list[str] | None = None) -> int:

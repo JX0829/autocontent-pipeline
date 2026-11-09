@@ -218,7 +218,7 @@
 | P1 | T1.4 model_profile 能力契约 | ✅ DONE | 2026-11-09 | `a25d06c` | 实测 reasoning 1023~1259；main 6144/fast 2048 |
 | P1 | T1.5 LLM 统一调用层 | ✅ DONE | 2026-11-09 | `505417e` | 4 调用点收口；6 项异常路径实测；删静默判D |
 | P1 | T1.6 模型切换自检脚本 | ✅ DONE | 2026-11-09 | `d08789d` | 4 槽位真实自检 4/4 PASS；抓到预算过紧并回调 8192/2560 |
-| P1 | T1.7 物料契约 `manifest.schema.json` | ⬜ PENDING | — | — | **v1.2 新增，P-2；内聚前提** |
+| P1 | T1.7 物料契约 `manifest.schema.json` | ✅ DONE | 2026-11-09 | 待回填 | 9 例契约矩阵 9/9；runner 已接线 |
 | P1 | T1.8 投料通道实现 | ⬜ PENDING | — | — | **v1.3 新增；G-C，3 种载体** |
 | P1 | T1.9 配置面收敛 | ⬜ PENDING | — | — | **v1.3 新增；G-B，死键+fail-fast** |
 | P1 | GATE-1 声明层与模型契约验收 | ⬜ PENDING | — | — | 干跑全绿才可进 P2 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P1 进行中，10/35 完成（T0.1–T0.4、T1.1–T1.6 ✅），下一步 T1.7 物料契约。
+**当前进度**：P1 进行中，11/35 完成（T0.1–T0.4、T1.1–T1.7 ✅），下一步 T1.8 投料通道。
 
 ---
 
@@ -829,28 +829,30 @@ for k,v in d['providers'].items():
 - **强制**：写进附录 B，任何模型变更前必须 `EXIT=0` 才能继续
 
 #### T1.7 物料契约 `manifest.schema.json`（v1.2 新增，P-2）
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T1.1
 - **缺口来源**：§1.6 **I1 / I2** —— 全仓无 schema 文件，投料必须改源码
 - **目标**：使用方**只发 3 个字段**即可跑通全链路，其余 15 字段由 `llm.main`（`expand_script` 步）扩写
-- **改动**：新增 `manifest.schema.json`（项目根）+ 新增 `src/pipeline/manifest.py`（加载与校验，约 80 行）
-- **最小物料契约**：
+- **改动**：新增 `manifest.schema.json`（项目根，JSON Schema Draft-07）+ `src/pipeline/manifest.py`（约 200 行）
+- **最小物料契约**（已落盘）：
 
   | 字段 | 必填 | 类型 | 约束 | 说明 |
   |---|---|---|---|---|
   | `title` | ✅ | string | 4–80 字 | 选题标题，原样可用 |
   | `body` | ⚠️ 二选一 | string | 20–4000 字 | 原文/摘要，供扩写取材 |
   | `source_url` | ⚠️ 二选一 | string(url) | 必含 `http` | 来源链接，`body` 缺失时由抓取补齐 |
-  | `account` | ❌ | string | 默认取 `inputs.account.default` | 目标账号，覆盖 `douyin-tech-main` 硬编码 |
-  | `images` | ❌ | array[string] | ≤3 项，本地路径或 URL | 实景截图，缺失则由渲染层生成 UI 卡 |
+  | `account` | ❌ | string | 2–40 字 | 目标账号，缺省取 `inputs.account.default` |
+  | `images` | ❌ | array[string] | ≤3 项 | 实景截图，缺失则由渲染层生成 UI 卡 |
+  | `task_id` | ❌ | string | ≤80 字 | 可选：外部指定任务 ID |
 
   > **硬约束**：`body` 与 `source_url` 至少存在 1 个（`anyOf`），否则 `check_material` 步直接 `block`，禁止让模型凭空编造事实。
-
-- **执行**：
-  1. 写 `manifest.schema.json`（JSON Schema Draft-07，`required: [title]` + `anyOf: [{required:[body]},{required:[source_url]}]`）
-  2. `src/pipeline/manifest.py` 提供 `load_manifest(path) -> Manifest`、`validate(manifest) -> list[str]`（返回错误列表，空即通过）
-  3. `intake` 步 `builtin.intake` 改为**只接受 manifest**，删除对 `NEWS_TASKS` / `TASKS_DATA` 内联结构的依赖（迁移在 T4.2 一并清理）
-  4. `expand_script` 步 `before_hooks: hook.material_bundle` 改为把整份 manifest 打包进 prompt，不再由调用方预拆 15 字段
+- **执行**（全部落地）：
+  1. `manifest.schema.json`：`required: [title]` + `anyOf: [{required:[body]},{required:[source_url]}]`
+  2. `src/pipeline/manifest.py`：`load_manifest(path|dict|"-")` / `validate(m) -> list[str]` / `require_valid(m)` / `Manifest.to_prompt_block()`
+     - **schema 是唯一事实来源**：校验器读取 schema 并实现其用到的关键字子集（required / anyOf / type / minLength / maxLength / pattern / maxItems / minItems / items / enum），**不复制规则、不引第三方依赖**（环境无 `jsonschema`，不为 5 字段契约加包）
+  3. `intake` 步只接受 manifest（声明层已在 T1.1 落地；执行体 `builtin.intake` 的载体分发由 **T1.8** 实现）
+  4. `expand_script` 的 `hook.material_bundle` 用 `Manifest.to_prompt_block()` 把**整份物料**打包进 prompt（含「严禁编造」硬约束），不再由调用方预拆 15 字段
+  5. **runner 已接线**：`--material` 非 `/dev/null` 时按契约校验，不合法直接 `EXIT=2` 并打印逐条错误
 - **验收**：
   ```bash
   python3 -c "import json;j=json.load(open('manifest.schema.json'));print('REQ',j['required']);print('ANYOF',bool(j.get('anyOf')))"
@@ -860,7 +862,21 @@ for k,v in d['providers'].items():
   python3 -c "from src.pipeline.manifest import load_manifest,validate;e=validate(load_manifest('/tmp/m2.json'));print('REJECT',bool(e))"
   ```
 - **预期输出**：`REQ ['title']` / `ANYOF True` / `MIN_OK []` / `REJECT True`
-- **回滚**：`rm manifest.schema.json src/pipeline/manifest.py`
+- **实测输出（2026-11-09）**：`REQ ['title']` / `ANYOF True` / `MIN_OK []` / `REJECT True` ✅
+- **9 例契约矩阵实测（9/9 符合预期）**：
+  | 用例 | 期望 | 实际 |
+  |---|---|---|
+  | 仅 `source_url` | PASS | PASS |
+  | 仅 `body` | PASS | PASS |
+  | 缺 `title` | REJECT | REJECT（缺必填字段 title） |
+  | `title` 1 字 | REJECT | REJECT（1 < minLength 4） |
+  | `body`/`source_url` 全缺 | REJECT | REJECT（需至少满足其一） |
+  | `source_url` 非 http | REJECT | REJECT（不匹配 `^https?://`） |
+  | `body` 2 字 | REJECT | REJECT（2 < minLength 20） |
+  | `images` 4 项 | REJECT | REJECT（4 > maxItems 3） |
+  | `images` 含非字符串 | REJECT | REJECT（类型应为 string，实际 int） |
+- **runner 集成实测**：`--material /tmp/m1.json --dry-run` → `DRY RUN OK / EXIT=0`；`--material /tmp/m2.json` → 打印 `物料不符合 manifest.schema.json：需至少满足其一 → body 或 source_url；title 长度 1 < 4`，`EXIT=2`；`--material /dev/null` → `EXIT=0`（干跑不受影响）
+- **回滚**：`rm manifest.schema.json src/pipeline/manifest.py && git checkout src/pipeline/runner.py`
 - **不做**：不新增字段就不改 schema —— **任何新物料字段必须先改本 schema**（对齐 §5 变更纪律）
 
 #### T1.8 投料通道实现（v1.3 新增，G-C）
