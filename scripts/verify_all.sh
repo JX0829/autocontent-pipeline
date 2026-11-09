@@ -32,6 +32,7 @@ run() {
 }
 
 # ---------- 极速档：静态扫描（无渲染、无网络）----------
+run "任务契约回归"        "$PY" scripts/test_task_contracts.py
 run "静默失败扫描"        "$PY" scripts/audit_silent_failure.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send
 run "封面硬编码扫描"      "$PY" scripts/check_cover_hardcode.py

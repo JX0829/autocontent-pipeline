@@ -68,6 +68,11 @@ def scan_file(path: Path) -> list[dict]:
     return hits
 
 
+def _is_test_file(py: Path) -> bool:
+    """测试/验收脚本豁免：它们靠捕获异常做断言，`except X: pass` 是刻意写法。"""
+    return py.name.startswith("test_") or py.name.startswith("_gate")
+
+
 def _iter_files():
     for d in SCAN_DIRS:
         if not d.exists():
@@ -75,7 +80,7 @@ def _iter_files():
         for py in sorted(d.rglob("*.py")):
             if SKIP_PARTS & set(py.parts):
                 continue
-            if py.name == "audit_silent_failure.py":
+            if py.name == "audit_silent_failure.py" or _is_test_file(py):
                 continue
             yield py
 
@@ -88,8 +93,8 @@ def scan() -> list[dict]:
         for py in sorted(d.rglob("*.py")):
             if SKIP_PARTS & set(py.parts):
                 continue
-            if py.name == "audit_silent_failure.py":
-                continue  # 扫描器自身的正则不算违例
+            if py.name == "audit_silent_failure.py" or _is_test_file(py):
+                continue  # 扫描器自身与测试脚本不算违例
             hits.extend(scan_file(py))
     return hits
 
