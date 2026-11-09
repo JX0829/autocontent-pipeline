@@ -231,8 +231,8 @@
 | P2 | GATE-2 台账幂等验收 | ✅ PASS | 2026-11-09 | `b63678c` | 4 项断言全绿 EXIT=0 | 3 发 1 落地才可进 P3 |
 | P3 | T3.1 entity_key 归一化 | ✅ DONE | 2026-11-09 | `aec0c2c` | 生产已迁移：3 行改写、163/163、残留时间戳 0 |
 | P3 | T3.2 发送链路加固 | ✅ DONE | 2026-11-09 | `0734803` | 5 条验收 grep 全绿；台账幂等 3 次重跑拦截 |
-| P3 | T3.3 废弃 resend 脚本 | ✅ DONE | 2026-11-09 | 待回填 | 无 resend_*.py；归档区 6 个 .py |
-| P3 | T3.4 定时任务去模型依赖 | ✅ DONE | 2026-11-09 | 待回填 | 7 job 全 pinned/script-only；2 个断流 job 已修 |
+| P3 | T3.3 废弃 resend 脚本 | ✅ DONE | 2026-11-09 | `cef5e4b` | 无 resend_*.py；归档区 6 个 .py |
+| P3 | T3.4 定时任务去模型依赖 | ✅ DONE | 2026-11-09 | `cef5e4b` | 7 job 全 pinned/script-only；2 个断流 job 已修 |
 | P3 | GATE-3 端到端不重发 | 🚫 BLOCKED | — | — | 全链执行体未接线（runner EXIT=64）；worker 级 E2E 已覆盖断言内核 |
 | P4 | T4.1 run_root 隔离 + 横版命名统一 | ⬜ PENDING | — | — | **必做；GATE-3 后第一优先** |
 | P4 | T4.2 去硬编码 | ⬜ PENDING | — | — | 依赖 T4.1 |
