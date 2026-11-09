@@ -229,8 +229,9 @@ def process_task(task_id: str, db: PipelineDB, accounts_map: dict):
             except Exception as e:
                 dispatch_results.append(f"📲 **微信视频号**: ❌ 异常 ({e})")
 
-    # 3. 抖音分发（若启用 douyin-tech-main，默认发布为仅自己可见）
-    douyin_account = accounts_map.get("douyin-tech-main")
+    # 3. 抖音分发（账号按平台从 accounts.yaml 解析，默认发布为仅自己可见）
+    douyin_account = next((a for a in accounts_map.values()
+                           if str(a.get("platform") or "") == "douyin" and a.get("enabled", True)), None)
     if douyin_account and douyin_account.get("enabled", True):
         key = claim_channel(db, task_id, "douyin", c_hash, vhash, video_path or "")
         if not key:

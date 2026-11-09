@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import sqlite3
+from src.utils.accounts import default_account
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -95,7 +96,7 @@ def main() -> int:
     MATERIAL.write_text(json.dumps({
         "title": "DeepSeek V4 发布：推理提速三倍",
         "body": "官方正式发布 DeepSeek V4，推理速度提升三倍，成本下降一半，开源权重同步放出。",
-        "account": "douyin-tech-main",
+        "account": default_account(),
     }, ensure_ascii=False), encoding="utf-8")
 
     if DB.exists():

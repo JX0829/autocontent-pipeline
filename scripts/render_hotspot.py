@@ -12,6 +12,16 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from src.db import PipelineDB
 from src.schemas import DraftScriptPayload
+from src.utils.accounts import default_account
+
+def _require_source_url(data: dict) -> str:
+    """T4.2：物料必须自带 source_url，禁止代码里编造占位来源。"""
+    url = str(data.get("source_url") or (data.get("manifest") or {}).get("source_url") or "")
+    if not url:
+        raise ValueError("缺 source_url：物料未提供，禁止用占位 URL 兜底")
+    return url
+
+
 from src.safety.dfa_filter import DFAFilter
 from src.tts.aligner import TTSAligner
 
@@ -55,10 +65,10 @@ async def render_hotspot_video(script_path: str, task_id: str, template: str = "
     draft_payload = DraftScriptPayload(**script_data)
     db.create_task(
         task_id=task_id,
-        source_url="https://github.com/google/llm-d",
+        source_url=_require_source_url(script_data),
         entity_key=draft_payload.entity_key,
         theme=draft_payload.theme,
-        target_account_id="douyin-tech-main",
+        target_account_id=str(script_data.get("account") or default_account()),
         draft_script=script_data
     )
 

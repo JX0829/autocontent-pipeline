@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,8 @@ from typing import Any, Iterable
 from src.pipeline.contracts import load_pipeline
 
 PROJ = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJ))
+from src.utils.accounts import default_account  # noqa: E402  (T4.2 去硬编码：账号从配置取)
 DEFAULT_TIMEOUT = 30.0
 
 
@@ -429,7 +432,7 @@ def _make_fixtures(root: Path) -> dict[str, Any]:
             "draft": SELFTEST_DRAFT,
             "narration": narration,
             "material_block": _material_block(),
-            "account": "douyin-tech-main",
+            "account": default_account(),
             "platform": "douyin",
             "aspect": "16:9",
             "artifact_kind": "landscape",   # T2.6 external_truth 按 kind 分派

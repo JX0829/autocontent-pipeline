@@ -7,7 +7,7 @@
   · `status: banned|disabled` → block
   · 目标平台不存在 → block（不猜平台）
 
-账号 → 平台的推断规则：账号 ID 前缀（`douyin-tech-main` → `douyin`）。
+账号 → 平台的推断规则：账号 ID 前缀（`<platform>-<tier>-<name>` → `<platform>`）。
 """
 import sys
 from datetime import date, datetime

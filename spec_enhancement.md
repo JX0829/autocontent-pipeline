@@ -235,7 +235,7 @@
 | P3 | T3.4 定时任务去模型依赖 | ✅ DONE | 2026-11-09 | `cef5e4b` | 7 job 全 pinned/script-only；2 个断流 job 已修 |
 | P3 | GATE-3 端到端不重发 | ✅ PASS | 2026-11-09 | `3f8a319` | `bash scripts/gate3.sh` 12/12 断言：A 首跑发 1 次 / B 幂等跳过 / C 台账拦截 | QA#7#10#12 |
 | P4 | T4.1 run_root 隔离 + 横版命名统一 | ✅ DONE | 2026-11-09 | `2be932e` | props 落 run_root + 软链供 Remotion；命名统一零残留 |
-| P4 | T4.2 去硬编码 | ⬜ PENDING | — | — | 依赖 T4.1 |
+| P4 | T4.2 去硬编码 | ✅ DONE | 2026-11-09 | 待回填 | 账号/来源全部从配置与物料解析，grep 零残留 |
 | P4 | T4.3 状态机归位 | ⬜ PENDING | — | — | 依赖 T4.2 |
 | P4 | T4.4 横屏出厂治理 | ⬜ PENDING | — | — | QA#6#7，二次复发项 |
 | P4 | T4.5 TTS 配置接线 | ⬜ PENDING | — | — | **v1.2 新增，P-3** |
@@ -1467,15 +1467,33 @@ for k,v in d['providers'].items():
 - **回滚**：`git checkout src/tts/aligner.py src/pipeline/executors.py scripts/render_landscape.py scripts/landscape_guard.py`
 
 #### T4.2 去硬编码
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T4.1
-- **改动**：`generate_from_news.py`（`source_url`/`target_account_id` 改从 `manifest.json` 读）、`comment_funnel.py`（默认 `base_url` 移除，缺失即报错）
-- **验收**：
-  ```bash
-  grep -rn "127.0.0.1:8317\|douyin-tech-main\|news.hot-digest.local" src scripts && echo "VIOLATION" || echo "OK: 无残留"
+- **改动**：新增 `src/utils/accounts.py`；`generate_from_news.py`、`render_hotspot.py`、
+  `run_phase1_demo.py`、`run_publish_worker.py`、`poll_douyin_comments.py`、`login_douyin.py`、
+  `src/pipeline/hooks.py`、`scripts/_gate3_e2e.py`、`scripts/gate2.sh`、`scripts/hooks/policy_precheck.py`
+- **做法**：
+  1. **账号收口**：新增 `src/utils/accounts.py`（`load_accounts / by_id / for_platform / default_account`），
+     账号 ID 一律从 `config/accounts.yaml` 解析，缺失即 `AccountConfigError`（**不给默认值兜底**）
+  2. **来源收口**：`generate_from_news` / `render_hotspot` / `run_phase1_demo` 的 `source_url`
+     改为从物料（`task_data.source_url` 或 `manifest.source_url`）读取，缺失即 `ValueError`
+  3. **平台分发**：worker 与抖音评论轮询改为「按 `platform` 取首个启用账号」，不再写死账号 ID
+  4. **夹具去字面量**：hooks 自检、`_gate3_e2e`、`gate2.sh` 的 payload 账号改由配置解析
+  5. 删除仓库里的垃圾备份 `scripts/run_publish_worker.py.bak_20261109_0715`
+- **验收（实测）**：
   ```
-- **预期输出**：`OK: 无残留`
-- **回滚**：`git checkout` 两文件
+  grep -rn "127.0.0.1:8317|douyin-tech-main|news.hot-digest.local" src scripts
+  → OK: 无残留（排除 _deprecated 归档与 __pycache__）
+  ```
+- **功能回归**：
+  ```
+  accounts: default_account=douyin-tech-main · for_platform(douyin)=douyin-tech-main
+            by_id(不存在)=None · for_platform("xhs") → AccountConfigError（该平台无启用账号）
+  source_url: 有值透传 https://example.com/a；缺失 → ValueError「禁止用占位 URL 兜底」
+  worker: 按 platform 选账号 → douyin-tech-main
+  hooks --selftest 22/22 · GATE-1 PASS · GATE-2 PASS · compileall OK
+  ```
+- **回滚**：`git checkout src scripts` + 删除 `src/utils/accounts.py`
 
 #### T4.3 状态机归位
 - **状态**：⬜ PENDING

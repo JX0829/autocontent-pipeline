@@ -48,7 +48,8 @@ subprocess.run(["ffmpeg","-y","-v","error","-f","lavfi","-i","testsrc=size=640x3
                 "-c:v","libx264","-pix_fmt","yuv420p",str(video)], capture_output=True)
 payload = {"task_id":"gate2","run_root":str(tmp),"step_id":"dispatch",
            "artifacts":{"video_16_9":"v.mp4"},
-           "context":{"account":"douyin-tech-main","channel":"feishu","content_hash":"g"*64}}
+           "context":{"account":__import__("src.utils.accounts", fromlist=["x"]).default_account(),
+                      "channel":"feishu","content_hash":"g"*64}}
 def rows():
     import sqlite3
     db = tmp / "data" / "pipeline_state.db"

@@ -14,6 +14,7 @@ from src.db import PipelineDB
 from src.schemas import DraftScriptPayload
 from src.safety.dfa_filter import DFAFilter
 from src.tts.aligner import TTSAligner
+from src.utils.accounts import default_account
 
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
@@ -162,12 +163,18 @@ async def process_task(task_data):
             raise ValueError(f"台词敏感词拦截: {w}")
 
     draft_payload = DraftScriptPayload(**task_data)
+    # T4.2：来源与目标账号必须来自物料/配置，禁止代码里编造占位来源或写死账号
+    _man = task_data.get("manifest") or {}
+    source_url = str(task_data.get("source_url") or _man.get("source_url") or "")
+    if not source_url:
+        raise ValueError("缺 source_url：物料未提供，禁止用占位 URL 兜底")
+    account_id = str(task_data.get("account") or _man.get("account") or default_account())
     db.create_task(
         task_id=task_id,
-        source_url="https://news.hot-digest.local",
+        source_url=source_url,
         entity_key=draft_payload.entity_key,
         theme=draft_payload.theme,
-        target_account_id="douyin-tech-main",
+        target_account_id=account_id,
         draft_script=task_data
     )
 
