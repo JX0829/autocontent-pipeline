@@ -57,6 +57,26 @@ def _write_json(path: Path, data: Any) -> Path:
     return path
 
 
+def _assert_has_audio(path: Path) -> None:
+    """产物必须含音频流，否则是无声片 —— 这类缺陷肉眼在缩略图上完全看不出来。
+
+    实测背景：T4.1 把 public 根换到 run 目录后，只要软链缺失，Remotion 会
+    渲染出**没有音轨**的视频而不报错（ffprobe 只看到 h264）。所以这里硬断言。
+    """
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+            text=True, timeout=60,
+        ).strip()
+    except Exception as exc:  # noqa: BLE001
+        raise ExecutorError(f"音频流探测失败（{path.name}）: {exc}") from exc
+    if not out:
+        raise ExecutorError(
+            f"产物无音频流（无声片）: {path.name} —— 检查 run 目录软链 "
+            f"renderer/public/runs/<run_id> 是否指向 props，以及 sfx 是否可达")
+
+
 def _remotion(*args: str, timeout: int = 900) -> None:
     """调用本地 remotion 二进制（`npx remotion` 在本机解析失败，必须走 node_modules/.bin）。"""
     cmd = [str(REMOTION), *args]
@@ -161,6 +181,8 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
     _remotion("still", "src/index.ts", "XhsCardStill", str(xhs),
               f"--props={props_path.resolve()}", "--image-format=png")
 
+    _assert_has_audio(video)   # 无声片零容忍：缺音轨直接失败，不进入分发
+
     return {"video": str(video), "cover": str(cover), "xhs_cards": str(xhs_dir),
             "props": str(props_path)}
 
@@ -183,6 +205,8 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
                             expect_cover_text=str(draft.get("cover_main_text") or ""))
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
+    _assert_has_audio(video)   # 横版同样不许出无声片
+
     return {"video_16_9": str(video), "cover_16_9": str(cover)}
 
 
