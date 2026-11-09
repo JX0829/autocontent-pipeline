@@ -212,7 +212,7 @@
 | P0 | T0.2 模型调用点与环境盘点 | ✅ DONE | 2026-11-09 | `94c2636` | QA#4；产出 `model_inventory.md`（4 调用点/网关 2 模型/7 job） |
 | P0 | T0.3 工作区卫生与提交边界 | ✅ DONE | 2026-11-09 | `94c2636` | 条目 12 → 6；`_deprecated/` 归档 5 个一次性脚本 |
 | P0 | T0.4 运行时自举 | ✅ DONE | 2026-11-09 | `2b40da1` | **v1.3 新增；G-A 阻断项已解除（system-fallback）** |
-| P1 | T1.1 落 pipeline.yaml | ⬜ PENDING | — | — | 依赖 T0.1 |
+| P1 | T1.1 落 pipeline.yaml | ✅ DONE | 2026-11-09 | 待回填 | 11 段 contract / 6 槽位 / 7 步 / 22 hooks，零模型名 |
 | P1 | T1.2 契约校验器 | ⬜ PENDING | — | — | 依赖 T1.1 |
 | P1 | T1.3 薄 Runner | ⬜ PENDING | — | — | 依赖 T1.2 |
 | P1 | T1.4 model_profile 能力契约 | ⬜ PENDING | — | — | QA#2②#3#9 核心 |
@@ -244,7 +244,7 @@
 | P5 | T5.1 幂等写入时机归位 | ⬜ PENDING | — | — | QA#5#10 |
 | P5 | GATE-5 全链路静默失败扫描 | ⬜ PENDING | — | — | 静态扫描零告警 |
 
-**当前进度**：P0 完成，4/35 完成（T0.1–T0.4 ✅），下一步 P1 · T1.1。
+**当前进度**：P0 完成、P1 进行中，5/35 完成（T0.1–T0.4、T1.1 ✅），下一步 T1.2 契约校验器。
 
 ---
 
@@ -582,7 +582,7 @@ dispatch:
   - `npx remotion browser ensure` → `Has browser at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome`，**未触发下载**
   - 真实渲染链路验证：`npx remotion compositions src/index.ts` 列出 7 个 composition；`npx remotion still … CoverStill` 输出 1.38MB PNG ✅
   - 即：本机阻断项已解除，但当前为 **system-fallback**（依赖系统 Chrome），迁移到无 Chrome 机器仍需 hermetic 预置（RK13）
-- **改动**：新增 `scripts/bootstrap.py`（约 390 行）；`pipeline.yaml` 的 `requires` 段与 `runner` 启动自检**待 T1.1/T1.3 落地时接线**
+- **改动**：新增 `scripts/bootstrap.py`（约 390 行）；`pipeline.yaml` 的 `requires` 段（`browser` + `fonts`）**已随 T1.1 落地接线**；`runner` 启动自检待 T1.3
 - **执行**：
   1. `bootstrap.py` 探测五层环境（对齐 §4.9.1）：二进制 / Python 包 / Node 依赖 / **浏览器** / 中文字体
   2. `--dry-run`：只打印探测表（LAYER / ITEM / EXPECT / ACTUAL / STATUS / NOTE），**不改环境**
@@ -612,20 +612,22 @@ dispatch:
 ### P1 · 声明层与模型契约（纯新增，零破坏）
 
 #### T1.1 落 `pipeline.yaml`
-- **状态**：⬜ PENDING
+- **状态**：✅ DONE（2026-11-09）
 - **依赖**：T0.1
-- **改动**：新增 `pipeline.yaml`（项目根目录，全文见附录 A）
+- **改动**：新增 `pipeline.yaml`（项目根目录，全文逐字取自附录 A）
 - **内容要点**：
   - `schema_version: "1.0"`
-  - `contract`：`isolation` / `model_decoupling` / `artifact_ownership` / `deduplication` / **`model_switch`**
-  - `providers`：三个能力槽位，每个带 **`profile`**（T1.4 填值）
+  - `contract`：`isolation` / `artifact_naming` / `material_contract` / `config_binding` / `runtime_bootstrap` / `intake_carriers` / `model_decoupling` / `artifact_ownership` / `deduplication` / **`model_switch`**（共 11 段）
+  - `providers`：**六个**能力槽位（v1.3 语境）—— `llm.main` / `llm.fast` / `tts.tech` / `tts.news` / `feishu` / `db`，每个带 **`profile`**（LLM 两槽位六项齐备；其余先声明 `timeout_sec`，T1.4 补标定）
   - 7 个步骤 + 每步前后 hooks
-  - `hooks` 注册表 21 项
+  - `hooks` 注册表 **22 项**（v1.1 记 21，v1.2-接管新增 `hook.card_render`；已校验「注册=引用」零孤儿零缺失）
+  - `requires` 含 `browser` + `fonts`（T0.4 的声明段在此接线完成）
 - **验收**：
   ```bash
   python3 -c "import yaml;d=yaml.safe_load(open('pipeline.yaml'));print(d['schema_version'],len(d['steps']),len(d['hooks']))"
   ```
-- **预期输出**：`1.0 7 21`
+- **预期输出**：`1.0 7 22`
+- **实测输出（2026-11-09）**：`1.0 7 22` ✅；另校验：步骤体/钩子/provider 中**零模型名**、14 个 env 键全为键名、`hooks` 注册与引用完全一致
 - **回滚**：`rm pipeline.yaml`
 - **注意**：YAML 流式映射中 `key:{` 缺空格会解析失败，一律写 `key: {`
 

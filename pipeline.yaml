@@ -1,0 +1,291 @@
+# pipeline.yaml —— AutoContent Pipeline 声明层（唯一执行依据）
+# 由 spec_enhancement.md 附录 A 逐字落盘，二者必须保持一致：
+#   改流程 = 先改 spec 附录 A → 再同步本文件 → 再改代码（执行原则）
+# 本文件只声明契约，不含业务逻辑；禁止出现任何模型名（contract.model_decoupling）
+
+schema_version: "1.0"
+
+pipeline:
+  id: "autocontent"
+  name: "科技短视频生产流水线"
+  version: "1.3.0"
+  description: "从收到物料到竖版/横版成片的声明式流水线。只声明契约，不含业务逻辑。"
+
+requires:
+  python: ">=3.10"
+  binaries: [ffmpeg, ffprobe, npx, tesseract]
+  renderer: "remotion>=4"
+  browser:                              # v1.3（T0.4）：不声明浏览器 = 首次渲染联网下载 150MB
+    engine: chrome-headless-shell
+    probe: ["renderer/node_modules/.remotion", "~/Library/Caches/remotion"]
+    ensure_cmd: "npx remotion browser ensure"
+  fonts: [Noto Sans CJK SC]             # v1.3（T0.4）：缺字体导致 OCR bbox 判据失效
+
+contract:
+  isolation:
+    run_root: "output/{date}/{run_id}"
+    forbid_shared_dirs: ["renderer/public/tasks"]
+    template_vars: [date, run_id, task_id, account, aspect]
+  artifact_naming:                       # v1.2（P-6）：产物名唯一来源，代码不得各自命名
+    vertical:  {video: "video.mp4",          cover: "cover.png"}
+    landscape: {video: "video_16_9.mp4",     cover: "cover_16_9.png"}
+    enforce_single_source: true
+  material_contract:                     # v1.2（P-2）：物料契约唯一来源
+    schema: manifest.schema.json
+    forbid_inline_task_lists: ["NEWS_TASKS", "TASKS_DATA"]
+  config_binding:                        # v1.2（P-3/P-4）：声明即生效，禁止死键
+    require_all_env_keys_consumed: true
+    forbid_hardcoded_voice: true
+    approval_modes: [feishu, cli, auto]
+    fail_fast_missing: true              # v1.3（T1.9）：必填键缺失启动即退出
+    exit_code_missing: 78
+  runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
+    script: scripts/bootstrap.py
+    enforce_on_start: true
+    forbid_network_on_first_render: true
+  intake_carriers:                       # v1.3（T1.8）：三载体共用一份 schema
+    allowed: [cli, stdin, feishu_file]
+    single_schema: manifest.schema.json
+    forbid_per_carrier_field_fill: true
+  model_decoupling:
+    forbidden_literals: ["deepseek", "gemini", "gpt", "claude", "qwen"]
+    resolve_via: "providers"
+  model_switch:
+    require_profile: true
+    forbid_caller_max_tokens: true
+    fail_on_truncated: true
+    fail_on_empty: true
+    preflight: scripts/model_switch_check.py
+  silence_tolerance:
+    forbid_except_pass: true
+    forbid_silent_skip: true
+    must_log_degraded: true
+  artifact_ownership:
+    enforce: strict
+  deduplication:
+    enabled: true
+    layers: [content, visual, send_ledger]
+    key_normalization:
+      strip_timestamp_suffix: '^(.+?)-\d{10}$'
+      strip_emoji_code: true
+      strip_punct: true
+    ledger_idempotent: true
+    write_after_external_confirm: true
+    on_duplicate: block
+
+providers:
+  llm.main:
+    kind: llm
+    env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_MAIN}
+    schema_out: DraftScriptPayload
+    profile:
+      max_tokens: 4096
+      reasoning_reserve: 512
+      timeout_sec: 120
+      json_mode: true
+      min_output_chars: 80
+      expected_latency_sec: 30
+  llm.fast:
+    kind: llm
+    env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_FAST}
+    profile:
+      max_tokens: 1024
+      reasoning_reserve: 512
+      timeout_sec: 60
+      json_mode: false
+      min_output_chars: 1
+      expected_latency_sec: 15
+  tts.tech:
+    kind: tts
+    env: {voice: TTS_VOICE_TECH, rate: TTS_RATE}
+    profile:
+      timeout_sec: 90
+  tts.news:                             # v1.2 新增（P-3）：非 tech 账号槽位，禁止代码内 if/else 选音色
+    kind: tts
+    env: {voice: TTS_VOICE_NEWS, rate: TTS_RATE}
+    profile:
+      timeout_sec: 90
+  feishu:                               # v1.3 新增（T1.9）：原本被代码读却未声明
+    kind: saas
+    env: {app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET, approval_chat_id: FEISHU_APPROVAL_CHAT_ID}
+    profile:
+      timeout_sec: 30
+  db:                                   # v1.3 新增（T1.9）
+    kind: storage
+    env: {path: SQLITE_DB_PATH}
+    profile:
+      timeout_sec: 5
+
+inputs:
+  material:
+    type: json
+    required: true
+    schema: manifest.schema.json        # v1.2：物料契约唯一来源（P-2）
+    carriers: [cli, stdin, feishu_file] # v1.3（T1.8）：三载体，同一份 schema
+    min_fields: [title]                 # 其余由 llm.main 扩写
+    any_of: [[body], [source_url]]      # 至少一项事实来源，禁止凭空编造
+    prompt: "把物料发给我（标题/正文/来源 URL/截图），其余由流水线决定"
+  account:
+    type: string
+    default: "douyin-tech-main"
+  aspects:
+    type: list
+    default: [vertical, landscape]
+
+# 封面卡片数据源：消除组件内 [0,1,3] 魔数（T4.4 #6，对标 C8）
+cover:
+  card_source: [0, 1, 3]        # 取 scenes 的哪几镜作为右侧三卡
+  missing_policy: warn          # 缺 highlight_text 时告警占位，禁止静默消失
+  subtitle_source: resource_keyword
+
+steps:
+  - id: intake
+    name: "接收消息"
+    run: builtin.intake
+    produces: ["manifest.json"]
+    params:
+      carrier: "${INTAKE_CARRIER:-cli}"   # cli | stdin | feishu_file（v1.3 / T1.8）
+      schema: manifest.schema.json
+    dedupe: content
+    before_hooks: [hook.envelope_validate]
+    after_hooks: [hook.persist_task, hook.content_fingerprint]
+
+  - id: check_material
+    name: "检查资料"
+    run: builtin.check_material
+    reads: ["manifest.json"]
+    produces: ["material_check.json"]
+    before_hooks: [hook.dedupe_entity]
+    after_hooks: [hook.sensitive_scan, hook.policy_precheck, hook.silence_guard]
+    on_fail: block
+
+  - id: expand_script
+    name: "扩写生成脚本"
+    uses: llm.main
+    reads: ["manifest.json", "material_check.json"]
+    produces: ["draft_script.json"]
+    schema: DraftScriptPayload
+    retry: {max: 2, on_schema_error: true}
+    before_hooks: [hook.material_bundle, hook.prompt_render]
+    after_hooks: [hook.sensitive_scan, hook.title_length_guard, hook.silence_guard]
+
+  - id: render_vertical
+    name: "生成竖版视频"
+    run: builtin.render
+    params: {aspect: vertical, composition: GeekShortVideo, width: 1080, height: 1920}
+    reads: ["draft_script.json"]
+    produces: ["video.mp4", "cover.png", "xhs_cards/"]
+    before_hooks: [hook.sensitive_scan, hook.material_check, hook.expand_narration]
+    after_hooks: [hook.frame_fingerprint, hook.frame_sample_check, hook.external_truth, hook.audio_duration_check]
+
+  - id: render_landscape
+    name: "生成横版视频"
+    run: builtin.render
+    params: {aspect: landscape, composition: BilibiliLandscapeVideo, width: 1920, height: 1080}
+    reads: ["draft_script.json"]        # v1.2 修正（P-5）：横版只读 props，video.mp4 是假依赖
+    requires_props: true                # props 由 TTS 对齐步产出，不依赖竖版成片
+    produces: ["video_16_9.mp4", "cover_16_9.png"]
+    before_hooks: [hook.landscape_precheck]
+    after_hooks: [hook.frame_fingerprint, hook.external_truth, hook.landscape_guard]
+
+  - id: approval
+    name: "人审"
+    type: gate
+    params:
+      mode: "${APPROVAL_MODE:-auto}"    # feishu | cli | auto（v1.2 / P-4）
+      message: "请确认成片"
+    options: [approve, reject]
+    on_reject: abort
+
+  - id: dispatch
+    name: "分发"
+    run: builtin.dispatch
+    params:
+      enabled: true                                # false ⇒ 只出片（v1.3 / T4.7）
+      mode: "${DISPATCH_MODE:-publish}"             # publish | output_only
+    reads: ["video.mp4", "video_16_9.mp4"]
+    dedupe: send_ledger
+    before_hooks: [hook.provenance_check, hook.external_truth, hook.card_render, hook.send_ledger]
+    after_hooks: [hook.audit_log]
+
+hooks:
+  hook.envelope_validate:
+    type: observe
+    impl: scripts/hooks/envelope_validate.py
+  hook.persist_task:
+    type: transform
+    impl: scripts/hooks/persist_task.py
+  hook.dedupe_entity:
+    type: gate
+    impl: scripts/hooks/dedupe_entity.py
+    on_fail: block
+  hook.sensitive_scan:
+    type: gate
+    impl: scripts/hooks/sensitive_scan.py
+    on_fail: block
+  hook.policy_precheck:
+    type: gate
+    impl: scripts/hooks/policy_precheck.py
+    on_fail: block
+  hook.material_bundle:
+    type: transform
+    impl: scripts/hooks/material_bundle.py
+  hook.prompt_render:
+    type: transform
+    impl: scripts/hooks/prompt_render.py
+  hook.title_length_guard:
+    type: gate
+    impl: scripts/hooks/title_length_guard.py
+    on_fail: warn
+  hook.material_check:
+    type: gate
+    impl: scripts/hooks/material_check.py
+    on_fail: block
+  hook.expand_narration:
+    type: transform
+    impl: scripts/hooks/expand_narration.py
+  hook.content_fingerprint:
+    type: gate
+    impl: scripts/hooks/content_fingerprint.py
+    on_fail: warn
+  hook.frame_fingerprint:
+    type: transform
+    impl: scripts/hooks/frame_fingerprint.py
+  hook.frame_sample_check:
+    type: gate
+    impl: scripts/hooks/frame_sample_check.py
+    on_fail: block
+  hook.audio_duration_check:
+    type: gate
+    impl: scripts/hooks/audio_duration_check.py
+    on_fail: warn
+  hook.landscape_precheck:
+    type: gate
+    impl: scripts/hooks/landscape_precheck.py
+    on_fail: block
+  hook.landscape_guard:
+    type: gate
+    impl: scripts/landscape_guard.py
+    on_fail: block
+  hook.provenance_check:
+    type: gate
+    impl: scripts/hooks/provenance_check.py
+    on_fail: block
+  hook.card_render:
+    type: transform
+    impl: src/feishu/card_builder.py
+  hook.send_ledger:
+    type: gate
+    impl: scripts/hooks/send_ledger.py
+    on_fail: block
+  hook.silence_guard:
+    type: gate
+    impl: scripts/hooks/silence_guard.py
+    on_fail: warn
+  hook.external_truth:
+    type: gate
+    impl: scripts/hooks/external_truth.py
+    on_fail: block
+  hook.audit_log:
+    type: observe
+    impl: scripts/hooks/audit_log.py
