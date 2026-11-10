@@ -35,18 +35,22 @@ class FeishuCardBuilder:
         rejection_reason: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        构建带有交互按钮的审批卡片 JSON
+        构建带有交互按钮的审批卡片 JSON（**Card 2.0**）
+
+        2026-11-10 从 1.0 升级：`div`/`lark_md`/`action`/`note` 全部换成 2.0 的
+        `markdown` / `column_set` / `behaviors`，解决移动端窄栏与按钮回调丢失问题。
+        按钮 value 契约保持不变（action + task_id），后台处理逻辑无需改动。
         """
         topic_str = " ".join([f"#{t}" if not t.startswith("#") else t for t in topics])
-        
+
         status_badges = {
             "PENDING_APPROVAL": ("🟠 待人工审核", "orange"),
             "APPROVED": ("🟢 审核通过 · 待上传草稿", "green"),
             "MANUAL_PUBLISHING": ("📱 已提取素材 · 待手机发布", "blue"),
-            "PUBLISHED": ("✅ 手机发布已完成", "green"),
+            "PUBLISHED": ("✅ 手机发布完成", "green"),
             "REJECTED": ("🔴 已驳回", "red"),
         }
-        badge_text, badge_color = status_badges.get(status, ("⚪ 未知状态", "grey"))
+        badge_text, _badge_color = status_badges.get(status, ("⚪ 未知状态", "grey"))
 
         template_display_map = {
             "editorial_news": "T1 · 瑞士先锋报刊风 (Editorial Paper)",
@@ -57,123 +61,70 @@ class FeishuCardBuilder:
         }
         tpl_name = template_display_map.get(template_id or "", template_id or "未指定")
 
-        elements = [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"**状态**: {badge_text}  |  **时长**: `{duration_sec:.1f}s`  |  **视频大小**: `{video_size_mb:.2f} MB`\n🎨 **套用模板**: **`{tpl_name}`**\n**任务 ID**: `{task_id}`"
-                }
-            },
+        elements: list[Dict[str, Any]] = [
+            {"tag": "markdown", "content": (
+                f"**状态**: {badge_text}  |  **时长**: `{duration_sec:.1f}s`  |  "
+                f"**视频大小**: `{video_size_mb:.2f} MB`\n"
+                f"🎨 **套用模板**: **`{tpl_name}`**\n**任务 ID**: `{task_id}`")},
             {"tag": "hr"},
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📌 **视频标题**:\n**{title}**\n\n🏷️ **话题标签**: {topic_str}"
-                }
-            },
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📝 **核心正文/文案**:\n{content_text}"
-                }
-            },
-            {
-                "tag": "note",
-                "elements": [
-                    {
-                        "tag": "plain_text",
-                        "content": f"💡 事实核查依据: {fact_summary}"
-                    }
-                ]
-            }
+            {"tag": "markdown", "content": (
+                f"📌 **视频标题**:\n**{title}**\n\n🏷️ **话题标签**: {topic_str}")},
+            {"tag": "markdown", "content": f"📝 **核心正文/文案**:\n{content_text}"},
+            {"tag": "markdown", "content": (
+                f"<font color='grey'>💡 事实核查依据: {fact_summary}</font>")},
         ]
 
         if status == "REJECTED" and rejection_reason:
             elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"⚠️ **驳回原因**: {rejection_reason}"
-                }
+                "tag": "markdown",
+                "content": f"⚠️ **驳回原因**: {rejection_reason}",
             })
+
+        def _btn(label: str, action: str, btype: str) -> Dict[str, Any]:
+            return {
+                "tag": "column", "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": btype,
+                    "behaviors": [{"type": "callback",
+                                   "value": {"action": action, "task_id": task_id}}],
+                }],
+            }
 
         # 仅在待审批状态下展示操作按钮：二合一极简收敛（批准发布并分发 + 驳回）
         if status == "PENDING_APPROVAL":
             elements.append({"tag": "hr"})
             elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "🚀 **动态多平台分发矩阵**: `📺 B站(私密草稿)` · `📲 微信视频号(公开分发)`"
-                }
+                "tag": "markdown",
+                "content": ("🚀 **动态多平台分发矩阵**: `📺 B站(私密草稿)` · "
+                            "`📲 微信视频号(公开分发)`"),
             })
             elements.append({
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {
-                            "tag": "plain_text",
-                            "content": "✅ 批准发布并分发"
-                        },
-                        "type": "primary",
-                        "value": {
-                            "action": "APPROVE_AND_DISPATCH",
-                            "task_id": task_id
-                        }
-                    },
-                    {
-                        "tag": "button",
-                        "text": {
-                            "tag": "plain_text",
-                            "content": "❌ 驳回重写"
-                        },
-                        "type": "danger",
-                        "value": {
-                            "action": "REJECT_TASK",
-                            "task_id": task_id
-                        }
-                    }
-                ]
+                "tag": "column_set",
+                "columns": [_btn("✅ 批准发布并分发", "APPROVE_AND_DISPATCH", "primary"),
+                            _btn("❌ 驳回重写", "REJECT_TASK", "danger")],
             })
         elif status == "MANUAL_PUBLISHING":
             elements.append({"tag": "hr"})
             elements.append({
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {
-                            "tag": "plain_text",
-                            "content": "✅ 手机发布已完成"
-                        },
-                        "type": "primary",
-                        "value": {
-                            "action": "COMPLETE_MANUAL_PUBLISH",
-                            "task_id": task_id
-                        }
-                    }
-                ]
+                "tag": "column_set",
+                "columns": [_btn("✅ 手机发布已完成", "COMPLETE_MANUAL_PUBLISH", "primary")],
             })
 
-        card = {
-            "config": {
-                "wide_screen_mode": True,
-                "update_multi": True
-            },
+        return {
+            "schema": CARD2_SCHEMA,
+            "config": {"update_multi": True},
             "header": {
-                "template": "blue" if status == "PENDING_APPROVAL" else ("green" if status == "APPROVED" else "red"),
+                "template": ("blue" if status == "PENDING_APPROVAL"
+                             else ("green" if status == "APPROVED" else "red")),
                 "title": {
                     "tag": "plain_text",
-                    "content": f"🎬 短视频待审工作台 · {title[:20]}"
-                }
+                    "content": f"🎬 短视频待审工作台 · {title[:20]}",
+                },
             },
-            "elements": elements
+            "body": {"elements": elements},
         }
-        return card
 
     # ================================================================
     # 审批用 Card 2.0（交互卡片，附在审批消息后）
