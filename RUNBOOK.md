@@ -117,9 +117,15 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 
 ### 4.1 发不发片
 
+> **边界先说清（2026-11-10 如实修订）**：
+> `runner` 的 `dispatch` 步**只发飞书**，链路到这里就结束了。
+> **平台发布（抖音 / B站 / 视频号）不在 runner 里**，是**独立 CLI**，需要按 `run_id` 人工触发（见 §5.2 / §6）。
+> 也就是说「出片 → 发布」是**两段**，不存在一条命令全自动发三平台。
+> 谁把 runner 当端到端发布器，就会以为"跑完了=发出去了"——实际只发到飞书。
+
 | 环境变量 | 行为 |
 |---|---|
-| 不设 / `publish` | 出片 → 审批 → 发飞书 |
+| 不设 / `publish` | 出片 → 审批 → **发飞书**（不发平台） |
 | `DISPATCH_MODE=output_only` | **只出片**，不审批不发送，产物路径写进 `artifacts.txt` |
 | `dispatch.enabled=false`（yaml） | 同上 |
 
@@ -222,6 +228,9 @@ python3 scripts/publish_douyin_cdp.py --run-id <run_id>
 ---
 
 ## 6. 三平台发布（现状必须分清）
+
+**这三条都是独立 CLI，不挂在 runner 上**（`grep -rn "publish_channels\|publish_douyin_cdp" src/pipeline/` 为空）。
+runner 跑完只代表「片子出来了 + 飞书收到了」，要发布得手动执行下面的命令。
 
 | 平台 | 实现 | 公开发布 | AI 合成声明 | 原创 |
 |---|---|---|---|---|

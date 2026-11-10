@@ -1,6 +1,6 @@
 # spec_enhancement.md — AutoContent Pipeline 声明式改造 · 去重加固 · 模型切换韧性
 
-> **文档状态**：`v1.3` · 更新于 2026-11-09 · 基准 commit `60697fd`（工作区含小品未提交修复，见附录 D）
+> **文档状态**：`v1.4` · 更新于 2026-11-10 · 基准 commit `60697fd`（工作区含小品未提交修复，见附录 D）
 > **v1.1 变更**：整合 `qa_xiaopin.md`（2026-11-08→09 模型切换事故复盘）全部 12 类问题，新增 9 个任务、1 个阶段（P5）、2 个 hook、3 节设计约束
 > **v1.2 变更**：① P-1~P-6 内聚缺口修补落位（P4 转为必做、新增 T1.7 物料契约 / T4.5 TTS 接线 / T4.6 审批抽象、修正 `render_landscape` 假依赖、统一横版命名）；② 将小品已落地的横屏/飞书修复**纳入本文档改动范围**（不单独分支），新增 §4.7 接管原则、附录 D 文件状态台账、C7/C8 耦合点、T0.3 规范任务，T3.2/T4.4 按内聚契约重写
 > **v1.3 变更**：交付面（最后一公里）审计 4 处空缺落位 —— 新增 **T0.4 运行时自举**（Remotion 浏览器缺失，阻断级）、**T1.8 投料通道实现**（`builtin.intake` 只有声明无载体）、**T1.9 配置面收敛**（1 死键 + 4 未声明 + 无 fail-fast）、**T4.7 出片与发片解耦**（`output_only`）；配套新增 §1.7 交付面缺口审计（G-A~G-E）、**§4.9 交付面契约**、G9/G10、附录 A 运行时/配置/投料契约；任务总数 31 → **35**
@@ -1647,6 +1647,21 @@ for k,v in d['providers'].items():
 - **预期输出**：`OK: runner 无渠道耦合`；`cli` 模式下干跑打印 `[approval] mode=cli` 且 `EXIT=0`，不报飞书连接错误
 - **回滚**：`git checkout pipeline.yaml src/pipeline/runner.py && rm -rf src/approval/`
 
+#### 发布边界（v1.4 如实说明，2026-11-10）
+
+> **结论：发布是独立 CLI，不是 runner 的一部分。**
+>
+> - `runner` 链路：`intake → check_material → expand_script → align_tts → render_vertical ∥ render_landscape → approval → dispatch`
+> - `dispatch` 步**只发飞书**（`approval_service.upload_and_send_video`），**不调用任何平台发布 CLI**
+> - 平台发布走独立 CLI，按 `run_id` 人工触发：
+>   - 抖音：`scripts/publish_douyin_cdp.py --run-id <id>`（`publish_mode=public_publish` 公开 / `private_publish` 私密）
+>   - B站：`scripts/bilibili_live_uploader.py`（`publish_mode=public` → 不传 `--only-self`）
+>   - 视频号：`scripts/publish_channels.py --run-id <id>`（公开 + 原创 fail-closed；`--stop-before-publish` 可停在发表前）
+> - **不做承诺**：不承诺"一键发三平台"、不承诺 runner 端到端发布。T4.7 的 `output_only` 只解决"出片不发片"，
+>   反过来"发片"仍需独立 CLI。
+> - 台账口径：独立 CLI 发布后需自行 `claim_send_slot` / `mark_sent` 落 `send_ledger`，
+>   否则流水线后续重跑无法识别"这条已经发过了"。
+
 #### T4.7 出片与发片解耦（v1.3 新增，G-D / G-E）
 - **状态**：✅ DONE（2026-11-09）
 - **依赖**：T4.6（审批抽象接口；本任务只落实默认值与门控）
@@ -1804,6 +1819,7 @@ git checkout -- <file>
 | **v1.1** | 2026-11-09 | 整合 `qa_xiaopin.md` 全部 12 类问题：新增 M1–M5 模型切换根因、§1.4 映射表、§4.4/4.5/4.6 三节设计约束、9 个新任务（T0.2/T1.4/T1.5/T1.6/T2.5/T2.6/T3.4/T4.4/T5.1）、P5 阶段、GATE-5、2 个 hook、附录 B/C、RK7–RK10 | 小何 |
 | **v1.2** | 2026-11-09 | 内聚缺口审计 6 处修补全落位：**P-1** P4 转必做 + T4.1 提为 GATE-3 后第一优先；**P-2** 新增 T1.7 `manifest.schema.json` 物料契约；**P-3** 新增 T4.5 TTS 配置接线；**P-4** 新增 T4.6 审批渠道抽象；**P-5** 修正 `render_landscape` 假依赖；**P-6** 统一横版产物命名。配套新增 §1.6 内聚缺口审计（I1–I7 实测）、§4.7 内聚边界、G7/G8、不做清单 11–13、RK11–RK12、附录 A 契约扩充；任务数 27 → **30** | 小何 |
 | **v1.3** | 2026-11-09 | 交付面审计 4 处空缺落位：**T0.4** 运行时自举（Remotion 浏览器双路径缺失，阻断级）、**T1.8** 投料通道实现（cli/stdin/feishu_file 三载体共用 schema）、**T1.9** 配置面收敛（`REMOTION_DIR` 死键 + 4 键未声明 + fail-fast `EXIT=78`）、**T4.7** 出片与发片解耦（`output_only`）。配套新增 §1.7 交付面缺口审计（G-A~G-E，9 判据 6 达标）、§4.9 交付面契约、G9/G10、不做清单 14–16、RK13–RK14、GATE-1 扩至 T1.1–T1.9；任务数 31 → **35** | 小何 |
+| **v1.4** | 2026-11-10 | **发布边界如实化**：新增「发布边界」章节，明确 `runner` 的 `dispatch` 只发飞书、平台发布（抖音/B站/视频号）是**独立 CLI**，不承诺一键发三平台；同步 RUNBOOK §4.1/§6。另记录竖版/横版并行渲染（8 步方案，实测 -48.8%，全链 189s）与 T4.5/T4.7 落地 | 小何 |
 | **v1.2-接管** | 2026-11-09 | 将小品已落地修复纳入本文档改动范围（不单独分支）：新增 **§4.8 接管原则**（R1 止血≠达标 / R2 静默即缺陷 / R3 逻辑不下沉 / R4 双实现收敛）+ **附录 D 文件状态台账**；新增 **C7**（双入口并存、A3 抓不到错版）、**C8**（三卡静默 null + `as any`）、**C9**（`_post_to_card2` 未下沉 + 硬编码 chat_id）；新增 **T0.3** 工作区卫生与提交边界；重写 **T3.2**（+接管重做 2 项）、**T4.4**（+入口收敛/docstring/归一化/产物名/三卡重做，共 8 项）；任务数 30 → **31** | 小何 |
 
 ---
