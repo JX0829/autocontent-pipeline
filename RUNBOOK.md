@@ -117,11 +117,18 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 
 ### 4.1 发不发片
 
-> **边界先说清（2026-11-10 如实修订）**：
-> `runner` 的 `dispatch` 步**只发飞书**，链路到这里就结束了。
-> **平台发布（抖音 / B站 / 视频号）不在 runner 里**，是**独立 CLI**，需要按 `run_id` 人工触发（见 §5.2 / §6）。
-> 也就是说「出片 → 发布」是**两段**，不存在一条命令全自动发三平台。
-> 谁把 runner 当端到端发布器，就会以为"跑完了=发出去了"——实际只发到飞书。
+> **边界先说清（2026-11-10，v2 发布方案）**：
+> 步骤链：`… → deliver（投递飞书）→ approval（人审）→ publish（平台发布）`
+>
+> - `deliver` **只发飞书**，不发平台
+> - `publish` 是**默认关闭**的步骤，三重门禁任何一条不满足都不发布：
+>   1. **配置门禁**：`publish.enabled=false`（默认）或 `platforms` 为空 → 整步 SKIP
+>   2. **审批门禁**：`approval.json` 的 `decision` 必须 `approve`，否则 `EXIT=64` 拦住
+>   3. **台账门禁**：`send_ledger` 的 `claim_send_slot` 抢到才发（同内容同账号不重发）
+> - 另有 `dry_run: true`（默认）—— 只走预检、不真发，且**释放台账位**
+>
+> 所以默认跑完只到「飞书收到片子」。要真发，必须同时：改 `enabled: true` + 填 `platforms` +
+> `dry_run: false` + 走到 approve。独立 CLI（§5.2 / §6）仍然可用，两者不冲突。
 
 | 环境变量 | 行为 |
 |---|---|
@@ -190,6 +197,43 @@ python3 scripts/send_run_artifacts.py --run-id <run_id> --videos-only
 ```
 
 `artifacts.txt` 也已按 `[vertical]` / `[landscape]` 分组标注，可直接照着发。
+
+**发片文件名必须用内容哈希**：`video_<md5>.mp4`。所有 run 的产物都叫 `video.mp4`，
+直接发会被飞书按同名去重，把新片顶成之前发过的旧片（2026-11-10 踩过）。
+
+```bash
+for f in video.mp4 video_16_9.mp4; do cp "$f" "/tmp/video_$(md5 -q "$f").mp4"; done
+```
+
+### 5.1.1 三平台简介统一规范（2026-11-10 定稿）
+
+简介是**给人读的**，不是分镜台词的搬运。三平台（B站 / 抖音 / 视频号）**同源生成**，
+统一由 `src/utils/video_desc.py` 产出，禁止各发布脚本各写一套：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | `draft_script.json` 的 `video_desc` | 出片时 LLM 直接写好的 100~170 字人话简介 |
+| 2 | `output/<date>/<run_id>/description.txt` | 老 run 现生成一次后缓存，避免重复烧 token |
+| 3 | `humanize(fact_summary_150)` | LLM 不可用时的兜底：删斜杠命令、文件名、emoji，做词级去重 |
+
+硬约束：**禁斜杠命令**（`/tdd`、`/grill-me`…）、禁文件名（`CONTEXT.md`）、禁 emoji、
+禁话题标签混入正文、禁「本视频/点击/链接」话术、结尾不带引导语。
+
+平台拼装差异（`build_desc(platform=...)`）：
+
+| 平台 | 格式 |
+|---|---|
+| 视频号 | `正文`（provider 内部自己拼 `#标签`，调用方传 `include_tags=False`） |
+| 抖音 | `标题 #标签\n正文`（标题必须在首行，发布器按首行识别） |
+| B站 | `正文\n\n#标签`（标题单独走 title 字段） |
+
+用法：
+
+```bash
+python3 scripts/publish_channels.py --run-id <run_id>            # 视频号
+python3 scripts/publish_douyin_cdp.py --run-id <run_id>          # 抖音（CDP 9333）
+python3 scripts/bilibili_live_uploader.py --run-id <run_id>      # B站（自动取横版+简介+标签）
+```
 
 ### 5.2 抖音发布：必须走 CDP 真机（**headless 必失败**）
 

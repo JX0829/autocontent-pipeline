@@ -232,6 +232,20 @@ steps:
     before_hooks: [hook.landscape_precheck]
     after_hooks: [hook.frame_fingerprint, hook.external_truth, hook.landscape_guard]
 
+  - id: deliver
+    name: "投递飞书（供人审）"
+    run: builtin.dispatch
+    artifact_kind: sent                # v1.4：external_truth 校验"确实发出去了"
+    params:
+      enabled: true                                # false ⇒ 只出片（v1.3 / T4.7）
+      mode: "${DISPATCH_MODE:-publish}"             # publish | output_only
+      aspects: ["vertical", "landscape"]           # 两个成片都要发，与 reads 声明对齐
+    reads: ["video.mp4", "video_16_9.mp4"]
+    dedupe: send_ledger
+    # external_truth 已在两个渲染步各跑一次；dispatch 阶段还没有"已发送"事实可校验。
+    before_hooks: [hook.provenance_check, hook.send_ledger]
+    after_hooks: [hook.audit_log]
+
   - id: approval
     name: "人审"
     type: gate
@@ -241,21 +255,20 @@ steps:
     options: [approve, reject]
     on_reject: abort
 
-  - id: dispatch
-    name: "分发"
-    run: builtin.dispatch
-    artifact_kind: sent                # v1.4：external_truth 校验"确实发出去了"
+  # v2 发布方案：deliver → approval → publish
+  # 三重门禁，默认关闭 —— 任何一条不满足都不发布：
+  #   门禁1 配置：publish.enabled（默认 false）+ platforms 非空
+  #   门禁2 审批：approval.json 的 decision 必须 approve
+  #   门禁3 台账：send_ledger claim_send_slot 抢到才发（防重发）
+  - id: publish
+    name: "平台发布"
+    run: builtin.publish
     params:
-      enabled: true                                # false ⇒ 只出片（v1.3 / T4.7）
-      mode: "${DISPATCH_MODE:-publish}"             # publish | output_only
-      aspects: ["vertical", "landscape"]           # 两个成片都要发，与 reads 声明对齐
+      enabled: false                 # 【门禁1】默认关闭；要发必须显式改 true
+      platforms: []                  # 空 = 不发；取值 douyin | bilibili | channels
+      dry_run: true                  # 默认只做预检，不真发
     reads: ["video.mp4", "video_16_9.mp4"]
     dedupe: send_ledger
-    # external_truth 已在 render_vertical / render_landscape 的 after_hooks 各跑一次，
-    # 在此再跑属于重复声明且上下文不成立（dispatch 阶段还没有"已发送"事实可校验）；
-    # card_render 的产物在 dispatch 没有消费者（exec_dispatch 直接发视频，不读 card）。
-    # 声明即生效：不能提供上下文的 hook 不允许声明（GATE-3 实测被这两条挡死）。
-    before_hooks: [hook.provenance_check, hook.send_ledger]
     after_hooks: [hook.audit_log]
 
 hooks:

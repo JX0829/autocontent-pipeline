@@ -1647,6 +1647,35 @@ for k,v in d['providers'].items():
 - **预期输出**：`OK: runner 无渠道耦合`；`cli` 模式下干跑打印 `[approval] mode=cli` 且 `EXIT=0`，不报飞书连接错误
 - **回滚**：`git checkout pipeline.yaml src/pipeline/runner.py && rm -rf src/approval/`
 
+#### 发布方案 v2：deliver → approval → publish（2026-11-10，默认关闭）
+
+**步骤链（9 步）**：
+```
+intake → check_material → expand_script → align_tts
+      → render_vertical ∥ render_landscape → deliver → approval → publish
+```
+
+**三重门禁**（`src/pipeline/executors.py::exec_publish`）：
+
+| 门禁 | 判据 | 不满足时 |
+|---|---|---|
+| 1 配置 | `publish.enabled=true` **且** `platforms` 非空 | 整步 SKIP（`steps_json` 可见），不报错 |
+| 2 审批 | `approval.json.decision == "approve"` | `ExecutorError` → 步 BLOCKED，`EXIT=64` |
+| 3 台账 | `send_ledger.claim_send_slot()` 抢到 | 该平台 `already_published`，跳过 |
+
+**默认全关**：`pipeline.yaml` 里 `publish.params = {enabled: false, platforms: [], dry_run: true}`。
+另：`dry_run=true` 时只预检，且**释放台账位**（否则预检一次就把这条内容永久锁死）。
+
+**实测（`/tmp/pub.db` + 真实 run_root）**：
+```
+门禁1 enabled=false        → skipped: [{gate: enabled}]
+门禁1b platforms=[]        → skipped: [{gate: platforms}]
+门禁2 无 approval.json     → 拦截：decision=缺失，必须 approve
+门禁2b decision=reject     → 拦截：decision=reject，必须 approve
+dry_run=true               → skipped: [{gate: dry_run}]，台账行数 0（已释放）
+门禁3 预置台账行           → skipped: [{gate: ledger, reason: already_published}]，行数仍 1
+```
+
 #### 发布边界（v1.4 如实说明，2026-11-10）
 
 > **结论：发布是独立 CLI，不是 runner 的一部分。**

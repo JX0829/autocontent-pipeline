@@ -258,6 +258,144 @@ def exec_approval(ctx: StepContext) -> dict[str, str]:
     return {"approval": str(out)}
 
 
+def _pick_media(ctx: StepContext, aspect: str = "vertical") -> tuple[Path, Path]:
+    """按 aspect 取成片与封面（发布统一用竖版，横版留给需要 16:9 的平台）。"""
+    if aspect == "landscape":
+        return (Path(ctx.artifacts.get("video_16_9") or ctx.run_root / "video_16_9.mp4"),
+                Path(ctx.artifacts.get("cover_16_9") or ctx.run_root / "cover_16_9.png"))
+    return (Path(ctx.artifacts.get("video") or ctx.run_root / "video.mp4"),
+            Path(ctx.artifacts.get("cover") or ctx.run_root / "cover.png"))
+
+
+def _release_slot(db, dedupe_key: str) -> None:
+    """发布失败/仅预检时释放台账位，否则这条内容永远发不出去（被自己的 claim 挡住）。"""
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM send_ledger WHERE dedupe_key = ?", (dedupe_key,))
+        conn.commit()
+
+
+def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover: Path,
+                     draft: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+    """按平台调 provider。三家的方法名不一致，这里收口，不散落到调用方。"""
+    title = str(draft.get("title") or "")
+    scenes = draft.get("scenes") or []
+    narration = "".join(str(s.get("segment_narration") or "") for s in scenes)
+    body = narration[:180].strip() or str(draft.get("theme") or "")
+    kw = str(draft.get("resource_keyword") or "").strip()
+    topics = [kw] if kw else ["科技"]
+
+    if platform == "channels":
+        from src.providers.channels_cdp import ChannelsCDPProvider
+        return ChannelsCDPProvider(account).publish_live(
+            video_path=str(video), cover_path=str(cover), title=title,
+            content_text=body, topics=topics,
+            declare_original=True, declare_aigc=True,
+            dry_run=dry_run, headless=True)
+    if platform == "douyin":
+        from src.providers.douyin import DouyinProvider
+        return DouyinProvider(account).save_draft(
+            video_path=str(video), cover_path=str(cover), title=title,
+            topics=topics, content_text=body)
+    if platform == "bilibili":
+        from src.providers.bilibili import BilibiliProvider
+        return BilibiliProvider(account).save_draft(
+            video_path=str(video), cover_path=str(cover), title=title,
+            topics=topics, content_text=body)
+    raise ExecutorError(f"未知平台: {platform}（支持 douyin | bilibili | channels）")
+
+
+def exec_publish(ctx: StepContext) -> dict[str, str]:
+    """builtin.publish：v2 发布方案 deliver→approval→publish，**三重门禁，默认关闭**。
+
+    门禁1 配置：publish.enabled=false（默认）或 platforms 为空 → 直接跳过
+    门禁2 审批：approval.json 的 decision 必须为 approve，否则拦
+    门禁3 台账：send_ledger 的 claim_send_slot 抢到才发（同内容同账号不重发）
+    """
+    import hashlib
+
+    from src.db import PipelineDB
+    from src.utils.accounts import for_platform
+
+    params = ctx.step.get("params") or {}
+    report: dict[str, Any] = {"mode": "publish", "published": [], "skipped": [], "failed": []}
+
+    def _out() -> dict[str, str]:
+        return {"publish": str(_write_json(ctx.out("publish.json"), report))}
+
+    # ---- 门禁1：配置（默认关闭）----
+    if not bool(params.get("enabled", False)):
+        report["skipped"].append({"gate": "enabled", "reason": "publish.enabled=false（默认关闭）"})
+        return _out()
+    platforms = [str(x).lower() for x in (params.get("platforms") or [])]
+    if not platforms:
+        report["skipped"].append({"gate": "platforms", "reason": "platforms 为空，未指定发布平台"})
+        return _out()
+
+    # ---- 门禁2：审批 ----
+    ap_path = ctx.run_root / "approval.json"
+    decision = ""
+    if ap_path.exists():
+        try:
+            decision = str(json.loads(ap_path.read_text(encoding="utf-8")).get("decision") or "")
+        except json.JSONDecodeError as exc:
+            raise ExecutorError(f"审批文件损坏，拒绝发布: {exc}") from exc
+    if decision != "approve":
+        raise ExecutorError(
+            f"发布拦截（门禁2 审批）：decision={decision or '缺失'}，必须 approve 才能发布")
+
+    draft = _load_draft(ctx)
+    dry_run = bool(params.get("dry_run", True))
+    aspect = str(params.get("aspect") or "vertical")
+    video, cover = _pick_media(ctx, aspect)
+    if not video.exists():
+        raise ExecutorError(f"待发布视频不存在: {video}")
+
+    db = PipelineDB(str(ctx.db_path))
+    video_sha = hashlib.sha256(video.read_bytes()).hexdigest()
+    content_key = hashlib.sha256(
+        json.dumps(draft, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+    for plat in platforms:
+        account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
+        acct_id = str(account.get("id") or "")
+        key = f"{content_key}|{video_sha}|{acct_id}"
+
+        # ---- 门禁3：台账幂等 ----
+        if not db.claim_send_slot(key, ctx.task_id, plat, acct_id, str(video)):
+            report["skipped"].append({"platform": plat, "gate": "ledger",
+                                      "reason": "already_published（台账已存在）"})
+            continue
+
+        if dry_run:
+            _release_slot(db, key)
+            report["skipped"].append({"platform": plat, "gate": "dry_run",
+                                      "reason": "dry_run=true，只预检不真发"})
+            continue
+
+        try:
+            res = _invoke_provider(plat, account, video, cover, draft, dry_run=False)
+        except Exception as exc:  # noqa: BLE001 — provider 异常要释放台账位并如实上报
+            _release_slot(db, key)
+            report["failed"].append({"platform": plat, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+
+        if res.get("success"):
+            msg_id = str(res.get("msg_id") or res.get("bvid") or res.get("draft_id")
+                         or f"{plat}_{ctx.task_id}")
+            db.mark_sent(key, msg_id)
+            report["published"].append({"platform": plat, "msg_id": msg_id,
+                                        "status": res.get("status") or res.get("distribution") or "ok"})
+        else:
+            _release_slot(db, key)
+            report["failed"].append({"platform": plat,
+                                     "error": res.get("message") or res.get("error") or "unknown"})
+
+    _out()
+    if report["failed"]:
+        raise ExecutorError("发布失败: " + ", ".join(str(f.get("platform")) for f in report["failed"]))
+    return _out()
+
+
 def exec_dispatch(ctx: StepContext) -> dict[str, str]:
     """builtin.dispatch：飞书投递 + send_ledger 幂等（D2）。
 
@@ -363,6 +501,7 @@ EXECUTORS: dict[str, Callable[[StepContext], dict[str, str]]] = {
     "builtin.render": exec_render,
     "gate.approval": exec_approval,
     "builtin.dispatch": exec_dispatch,
+    "builtin.publish": exec_publish,
 }
 
 

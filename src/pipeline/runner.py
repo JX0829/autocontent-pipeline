@@ -279,7 +279,8 @@ def _resolve_pending(step: dict[str, Any]) -> str:
 def dispatch_policy(cfg: dict[str, Any]) -> tuple[bool, str, list[str]]:
     """T4.7 出片/发片解耦：返回 (output_only, mode, aspects)。"""
     steps = cfg.get("steps") or []
-    dparams = next((s.get("params") or {} for s in steps if s.get("id") == "dispatch"), {})
+    dparams = next((s.get("params") or {} for s in steps
+                    if s.get("id") in ("deliver", "dispatch")), {})
     mode = str(dparams.get("mode") or "publish")
     enabled = bool(dparams.get("enabled", True))
     output_only = (not enabled) or mode == "output_only"
@@ -478,11 +479,17 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
     skip: dict[str, str] = {}
     if output_only:
         skip["approval"] = "output_only 不审批"
-        skip["dispatch"] = "output_only 不发片"
+        skip["deliver"] = "output_only 不投递"
+    skip["dispatch"] = "output_only 不投递"
     if "vertical" not in aspects:
         skip["render_vertical"] = "aspects 未包含 vertical"
     if "landscape" not in aspects:
         skip["render_landscape"] = "aspects 未包含 landscape"
+
+    # v2 发布方案门禁1：publish.enabled 默认 false → 整步 SKIP（不进入执行体）
+    pparams = next((s.get("params") or {} for s in steps if s.get("id") == "publish"), {})
+    if not bool(pparams.get("enabled", False)) or not (pparams.get("platforms") or []):
+        skip["publish"] = "publish.enabled=false 或 platforms 为空（默认关闭）"
 
     print("\n=== 执行 ===")
     print(f"  出片策略: mode={dispatch_mode} · output_only={output_only} · aspects={aspects}")
