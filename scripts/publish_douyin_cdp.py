@@ -67,7 +67,9 @@ def _load_from_run(run_id: str) -> tuple[Path, str, str, list[str]]:
         raise FileNotFoundError(f"缺少 draft_script.json: {script_path}")
     script = json.loads(script_path.read_text(encoding="utf-8"))
     title = str(script.get("title") or "").strip()
-    summary = str(script.get("fact_summary_150") or script.get("content_text") or "").strip()
+    # 简介统一走 src/utils/video_desc（人话、无斜杠命令；老 run 现生成并缓存）
+    from src.utils.video_desc import ensure_desc
+    summary = ensure_desc(script_path.parent, script)
     tags = list(script.get("tags") or script.get("topics") or [])
     if not title:
         raise ValueError(f"{script_path} 缺少 title")
@@ -85,6 +87,17 @@ def _read_works(page) -> tuple[str, str]:
 
 def _open_page(ctx):
     return ctx.pages[0] if ctx.pages else ctx.new_page()
+
+
+def _seed_comment_plan(account: dict, draft: dict) -> tuple[bool, bool, str]:
+    """作者首评：配置在 accounts.yaml 的 seed_comment 块。抖音需 CDP UI 实拍验证后才能开启。"""
+    try:
+        sys.path.insert(0, "/Users/a1/Downloads/workspace/team/project/autocontent-pipeline")
+        from src.utils.seed_comment import resolve
+        return resolve(account, draft, platform="douyin")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"SEED_COMMENT_CFG_FAILED: {exc}")
+        return False, False, ""
 
 
 def publish(video: Path, title: str, summary: str, tags: list[str],
@@ -201,15 +214,21 @@ def main() -> int:
     try:
         if args.run_id:
             video, title, summary, tags = _load_from_run(args.run_id)
+            draft_path = video.parent / "draft_script.json"
+            draft = json.loads(draft_path.read_text(encoding="utf-8")) if draft_path.exists() else {}
         elif args.video and args.title:
             video, title = Path(args.video), args.title
             summary, tags = args.summary, args.tags
+            draft = {}
         else:
             _log("必须提供 --run-id，或 --video 与 --title")
             return 2
         if not video.exists():
             _log(f"视频不存在: {video}")
             return 2
+        seed_on, seed_pin, _ = _seed_comment_plan(account, draft)
+        if seed_on:
+            _log(f"seed_comment: 已配置(置顶={seed_pin})，抖音 CDP 首评链路待实拍验证后启用")
         return publish(video, title, summary, tags, args.cdp_url, args.dry_run, account)
     except FileNotFoundError as exc:
         _log(str(exc))

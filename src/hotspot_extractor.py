@@ -45,6 +45,11 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
 6. hook_narration: 黄金前3秒抓人吸睛口播（严禁超过30字！必须极其简练抓人，不超过30字）
 7. fact_summary_150: 供评论区智能防护沙箱使用的客观核心事实摘要（不超过150字）
+7.1 video_desc: **发布用简介**（100~170字，必填）。要求：
+   - 写给人读的自然口语化书面语，像给朋友介绍这件事，不要罗列要点、不要 ①②③
+   - 严禁出现斜杠命令（如 /tdd、/grill-me、/diagnosing-bugs）、文件名（如 CONTEXT.md）、代码符号、emoji
+   - 不要标题党，不要话题标签，不要「本视频」「点击」「链接」等话术，结尾不要引导语
+   - 三个平台（B站/抖音/视频号）共用这一段，必须脱离上下文也能读懂
 8. resource_keyword: 选题英文标识或项目简称（从输入项目中提取英文标识，如 t3code, browser 等，用于任务标识与目录命名，不超过10字）
 9. scenes: 严格包含 3 到 4 个分镜场景（每个分镜包含 scene_index, segment_narration, visual_type, highlight_text, sfx_cue）：
    - scene_index: 0, 1, 2, 3
@@ -62,15 +67,22 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 
 你必须只输出纯 JSON 字符串，严禁包含任何 Markdown 格式标记（如 ```json ）。"""
 
-def get_recent_pipeline_topics(limit: int = 50) -> list:
-    """从本地数据库获取最近已处理/已生成的短视频主题"""
+def get_recent_pipeline_topics(limit: int = 50, exclude_task_id: str | None = None) -> list:
+    """从本地数据库获取最近已处理/已生成的短视频主题
+
+    exclude_task_id: 排除当前正在处理的 task_id。
+    intake 会先把物料标题写入 content_tasks(entity_key)，若不排除，
+    当前选题会被自己拉进「排他黑名单」，模型据此判重复而拒答。
+    """
     db_path = PROJECT_ROOT / "data" / "pipeline_state.db"
     if not db_path.exists():
         return []
     try:
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
-        c.execute("SELECT task_id, entity_key, draft_script_json, created_at FROM content_tasks ORDER BY created_at DESC LIMIT ?", (limit,))
+        c.execute("SELECT task_id, entity_key, draft_script_json, created_at FROM content_tasks "
+                  "WHERE (? IS NULL OR task_id != ?) ORDER BY created_at DESC LIMIT ?",
+                  (exclude_task_id, exclude_task_id, limit))
         rows = c.fetchall()
         topics = []
         for tid, ek, dj, cat in rows:
@@ -130,7 +142,7 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
     llm = LLMClient("llm.main")
 
     # 1. 查询近期已制作的排他黑名单
-    recent_topics = get_recent_pipeline_topics(limit=30)
+    recent_topics = get_recent_pipeline_topics(limit=30, exclude_task_id=task_id)
     exclude_items = []
     for rt in recent_topics:
         t_desc = rt.get("title") or rt.get("slug") or rt.get("entity_key")
@@ -168,6 +180,15 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
             raise
 
         raw_json = json.dumps(data, ensure_ascii=False)
+
+        # 模型可能返回状态信封（skipped/rejected/no_eligible_topic），不是合法分镜
+        if isinstance(data, dict) and data.get("status") and not data.get("theme"):
+            reason = str(data.get("reason") or data.get("message") or data.get("status"))
+            logger.warning(f"[Attempt {attempt+1}] 模型返回状态信封 status={data.get('status')} reason={reason[:200]}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "user", "content": "你必须直接输出完整合法的 DraftScriptPayload JSON（含 theme/entity_key/title/scenes 等字段），不要返回 status 信封。"})
+                continue
+            raise ValueError(f"模型连续 {max_retries} 次拒绝生成分镜，最后原因: {reason[:300]}")
 
         # 校验合法性
         payload = DraftScriptPayload(**data)

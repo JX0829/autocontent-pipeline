@@ -19,6 +19,11 @@ class DraftScriptPayload(BaseModel):
     cover_sub_text: str = Field(..., max_length=30)
     hook_narration: str = Field(..., max_length=50)
     fact_summary_150: str = Field(..., max_length=200)
+    video_desc: Optional[str] = Field(
+        default=None,
+        max_length=240,
+        description="发布用简介（人话，100~170字）：禁斜杠命令、文件名、emoji、话题标签，供三平台统一取用",
+    )
     resource_keyword: str = Field(..., max_length=20)
     template_id: Optional[str] = Field(
         default="auto",

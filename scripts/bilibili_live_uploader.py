@@ -19,14 +19,40 @@ from bilibili_api import Credential, video_uploader
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video", required=True)
+    parser.add_argument("--video", required=False, default="")
     parser.add_argument("--cover", required=False, default="")
-    parser.add_argument("--title", required=True)
-    parser.add_argument("--desc", required=True)
-    parser.add_argument("--tags", required=True)
+    parser.add_argument("--title", required=False, default="")
+    parser.add_argument("--desc", required=False, default="")
+    parser.add_argument("--tags", required=False, default="")
+    parser.add_argument("--run-id", required=False, default="",
+                        help="从 output/*/<run_id>/ 自动取横版视频、标题、人话简介与标签（推荐）")
     parser.add_argument("--tid", type=int, default=231)
     parser.add_argument("--only-self", action="store_true", default=False)
     args = parser.parse_args()
+
+    run_root = None
+    # --run-id 模式：文案统一走 src/utils/video_desc，避免各平台各写一套
+    if args.run_id:
+        PROJ = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline")
+        sys.path.insert(0, str(PROJ))
+        hits = sorted(PROJ.glob(f"output/*/{args.run_id}/video_16_9.mp4"), key=lambda p: p.stat().st_mtime)
+        if not hits:
+            print(json.dumps({"error": f"找不到 run '{args.run_id}' 的 video_16_9.mp4"}))
+            sys.exit(2)
+        run_root = hits[-1].parent
+        args.video = args.video or str(hits[-1])
+        args.cover = args.cover or str(run_root / "cover_16_9.png")
+        draft = json.loads((run_root / "draft_script.json").read_text(encoding="utf-8"))
+        from src.utils.video_desc import build_desc
+        args.title = args.title or str(draft.get("title") or "")[:80]
+        args.desc = args.desc or build_desc(draft, platform="bilibili", run_root=run_root)
+        if not args.tags:
+            args.tags = ",".join(str(t) for t in (draft.get("tags") or []))
+
+    missing = [k for k in ("video", "title", "desc", "tags") if not getattr(args, k)]
+    if missing:
+        print(json.dumps({"error": f"缺少参数: {', '.join(missing)}（或使用 --run-id）"}))
+        sys.exit(2)
 
     cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
     if not cookie_file.exists():
@@ -96,6 +122,44 @@ async def main():
 
     uploader._submit = patched_submit
     res = await uploader.start()
+
+    # ── 作者首评（seed_comment）────────────────────────────────────────────
+    # 配置在 config/accounts.yaml 的 seed_comment 块；接口偶发 -404（稿件刚落库）需重试
+    try:
+        aid = None
+        if isinstance(res, dict):
+            aid = res.get("aid") or (res.get("data") or {}).get("aid")
+        seed_enabled, seed_pin, seed_text = (False, False, "")
+        if args.run_id and run_root:
+            sys.path.insert(0, "/Users/a1/Downloads/workspace/team/project/autocontent-pipeline")
+            import yaml
+            from src.utils.seed_comment import resolve
+            cfg_path = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/config/accounts.yaml")
+            accounts = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}).get("accounts", [])
+            acc = next((a for a in accounts if a.get("platform") == "bilibili" and a.get("id") == "bilibili-tech-main"), {})
+            draft_path = run_root / "draft_script.json"
+            draft = json.loads(draft_path.read_text(encoding="utf-8")) if draft_path.exists() else {}
+            seed_enabled, seed_pin, seed_text = resolve(acc, draft, platform="bilibili")
+
+        if seed_enabled and aid:
+            from src.providers.bilibili_comment import BilibiliCommentClient
+            client = BilibiliCommentClient()
+            post = client.post_and_top_comment(int(aid), seed_text) if seed_pin else client.add_top_level_comment(int(aid), seed_text)
+            rpid = post.get("rpid")
+            if seed_pin and rpid and not post.get("top_success"):
+                import time as _t
+                for i in range(3):
+                    _t.sleep(15)
+                    top = client.top_comment(int(aid), int(rpid), 1)
+                    if top.get("success"):
+                        post["top_success"] = True
+                        post["top_attempts"] = i + 1
+                        break
+            res = {"upload": res, "seed_comment": post} if isinstance(res, dict) else {"upload": res, "seed_comment": post}
+    except Exception as exc:  # noqa: BLE001 - 首评失败不能吞掉上传结果，但必须可见
+        logger_msg = f"SEED_COMMENT_FAILED: {exc}"
+        print(json.dumps({"seed_comment_error": logger_msg}, ensure_ascii=False))
+
     print(json.dumps(res, ensure_ascii=False))
 
 if __name__ == "__main__":

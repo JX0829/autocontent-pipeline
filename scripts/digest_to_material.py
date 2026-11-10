@@ -88,8 +88,55 @@ def clean_body(text: str) -> str:
     return t.strip()
 
 
+def _pick_title(raw: str, shortener, context: str = "") -> str:
+    """标题选择：优先完整短句（不按空格切，避免只剩 'Enterprise' 这种残词）"""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= TITLE_MAX:
+        return raw
+    # 先按中文句读切分，取第一个长度合适的完整分句
+    for part in re.split(r"[！!？?。；;：:|｜]+", raw):
+        part = part.strip()
+        # 丢掉被上游截断的残句（含 ... / …），避免把半截话当标题
+        if "..." in part or "…" in part:
+            continue
+        if 8 <= len(part) <= TITLE_MAX:
+            return part
+    # 混合中英长标题：交给 LLM 语义重拟（≤20 字），失败再退回本地压缩
+    sys_prompt = ("你是中文科技媒体标题编辑。把标题改写成不超过20个字的中文标题，"
+                  "保留核心主体与动作；禁止引号、禁止省略号（...或…）、禁止编号、禁止截断词。")
+    user_prompt = raw if not context else f"标题：{raw}\n正文参考：{context[:120]}"
+    for attempt in range(2):
+        try:
+            from src.llm.client import LLMClient
+            cli = LLMClient("llm.fast")
+            out = cli.complete(
+                [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+            )
+            cand = str(out or "").strip().strip('"“”').replace("\n", "").strip()
+            if ("..." in cand) or ("…" in cand) or not (8 <= len(cand) <= TITLE_MAX):
+                print(f"[WARN: 标题候选不合格（第{attempt+1}次）: {cand!r}]", file=sys.stderr)
+                continue
+            return cand
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN: 标题 LLM 重拟失败: {exc}]", file=sys.stderr)
+            break
+    # 再退回语义重拟（其内部有前缀/后缀/长词压缩策略）
+    return shortener(raw, max_chars=TITLE_MAX)
+
+
+def _has_cjk(s: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in (s or ""))
+
+
 def to_material(item: dict, account: str | None = None) -> dict:
     from src.utils.text_sanitizer import ensure_clean_short_title
+    from src.crawlers.atomic_fetchers import translate_to_zh, _clean_desc_text, _overlap_ratio
 
     raw_title = str(item.get("title") or "").strip()
     # 平台前缀（如「推特先锋: @xxx: 」）先剥离再重拟，避免把账号名塞进标题
@@ -100,7 +147,19 @@ def to_material(item: dict, account: str | None = None) -> dict:
     body = clean_body(item.get("desc") or "")
     url = str(item.get("url") or "").strip()
 
-    title = ensure_clean_short_title(raw_title, max_chars=TITLE_MAX)
+    # 英文源（官方博客/X）先中文化，再做标题重拟
+    if not _has_cjk(raw_title):
+        zh = translate_to_zh(raw_title)
+        if zh and _has_cjk(zh):
+            raw_title = zh
+    if body:
+        body = _clean_desc_text(body)   # 去重复句 / 标点整形 / 去噪声
+    if body and not _has_cjk(body):
+        zh_body = translate_to_zh(body)
+        if zh_body and _has_cjk(zh_body):
+            body = zh_body
+
+    title = _pick_title(raw_title, ensure_clean_short_title, context=body)
 
     # 标题过短/过于泛化（如 "Introducing"）时，用正文首句补足语义
     if len(title) < 8:
@@ -111,6 +170,19 @@ def to_material(item: dict, account: str | None = None) -> dict:
 
     if not title:
         raise ValueError("该条目没有可用标题")
+
+    # 正文去重：相邻句高度重合（RSS 常见「标题句 + 标题句扩写」）只留一句
+    if body:
+        _sents = [x for x in re.split(r"(?<=[。！？!?])", body) if x.strip()]
+        _kept: list[str] = []
+        for _s in _sents:
+            if _kept and _overlap_ratio(_kept[-1], _s) > 0.6:
+                continue
+            _kept.append(_s)
+        body = "".join(_kept).strip()
+        # 首句若与标题高度重合，说明只是把标题又说了一遍 → 去掉
+        if _kept and _overlap_ratio(title, _kept[0]) > 0.55:
+            body = "".join(_kept[1:]).strip()
 
     material: dict = {"title": title, "account": account}
     if body:

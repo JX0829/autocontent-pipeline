@@ -103,3 +103,6 @@ renderer/public/runs/
 
 # 删除类改造的本地备份（可回滚，不入库）
 backup/
+
+# 审批裁决文件（运行期状态，不入库）
+data/approvals/

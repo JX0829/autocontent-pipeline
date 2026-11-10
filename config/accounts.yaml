@@ -11,6 +11,10 @@ accounts:
     declare_aigc: true
     max_daily_tasks: 4
     private_domain_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，评论区AI已接入，欢迎交流～"
+    seed_comment:                    # 发布后自动发作者首评（漏掉的字段，2026-11-10 补齐）
+      enabled: true                  # 开：发布成功后自动发首评
+      pin: true                     # 能置顶就置顶（首屏默认可见）；平台不支持则降级为普通首评
+      text: ""                       # 留空则用 video_desc 前 120 字 + 欢迎语
     enabled: true
 
   - id: "douyin-news-fast"
@@ -40,6 +44,10 @@ accounts:
     is_story: 1                    # 开启 B站竖屏 Story 模式
     is_aigc: 1                     # 声明 AIGC 生成
     no_reprint: 1                  # 原创自制
+    seed_comment:                    # 发布后自动发作者首评（漏掉的字段，2026-11-10 补齐）
+      enabled: true                  # 开：发布成功后自动发首评
+      pin: true                     # 能置顶就置顶（首屏默认可见）；平台不支持则降级为普通首评
+      text: ""                       # 留空则用 video_desc 前 120 字 + 欢迎语
     enabled: true
 
 
@@ -60,5 +68,9 @@ accounts:
     profile_path: "./data/browser_profiles/channels-tech"
     publish_mode: "public"           # 公开分发模式
     declare_aigc: false
+    seed_comment:                    # 发布后自动发作者首评（漏掉的字段，2026-11-10 补齐）
+      enabled: true                  # 开：发布成功后自动发首评
+      pin: true                     # 能置顶就置顶（首屏默认可见）；平台不支持则降级为普通首评
+      text: ""                       # 留空则用 video_desc 前 120 字 + 欢迎语
     enabled: true
 

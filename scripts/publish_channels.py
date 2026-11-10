@@ -146,11 +146,14 @@ def main() -> int:
         body = args.body
     elif args.run_id:
         video, cover, title, tags = load_run(args.run_id)
-        body = ""
         dp = sorted(PROJ.glob(f"output/*/{args.run_id}/draft_script.json"))
         if dp:
             d = json.loads(dp[0].read_text(encoding="utf-8"))
-            body = compose_caption_body(d) or build_body(d)
+            from src.utils.video_desc import build_desc
+            body = build_desc(d, tags=tags, platform="channels", run_root=dp[0].parent,
+                              include_tags=False)
+        else:
+            body = ""
     else:
         ap.error("需要 --run-id 或 --video")
 
