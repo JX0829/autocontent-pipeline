@@ -144,6 +144,19 @@ providers:
     env: {app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET, approval_chat_id: FEISHU_APPROVAL_CHAT_ID}
     profile:
       timeout_sec: 30
+  approval.feishu:                      # 审批渠道 provider（v1.5）：卡片样式绑在这里
+    kind: approval
+    env: {app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET, chat_id: FEISHU_APPROVAL_CHAT_ID}
+    profile:
+      timeout_sec: 600                  # 等人工裁决的超时；超时按 reject 处理
+      card_style: approval_v2           # 卡片样式（approval_v2 | approval_minimal），见 src/approval/styles.py
+      header_template: blue
+      show_publish_matrix: true         # 卡片里是否列出"将发布到哪些平台"
+  approval.cli:                         # 终端审批 provider
+    kind: approval
+    profile:
+      timeout_sec: 600
+      renders_card: false               # 终端不渲染卡片，故不需要 card_style
   db:                                   # v1.3 新增（T1.9）
     kind: storage
     env: {path: SQLITE_DB_PATH}

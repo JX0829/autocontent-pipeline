@@ -138,6 +138,13 @@ def validate_structure(cfg: dict[str, Any], *, check_impls: bool = False) -> lis
         elif kind == "tts":
             if "timeout_sec" not in profile:
                 errors.append(f"providers.{name}(tts) profile 缺 timeout_sec")
+        elif kind == "approval":
+            # 审批 provider 必须声明超时；会渲染卡片的渠道还必须声明样式
+            # （样式与渠道绑定，缺了就是纸面声明）
+            if "timeout_sec" not in profile:
+                errors.append(f"providers.{name}(approval) profile 缺 timeout_sec")
+            if profile.get("renders_card", True) and "card_style" not in profile:
+                errors.append(f"providers.{name}(approval) profile 缺 card_style")
         elif not kind:
             errors.append(f"providers.{name} 缺 kind")
 

@@ -124,8 +124,11 @@ def _scan_chat_reply(svc, chat_id: str, since_ms: int) -> dict[str, Any] | None:
     return None
 
 
-def ask(run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
+def ask(run_id: str, artifacts: dict[str, Any], message: str,
+        profile: dict[str, Any] | None = None) -> dict[str, Any]:
     from src.feishu.approval_service import FeishuApprovalService
+
+    prof = profile or {}
 
     receive_id = os.getenv("FEISHU_APPROVAL_CHAT_ID") or ""
     if not receive_id:
@@ -154,10 +157,22 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
     msg_id = None
     chat_id = ""
     try:
-        from src.feishu.card_builder import FeishuCardBuilder
+        from src.approval.styles import DEFAULT_STYLE, get_style
 
-        card = FeishuCardBuilder.build_approval_card2(
-            run_id=run_id, title=title, targets=_publish_targets(), delivered=True)
+        try:
+            style_fn = get_style(str(prof.get("card_style") or DEFAULT_STYLE))
+        except KeyError as e:                      # 样式名写错 → 显式降级到默认，不静默发空卡
+            logger.warning(f"{e}；已回落到 {DEFAULT_STYLE}")
+            style_fn = get_style(DEFAULT_STYLE)
+
+        card = style_fn(
+            run_id=run_id,
+            title=title,
+            targets=_publish_targets(),
+            delivered=True,
+            header_template=str(prof.get("header_template") or "blue"),
+            show_publish_matrix=bool(prof.get("show_publish_matrix", True)),
+        )
         msg_id = svc.send_approval_card(receive_id=receive_id,
                                         receive_id_type=rec_type, card_content=card)
         if msg_id:
@@ -176,7 +191,7 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
     if not chat_id:
         chat_id = receive_id if rec_type == "chat_id" else ""
 
-    timeout = int(os.getenv("APPROVAL_TIMEOUT_SEC") or "600")
+    timeout = int(prof.get("timeout_sec") or os.getenv("APPROVAL_TIMEOUT_SEC") or "600")
     deadline = time.time() + timeout
     print(f"  [approval] 已发飞书审批（msg_id={msg_id}, chat={chat_id}），"
           f"等待回复，超时 {timeout}s")

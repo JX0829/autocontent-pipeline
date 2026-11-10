@@ -24,7 +24,10 @@ class FeishuApprovalProvider(ApprovalProvider):
 
     def ask(self, run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
         from .feishu import ask  # 延迟导入：避免无 lark_oapi 环境 import 期就炸
-        return ask(run_id, artifacts, message)
+        from .registry import profile_of
+
+        # 渠道自己的配置（卡片样式/超时/是否展示发布矩阵）来自 pipeline.yaml 的 provider profile
+        return ask(run_id, artifacts, message, profile=profile_of(self.name))
 
 
 class CliApprovalProvider(ApprovalProvider):

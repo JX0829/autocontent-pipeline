@@ -1,9 +1,10 @@
 # spec_enhancement.md — AutoContent Pipeline 声明式改造 · 去重加固 · 模型切换韧性
 
-> **文档状态**：`v1.4` · 更新于 2026-11-10 · 基准 commit `60697fd`（工作区含小品未提交修复，见附录 D）
+> **文档状态**：`v1.5` · 更新于 2026-11-10 · 基准 commit `60697fd`（工作区含小品未提交修复，见附录 D）
 > **v1.1 变更**：整合 `qa_xiaopin.md`（2026-11-08→09 模型切换事故复盘）全部 12 类问题，新增 9 个任务、1 个阶段（P5）、2 个 hook、3 节设计约束
 > **v1.2 变更**：① P-1~P-6 内聚缺口修补落位（P4 转为必做、新增 T1.7 物料契约 / T4.5 TTS 接线 / T4.6 审批抽象、修正 `render_landscape` 假依赖、统一横版命名）；② 将小品已落地的横屏/飞书修复**纳入本文档改动范围**（不单独分支），新增 §4.7 接管原则、附录 D 文件状态台账、C7/C8 耦合点、T0.3 规范任务，T3.2/T4.4 按内聚契约重写
 > **v1.3 变更**：交付面（最后一公里）审计 4 处空缺落位 —— 新增 **T0.4 运行时自举**（Remotion 浏览器缺失，阻断级）、**T1.8 投料通道实现**（`builtin.intake` 只有声明无载体）、**T1.9 配置面收敛**（1 死键 + 4 未声明 + 无 fail-fast）、**T4.7 出片与发片解耦**（`output_only`）；配套新增 §1.7 交付面缺口审计（G-A~G-E）、**§4.9 交付面契约**、G9/G10、附录 A 运行时/配置/投料契约；任务总数 31 → **35**
+> **v1.5 变更**：审批渠道 provider 化后的两处「声明即生效」补齐 —— ① `providers.approval.feishu` / `approval.cli` 进 `pipeline.yaml`（此前只有代码内 `register()`，运维改不了渠道）；② 卡片样式下沉到 `src/approval/styles.py` 并由 `profile.card_style` 绑定（新增 `approval_minimal`）；③ GATE-1 增加 `kind: approval` 校验（`timeout_sec` 必填、`renders_card != false` 时 `card_style` 必填）。新增渠道固定为「写类 → register → yaml 声明」三步，见 `RUNBOOK.md` §4.3
 > **执行原则**：本文件是**唯一执行依据**。任何实现与本文件冲突时，先改本文件，再改代码。
 > **中断恢复**：每次任务结束后必须更新 `§2 进度快照`。恢复工作时，从快照中第一个非 `✅` 的任务继续，禁止跳步。
 
@@ -1674,6 +1675,44 @@ mode=auto 都不可用   → 没有可用的审批渠道：feishu(...)；cli(...
 APPROVAL_NONINTERACTIVE=approve + auto → 渠道=cli，decision=approve
 自定义 AlwaysApprove 注册后 mode=always → 直接生效（不改主流程）
 ```
+
+#### 审批 provider 槽位 + 卡片样式绑定（v1.5 补充，2026-11-10）
+
+上节的 Provider 注册表解决了"不再 if/else"，但还有两处不满足「声明即生效」，本节补齐。
+
+**缺口 1：审批 provider 没进 pipeline.yaml**
+
+改造后渠道仍由代码内 `register()` 决定，与 `llm.main` / `tts.tech` 的槽位制不一致 ——
+运维想换渠道只能改代码。
+
+补：`providers.approval.feishu` / `providers.approval.cli`，`kind: approval` + profile。
+
+**缺口 2：卡片样式没和 provider 绑定**
+
+样式写死在 `approval/feishu.py` 里调 `FeishuCardBuilder.build_approval_card2(...)`，
+换样式必须改代码，且样式属于渠道而非流程。
+
+补：
+
+| 文件 | 职责 |
+|---|---|
+| `src/approval/styles.py` | `STYLES = {approval_v2, approval_minimal}`；`get_style()` 名字非法显式抛错 |
+| `src/approval/registry.py` | `load_slot_profiles()` / `profile_of()`：读 pipeline.yaml 中 `kind: approval` 的 profile |
+| `src/approval/providers.py` | 飞书 provider 把 `profile_of(name)` 传给 `ask()` |
+| `src/approval/feishu.py` | `ask(profile=...)`：卡片样式 / 表头色 / 是否展示发布矩阵 / 超时都来自 profile |
+| `src/pipeline/contracts.py` | GATE-1：`kind: approval` 必须有 `timeout_sec`；`renders_card != false` 还必须有 `card_style` |
+
+**新增一个审批 provider = 3 步**（写类 → register → pipeline.yaml 声明槽位），
+详见 `RUNBOOK.md` §4.3。`exec_approval` / runner / 其他渠道均不改。
+纯文本渠道（如 cli）写 `renders_card: false`，不强制 `card_style`。
+
+**实测**：
+
+- `profile_of("feishu")` → `{timeout_sec: 600, card_style: approval_v2, header_template: blue, show_publish_matrix: true}`
+- 样式绑定差异：`approval_v2` 4 个元素 / `approval_minimal` 2 个元素，header template `blue` → `grey`，结构差异 `True`
+- 真发：`approval_minimal` 卡片 `msg_id=om_x100b601bf7a0e8b8c48b13904a23390`，飞书接受
+- 变异测试：删掉 `card_style` → GATE-1 报 `providers.approval.feishu(approval) profile 缺 card_style`
+- `gate1.sh` PASS、`test_task_contracts.py` PASS
 
 #### 发布配置项后置（2026-11-10 追加）
 

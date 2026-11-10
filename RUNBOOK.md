@@ -155,7 +155,62 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 - 无人值守（cron/批处理）→ 用 `DISPATCH_MODE=output_only`，
   或 `APPROVAL_MODE=cli` + `APPROVAL_NONINTERACTIVE=approve`
 - 想限定谁能批 → `APPROVAL_ALLOWED_USERS=ou_xxx,ou_yyy`
-- 改超时 → `APPROVAL_TIMEOUT_SEC=1800`
+- 改超时 → `APPROVAL_TIMEOUT_SEC=1800`（pipeline.yaml 的 profile.timeout_sec 优先）
+
+### 4.3 新增一个审批 provider（照着做，流程代码不用动）
+
+审批渠道是 **provider 槽位**，和 `llm.main` / `tts.tech` 同级。新增渠道（企业微信 / Slack / 钉钉…）只有 3 步：
+
+**第 1 步：写 provider 类**（放 `src/approval/providers.py` 或独立文件）
+
+```python
+from .base import ApprovalProvider
+
+class WecomApprovalProvider(ApprovalProvider):
+    name = "wecom"
+
+    def available(self) -> bool:
+        return bool(os.getenv("WECOM_WEBHOOK"))
+
+    def unavailable_reason(self) -> str:
+        return "wecom: 缺 WECOM_WEBHOOK"
+
+    def ask(self, run_id, artifacts, message) -> dict:
+        # 1) 把审批送到人面前  2) 等裁决  3) 返回统一结构
+        return {"decision": "approve", "decided_by": "wecom:user", "reason": "点了同意"}
+```
+
+**第 2 步：注册**（`src/approval/__init__.py`）
+
+```python
+from .providers import WecomApprovalProvider
+register(WecomApprovalProvider(), override=True)
+```
+
+**第 3 步：在 `pipeline.yaml` 声明槽位**
+
+```yaml
+providers:
+  approval.wecom:
+    kind: approval
+    profile:
+      timeout_sec: 600
+      card_style: approval_v2        # 渲染卡片的渠道；纯文本渠道写 renders_card: false
+```
+
+之后 `APPROVAL_MODE=wecom` 就能用。`exec_approval`、runner、别的渠道**一行都不用改**。
+
+**卡片样式跟 provider 绑定**（不是散在通用 builder 里）：
+
+| 位置 | 作用 |
+|---|---|
+| `src/approval/styles.py` 的 `STYLES` | 样式实现：`approval_v2`（4 元素，含发布矩阵）/ `approval_minimal`（2 元素，免刷屏） |
+| `pipeline.yaml` 的 `profile.card_style` | 指定该渠道用哪个样式 |
+| 新增样式 | 在 `STYLES` 里加个函数 → 改 yaml 字符串，不动流程 |
+
+- 样式名写错 → 打印警告并回落 `approval_v2`，**不会发出空卡**
+- GATE-1 强制校验：`kind: approval` 必须有 `timeout_sec`；`renders_card` 非 `false` 还必须有 `card_style`
+- 改样式后必须能看到卡片结构变化（否则说明没真绑定）
 
 ---
 

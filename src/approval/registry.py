@@ -35,6 +35,48 @@ def list_providers() -> list[dict[str, Any]]:
             for p in REGISTRY.values()]
 
 
+# ---------------------------------------------------------------- 槽位配置
+# pipeline.yaml 里 `providers.<slot>` 中 kind=approval 的 profile，就是该渠道的配置
+# （卡片样式、超时、是否展示发布矩阵…）。这里按"渠道名"建立索引：
+#     providers.approval.feishu.profile → profile_of("feishu")
+_PROFILES: dict[str, dict[str, Any]] = {}
+_PROFILES_LOADED = False
+
+
+def load_slot_profiles(path=None) -> dict[str, dict[str, Any]]:
+    """从 pipeline.yaml 读 kind=approval 的 provider profile（按渠道名索引，幂等）。"""
+    global _PROFILES_LOADED
+    if _PROFILES_LOADED and path is None:
+        return _PROFILES
+    from pathlib import Path
+
+    cfg_path = path or (Path(__file__).resolve().parent.parent.parent / "pipeline.yaml")
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(Path(cfg_path).read_text(encoding="utf-8")) or {}
+    except Exception as e:  # noqa: BLE001 — 配置读不到就用空 profile，不阻塞审批
+        print(f"  [approval] 读取 {cfg_path} 失败，渠道按默认 profile 运行: {e}")
+        cfg = {}
+
+    profiles: dict[str, dict[str, Any]] = {}
+    for slot, pcfg in (cfg.get("providers") or {}).items():
+        if not isinstance(pcfg, dict) or pcfg.get("kind") != "approval":
+            continue
+        channel = str(slot).split(".", 1)[1] if "." in str(slot) else str(slot)
+        profiles[channel.strip().lower()] = dict(pcfg.get("profile") or {})
+    _PROFILES.clear()
+    _PROFILES.update(profiles)
+    _PROFILES_LOADED = True
+    return _PROFILES
+
+
+def profile_of(name: str) -> dict[str, Any]:
+    """取某个渠道的 profile（未声明则空 dict，用内置默认值）。"""
+    load_slot_profiles()
+    return _PROFILES.get((name or "").strip().lower(), {})
+
+
 def resolve(mode: str | None = None, *, fallback_chain: tuple[str, ...] = ("feishu", "cli")
             ) -> tuple[ApprovalProvider, str]:
     """返回 (provider, 选择原因)。
