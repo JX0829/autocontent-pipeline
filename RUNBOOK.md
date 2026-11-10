@@ -460,7 +460,7 @@ sqlite3 data/pipeline_state.db "select dedupe_key,task_id,feishu_msg_id,sent_at 
 ```bash
 bash scripts/verify_all.sh --fast   # 0.7s  静态扫描 5 项（可挂 pre-commit）
 bash scripts/verify_all.sh          # ~2min 再加 GATE-1 声明层契约 + GATE-2 台账幂等
-bash scripts/verify_all.sh --full   # ~12min 再加 GATE-3 端到端真实渲染
+bash scripts/verify_all.sh --full   # 真实渲染，实测约 6–7 分钟（含 GATE-3 端到端）
 ```
 
 单项：
