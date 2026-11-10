@@ -31,6 +31,9 @@ class ChannelsCDPProvider(BaseSocialProvider):
         return state_file.exists()
 
     # ────────────────────────── 真实发布（CDP / Playwright）──────────────────────────
+    # 实测（2026-11-10）：直接访问 /platform/post/create 会被重定向回 /platform 首页，
+    # 必须先进首页再点「发表视频」按钮才会真正进入发布页。这是视频号前端的硬约束。
+    HOME_URL = "https://channels.weixin.qq.com/platform"
     POST_URL = "https://channels.weixin.qq.com/platform/post/create"
 
     def _state_path(self) -> Path:
@@ -48,6 +51,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
         dry_run: bool = False,
         allow_missing_flags: bool = False,
         headless: bool = True,
+        stop_before_publish: bool = False,
     ) -> Dict[str, Any]:
         """真实发布到微信视频号（公开可见 + 原创声明 + AI 声明）。
 
@@ -72,17 +76,29 @@ class ChannelsCDPProvider(BaseSocialProvider):
             video_path=video_path, cover_path=cover_path, title=title,
             content_text=content_text, topics=topics,
             declare_original=declare_original, declare_aigc=declare_aigc,
-            dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=headless))
+            dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=headless,
+            stop_before_publish=stop_before_publish))
 
     async def _publish_live_async(self, video_path: str, cover_path: str, title: str,
                                   content_text: str, topics: list[str],
                                   declare_original: bool, declare_aigc: bool,
                                   dry_run: bool, allow_missing_flags: bool,
-                                  headless: bool) -> Dict[str, Any]:
+                                  headless: bool, stop_before_publish: bool) -> Dict[str, Any]:
+        """真实发布到视频号。2026-11-10 真机实测得出的三条硬约束：
+
+        1. 直接访问 /platform/post/create 会跳回首页，必须先点首页「发表视频」；
+        2. 发布表单在 wujie 微前端 iframe（micro/content/post/create）里，
+           且该 iframe 的 document 被 wujie 代理过 —— **Playwright 的
+           query_selector / locator 在它里面一律返回 0 个元素**，
+           只有 frame.evaluate 能看到真实 DOM。因此本方法所有交互都走 evaluate，
+           上传则用「JS 点隐藏 input → expect_file_chooser 接管」绕开选择器；
+        3. 原创是 label 含「原创标记」的 checkbox；视频号 Web 端**没有** AI 声明控件。
+        """
         import asyncio
+        import re
+
         from playwright.async_api import async_playwright
 
-        ORIGINAL_KEYS = ("原创", "声明原创", "原创声明")
         AIGC_KEYS = ("内容由AI生成", "AI生成", "人工智能生成", "AIGC", "AI创作")
         shot_dir = Path(self.profile_path)
 
@@ -95,105 +111,188 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                             viewport={"width": 1440, "height": 900})
             page = await ctx.new_page()
             try:
-                await page.goto(self.POST_URL, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(6)
+                await page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(5)
 
                 if "login" in page.url.lower():
                     return {"success": False, "published": False, "status": "LOGIN_EXPIRED",
                             "message": "登录态已过期，被重定向到登录页；先跑 scripts/channels_login.py 重新扫码"}
 
-                # 收集可勾选标签，供语义匹配与排障
-                labels = await page.query_selector_all(
-                    "label, .ant-checkbox-wrapper, .weui-desktop-form__check-label, [class*='checkbox']")
-                label_texts: list[tuple[Any, str]] = []
-                for lb in labels[:80]:
-                    try:
-                        t = (await lb.inner_text()).strip().replace("\n", " ")
-                    except Exception as e:  # noqa: BLE001 — 单个元素取文案失败不影响整体
-                        logger.debug(f"读取标签文案失败，跳过该元素: {e}")
-                        continue
-                    if t:
-                        label_texts.append((lb, t))
+                # 进发布页：首页点「发表视频」（直接访问 post/create 会被跳回）
+                if "/post/create" not in page.url:
+                    entry = await page.query_selector("button:has-text('发表视频')")
+                    if not entry:
+                        return {"success": False, "published": False, "status": "CREATE_ENTRY_NOT_FOUND",
+                                "message": "首页找不到「发表视频」入口，无法进入发布页"}
+                    await entry.click()
+                    for _ in range(15):
+                        await asyncio.sleep(1)
+                        if "/post/create" in page.url:
+                            break
+                    if "/post/create" not in page.url:
+                        return {"success": False, "published": False, "status": "CREATE_PAGE_TIMEOUT",
+                                "message": f"点击「发表视频」后未进入发布页，当前 URL={page.url}"}
 
-                def find_label(keys: tuple[str, ...]):
-                    for el, t in label_texts:
-                        if any(k in t for k in keys):
-                            return el, t
-                    return None, ""
+                # 等 wujie iframe 就绪（用 evaluate 探测，不能用 query_selector）
+                ui = None
+                for _ in range(25):
+                    await asyncio.sleep(1)
+                    ui = page.frame(url=re.compile(r"micro/content/post/create"))
+                    if ui:
+                        try:
+                            if await ui.evaluate(
+                                    "!!document.querySelector(\"input[type='file']\")"):
+                                break
+                        except Exception as e:  # noqa: BLE001 — iframe 可能正在重建
+                            logger.debug(f"发布 iframe 尚未就绪: {e}")
+                if not ui:
+                    return {"success": False, "published": False, "status": "IFRAME_NOT_FOUND",
+                            "message": "未找到 wujie 发布 iframe（micro/content/post/create）"}
 
                 if dry_run:
                     await page.screenshot(path=str(shot_dir / "probe_create_page.png"), full_page=True)
                     return {"success": True, "published": False, "status": "DRY_RUN_OK",
-                            "url": page.url,
-                            "labels": [t for _, t in label_texts][:40],
+                            "url": ui.url,
                             "screenshot": str(shot_dir / "probe_create_page.png"),
-                            "message": "页面可访问、登录有效；未上传未发布"}
+                            "message": "发布 iframe 可访问、登录有效；未上传未发布"}
 
-                # 1. 上传视频
-                file_input = await page.query_selector("input[type='file']")
-                if not file_input:
-                    return {"success": False, "published": False, "status": "FILE_INPUT_NOT_FOUND",
-                            "message": "发布页未找到 input[type=file]"}
-                await file_input.set_input_files(video_path)
-
-                editor = None
-                for _ in range(90):          # 最多等 180s（视频解析/转码）
-                    editor = await page.query_selector("[contenteditable='true'], textarea")
-                    if editor:
+                # 1. 上传：JS 点隐藏 input → 接管原生文件选择器
+                uploaded = False
+                for attempt in range(4):
+                    try:
+                        async with page.expect_file_chooser(timeout=20000) as fc:
+                            await ui.evaluate(
+                                "document.querySelector(\"input[type='file']\").click()")
+                        chooser = await fc.value
+                        await chooser.set_files(video_path)
+                        uploaded = True
                         break
+                    except Exception as e:  # noqa: BLE001 — 页面重渲染，重试
+                        logger.debug(f"上传第 {attempt+1} 次失败: {e}")
+                        await asyncio.sleep(3)
+                if not uploaded:
+                    return {"success": False, "published": False, "status": "UPLOAD_FAILED",
+                            "message": "多次重试仍无法通过文件选择器上传视频"}
+
+                # 2. 等编辑器就绪（视频解析/转码，最多 180s）
+                editor_ready = False
+                for _ in range(90):
+                    try:
+                        if await ui.evaluate(
+                                "!!document.querySelector(\"[contenteditable='true'], textarea\")"):
+                            editor_ready = True
+                            break
+                    except Exception as e:  # noqa: BLE001 — iframe 重建中
+                        logger.debug(f"探测编辑器失败（iframe 可能重建）: {e}")
                     await asyncio.sleep(2)
-                if not editor:
+                if not editor_ready:
                     return {"success": False, "published": False, "status": "EDITOR_TIMEOUT",
                             "message": "等待编辑器就绪超时（视频可能仍在转码）"}
 
-                # 2. 填文案（标题 + 正文 + 话题）
+                # 3. 填文案（标题 + 正文 + 话题），走 execCommand 注入
                 tag_str = " ".join(f"#{t}" if not str(t).startswith("#") else str(t) for t in topics[:5])
-                await editor.click()
-                await page.keyboard.type(f"{title}\n\n{content_text[:200]}\n\n{tag_str}", delay=10)
+                payload = f"{title}\n\n{content_text[:200]}\n\n{tag_str}"
+                await ui.evaluate("""(txt) => {
+                    const ed = document.querySelector("[contenteditable='true']")
+                            || document.querySelector("textarea");
+                    if (!ed) return false;
+                    ed.focus();
+                    if (ed.tagName === 'TEXTAREA') {
+                        ed.value = txt;
+                        ed.dispatchEvent(new Event('input', {bubbles: true}));
+                    } else {
+                        document.execCommand('insertText', false, txt);
+                    }
+                    return true;
+                }""", payload)
                 await asyncio.sleep(1)
+                filled_text = await ui.evaluate("""() => {
+                    const ed = document.querySelector("[contenteditable='true']")
+                            || document.querySelector("textarea");
+                    return ed ? (ed.innerText || ed.value || '') : '';
+                }""")
 
-                # 3. 原创声明（fail-closed）
-                orig_el, orig_txt = find_label(ORIGINAL_KEYS)
+                # 4. 原创声明：label 含「原创」的 checkbox（fail-closed）
+                orig_done = False
+                orig_txt = ""
                 if declare_original:
-                    if orig_el is None and not allow_missing_flags:
-                        await page.screenshot(path=str(shot_dir / "fail_original_not_found.png"), full_page=True)
+                    orig_done = bool(await ui.evaluate("""() => {
+                        for (const c of document.querySelectorAll("input[type='checkbox']")) {
+                            let lbl = (c.closest('label') && c.closest('label').innerText) || '';
+                            if (!lbl && c.id) {
+                                const l = document.querySelector(`label[for='${c.id}']`);
+                                if (l) lbl = l.innerText;
+                            }
+                            if (!lbl && c.parentElement) lbl = c.parentElement.innerText || '';
+                            if (lbl.includes('原创')) { c.click(); return true; }
+                        }
+                        return false;
+                    }"""))
+                    if orig_done:
+                        orig_txt = "原创标记 checkbox"
+                        await asyncio.sleep(1)
+                    if not orig_done and not allow_missing_flags:
+                        await page.screenshot(path=str(shot_dir / "fail_original_not_found.png"),
+                                              full_page=True)
                         return {"success": False, "published": False,
                                 "status": "ORIGINAL_CHECKBOX_NOT_FOUND",
-                                "message": "要求勾选原创但页面找不到该控件，已中止发布（fail-closed）",
-                                "labels": [t for _, t in label_texts][:40]}
-                    if orig_el is not None:
-                        await orig_el.click()
-                        await asyncio.sleep(1)
+                                "message": "要求声明原创但 iframe 内找不到原创复选框，已中止（fail-closed）"}
 
-                # 4. AI 合成内容声明（找不到只告警，不阻断；可用 allow_missing_flags 严格化）
-                aigc_el, aigc_txt = find_label(AIGC_KEYS)
-                if declare_aigc and aigc_el is not None:
-                    await aigc_el.click()
-                    await asyncio.sleep(1)
+                # 5. AI 声明：视频号 Web 端无此控件，如实记录
+                aigc_state = "NOT_SUPPORTED_ON_WEB"
+                aigc_txt = ""
+                if declare_aigc:
+                    page_text = await ui.evaluate("document.body.innerText")
+                    hit = next((k for k in AIGC_KEYS if k in page_text), "")
+                    if hit:
+                        aigc_state = "CONTROL_PRESENT_BUT_UNHANDLED"
+                        aigc_txt = hit
+                        logger.warning(f"[CHANNELS] 页面出现「{hit}」，但未实现点击，需人工确认")
+                    else:
+                        logger.warning("[CHANNELS] 视频号 Web 无 AI 声明控件（需手机端补勾）")
 
                 await page.screenshot(path=str(shot_dir / "before_publish.png"), full_page=True)
 
-                # 5. 发表（公开可见是视频号默认；若有「仅自己可见」需确保未选中）
-                btn = await page.query_selector("button:has-text('发表'), button:has-text('发布')")
-                if not btn:
-                    return {"success": False, "published": False, "status": "PUBLISH_BUTTON_NOT_FOUND",
-                            "message": "找不到「发表」按钮，未发布"}
-                await btn.click()
+                if stop_before_publish:
+                    return {"success": True, "published": False, "status": "STOPPED_BEFORE_PUBLISH",
+                            "url": page.url, "declare_original": orig_done,
+                            "original_label": orig_txt, "aigc_state": aigc_state,
+                            "filled_text": filled_text[:200],
+                            "screenshot": str(shot_dir / "before_publish.png"),
+                            "message": "已上传、填文案、勾原创，停在发表前（测试档）"}
 
-                # 6. 验证平台侧确认（URL 跳转 / 成功文案 / 按钮消失）
+                # 6. 发表（点「发表」，若弹二次确认再点「直接发表」）
+                clicked = await ui.evaluate("""() => {
+                    const btn = [...document.querySelectorAll('button')]
+                        .find(b => b.innerText.trim() === '发表' && !b.disabled);
+                    if (!btn) return false;
+                    btn.click();
+                    return true;
+                }""")
+                if not clicked:
+                    return {"success": False, "published": False, "status": "PUBLISH_BUTTON_NOT_FOUND",
+                            "message": "iframe 内找不到可用的「发表」按钮"}
+                await asyncio.sleep(3)
+                await ui.evaluate("""() => {
+                    const c = [...document.querySelectorAll('button')]
+                        .find(b => b.innerText.trim() === '直接发表');
+                    if (c) c.click();
+                }""")
+
+                # 7. 验证平台侧确认（成功文案 / URL 跳转）
                 published = False
                 evidence = ""
                 for _ in range(30):
                     await asyncio.sleep(2)
                     try:
-                        body = await page.inner_text("body")
+                        body = await ui.evaluate("document.body.innerText")
                     except Exception as e:  # noqa: BLE001 — 页面可能正在跳转
-                        logger.debug(f"读取页面正文失败（可能正在跳转）: {e}")
+                        logger.debug(f"读取 iframe 正文失败（可能跳转中）: {e}")
                         body = ""
                     if any(k in body for k in ("发表成功", "已发表", "发布成功")):
                         published, evidence = True, "成功文案"
                         break
-                    if "post/list" in page.url or "platform/post" not in page.url:
+                    if "/post/create" not in page.url:
                         published, evidence = True, f"URL 跳转 {page.url}"
                         break
 
@@ -204,12 +303,12 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     "status": "PUBLISHED" if published else "PUBLISHED_UNVERIFIED",
                     "evidence": evidence,
                     "url": page.url,
-                    "declare_original": bool(orig_el is not None) if declare_original else False,
-                    "declare_aigc": bool(aigc_el is not None) if declare_aigc else False,
+                    "declare_original": orig_done,
+                    "aigc_state": aigc_state,
                     "original_label": orig_txt,
-                    "aigc_label": aigc_txt,
+                    "filled_text": filled_text[:200],
                     "screenshot": str(shot_dir / "after_publish.png"),
-                    "message": ("已发布并验证" if published
+                    "message": ("已发表并取得平台侧证据" if published
                                 else "已点击发表但未取得平台侧证据，请人工确认（不虚报成功）"),
                 }
             finally:

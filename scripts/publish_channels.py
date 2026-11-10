@@ -73,6 +73,8 @@ def main() -> int:
     ap.add_argument("--no-original", action="store_true", help="不勾原创")
     ap.add_argument("--no-aigc", action="store_true", help="不勾 AI 声明")
     ap.add_argument("--headful", action="store_true", help="有头模式（排障用）")
+    ap.add_argument("--stop-before-publish", action="store_true",
+                    help="上传+填文案+声明原创后停在发表前（测试选择器用，不产生公开内容）")
     args = ap.parse_args()
 
     p = ChannelsCDPProvider(ACCOUNT)
@@ -101,7 +103,8 @@ def main() -> int:
         video_path=video, cover_path=cover, title=title, content_text=body,
         topics=list(tags), declare_original=not args.no_original,
         declare_aigc=not args.no_aigc, dry_run=args.dry_run,
-        allow_missing_flags=args.allow_missing_flags, headless=not args.headful)
+        allow_missing_flags=args.allow_missing_flags, headless=not args.headful,
+        stop_before_publish=args.stop_before_publish)
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
     if args.dry_run:
