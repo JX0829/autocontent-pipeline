@@ -222,23 +222,62 @@ class DouyinProvider(BaseSocialProvider):
 
                     logger.info("Clicking publish button for private video...")
                     publish_btn.click()
-                    
-                    # 等待发布完成与页面跳转（最长等待 90 秒）
-                    logger.info("Waiting for upload and publish completion...")
-                    published_success = False
+
+                    # 等待发布完成：只认「发布成功」提示或真实跳转，最长 90 秒
+                    logger.info("Waiting for publish completion signal...")
+                    signal = None
                     for _ in range(45):
                         time.sleep(2)
                         curr_url = page.url
                         if "creator-micro/content/manage" in curr_url or "creator-micro/home" in curr_url:
-                            published_success = True
+                            signal = "url_redirect"
                             break
-                    
-                    time.sleep(3)
+                        try:
+                            body_txt = page.inner_text("body")
+                        except Exception:
+                            body_txt = ""
+                        if "发布成功" in body_txt or "作品已发布" in body_txt:
+                            signal = "toast_publish_success"
+                            break
+                        if "请上传视频" in body_txt or "上传失败" in body_txt or "发布失败" in body_txt:
+                            signal = "error_on_page"
+                            break
+
+                    diag_dir = Path("output/douyin_diag")
+                    diag_dir.mkdir(parents=True, exist_ok=True)
+                    ts = int(time.time())
+                    if signal in (None, "error_on_page"):
+                        try:
+                            page.screenshot(path=str(diag_dir / f"publish_fail_{ts}.png"), full_page=True)
+                            (diag_dir / f"publish_fail_{ts}.txt").write_text(page.inner_text("body"), encoding="utf-8")
+                        except Exception:
+                            pass
+                        logger.error(f"PUBLISH_SIGNAL_MISSING: signal={signal}, diag saved to {diag_dir}")
+                        browser.close()
+                        return {
+                            "success": False,
+                            "error": "PUBLISH_SIGNAL_MISSING",
+                            "signal": signal,
+                            "message": "点击发布后未出现成功信号，判定为未发布（已保存截图与页面文本用于排查）"
+                        }
+
+                    # 权威回读：内容管理列表里必须真实出现该标题，否则一律判失败
+                    logger.info(f"Publish signal={signal}, running authoritative read-back...")
+                    verified = self._verify_published(title)
+                    time.sleep(1)
                     browser.close()
+                    if not verified["found"]:
+                        return {
+                            "success": False,
+                            "error": "READBACK_NOT_FOUND",
+                            "signal": signal,
+                            "message": "发布信号出现但内容管理列表回读未命中该作品，判定未发布（拒绝虚报成功）"
+                        }
                     return {
                         "success": True,
-                        "draft_id": f"private_{int(time.time())}",
-                        "message": "视频已成功以【仅自己可见（私密视频）】提交！双端（网页内容管理与手机抖音App私密作品）已立即可见。"
+                        "draft_id": verified["draft_id"],
+                        "verified_title": verified["title"],
+                        "message": "已确认私密发布成功：内容管理列表真实回读到该作品"
                     }
 
                 else:
@@ -270,6 +309,37 @@ class DouyinProvider(BaseSocialProvider):
         except Exception as e:
             logger.exception(f"Error during Douyin draft saving: {e}")
             return {"success": False, "error": str(e), "message": "保存抖音草稿异常"}
+
+    def _verify_published(self, title: str, wait_sec: int = 45) -> Dict[str, Any]:
+        """权威回读：打开内容管理列表，确认标题真实出现（唯一成功判据）"""
+        key = (title or "").strip()[:14]
+        if not key:
+            return {"found": False, "draft_id": None, "title": None}
+        deadline = time.time() + wait_sec
+        last_count = 0
+        while time.time() < deadline:
+            try:
+                with sync_playwright() as p:
+                    context, browser = self._get_browser_context(p, headless=True)
+                    page = context.new_page()
+                    page.goto(f"{self.CREATOR_URL}creator-micro/content/manage",
+                              wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(8000)
+                    for _ in range(4):
+                        page.mouse.wheel(0, 3000)
+                        page.wait_for_timeout(700)
+                    txt = page.inner_text("body")
+                    browser.close()
+                    last_count = txt.count("作品")
+                    if key in txt:
+                        return {"found": True,
+                                "draft_id": f"readback_{int(time.time())}",
+                                "title": key}
+            except Exception as e:
+                logger.warning(f"read-back attempt failed: {e}")
+            time.sleep(8)
+        logger.error(f"READBACK_NOT_FOUND for key={key}")
+        return {"found": False, "draft_id": None, "title": None}
 
     def sync_published_videos(self) -> list[Dict[str, Any]]:
         """

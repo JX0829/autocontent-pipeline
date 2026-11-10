@@ -53,13 +53,17 @@ class BilibiliProvider(BaseSocialProvider):
         if not os.path.exists(video_path):
             return {"success": False, "draft_id": None, "message": f"Video file not found: {video_path}"}
 
-        # 构造规范化的 B站 简介
-        desc = f"{content_text}\n\n💡 项目完整开源地址已整理，欢迎在评论区交流讨论！"
+        # 构造规范化的 B站 简介（合规铁律：严禁引流词，结尾统一仅此一句）
+        desc = f"{content_text}\n\n欢迎在评论区交流讨论～"
         if declare_aigc:
             desc += "\n\n(本视频包含AI辅助生成内容，请理性甄别)"
 
         tag_list = topics[:10] if topics else ["科技", "计算机技术", "人工智能", "开源项目"]
         tag_str = ",".join(tag_list)
+
+        # 判断可见性与私密模式（必须在上传前确定，确保 --only-self 真正生效）
+        is_private = any(k in self.publish_mode.lower() for k in ["private", "self", "draft", "hidden"])
+        privacy_val = "only_self" if is_private else "public"
 
         # 检查是否具备真实 B站 Credential 凭据以支持直传线上
         cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
@@ -69,41 +73,68 @@ class BilibiliProvider(BaseSocialProvider):
                 import subprocess
                 upload_script = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/scripts/bilibili_live_uploader.py")
                 if upload_script.exists():
-                    p = subprocess.run([
+                    cmd = [
                         "/Users/a1/.agent-reach/tools/bili-cli/venv/bin/python3",
                         str(upload_script),
                         "--video", video_path,
                         "--cover", cover_path,
-                        "--title", title[:80],
+                        "--title", title,
                         "--desc", desc,
                         "--tags", tag_str,
                         "--tid", str(self.tid)
-                    ], capture_output=True, text=True, timeout=180)
-                    if p.returncode == 0:
-                        real_data = json.loads(p.stdout.strip())
-                        real_upload_res = real_data
-                        logger.info(f"Real Bilibili upload successful: {real_data}")
-                        
-                        # 核心新增：自动发表置顶评论闭环 (Pinned Seed Comment)
-                        aid = real_data.get("aid")
-                        if aid:
-                            try:
-                                from .bilibili_comment import BilibiliCommentClient
-                                c_client = BilibiliCommentClient(cookie_file)
-                                seed_msg = f"📌 官方项目与提示词已整理：\n- 体验直通：见视频简介与文档说明\n\n💬 极客交流：\n{content_text[:120]}\n\n欢迎在弹幕与评论区交流探讨细节～"
-                                pin_res = c_client.post_and_top_comment(int(aid), seed_msg)
-                                logger.info(f"Bilibili automatic pinned comment result: {pin_res}")
-                            except Exception as ce:
-                                logger.warning(f"Failed to post automatic pinned comment: {ce}")
-            except Exception as e:
-                logger.warning(f"Real upload attempt failed, falling back to draft staging: {e}")
+                    ]
+                    if is_private:
+                        cmd.append("--only-self")
+                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    if p.returncode != 0:
+                        logger.error(f"Bilibili real upload failed: rc={p.returncode} stderr={p.stderr[-600:]}")
+                        return {
+                            "success": False,
+                            "error": "BILI_UPLOAD_FAILED",
+                            "stderr": p.stderr[-800:],
+                            "message": "B站真实上传失败，未产生稿件（拒绝虚报成功）"
+                        }
+                    real_data = json.loads(p.stdout.strip().splitlines()[-1])
+                    payload = real_data.get("data") if isinstance(real_data.get("data"), dict) else real_data
+                    bvid = (payload or {}).get("bvid") or real_data.get("bvid")
+                    aid = (payload or {}).get("aid") or real_data.get("aid")
+                    code = real_data.get("code", 0)
+                    if code not in (0, None) or not bvid:
+                        return {
+                            "success": False,
+                            "error": "BILI_NO_BVID",
+                            "raw": real_data,
+                            "message": f"B站上传未返回有效 bvid（code={code}），判定失败"
+                        }
+                    real_upload_res = {"bvid": bvid, "aid": aid, "raw": real_data}
+                    logger.info(f"Real Bilibili upload successful: bvid={bvid} aid={aid}")
 
-        # 生成 draft id
-        draft_id = real_upload_res.get("bvid") if real_upload_res else f"bili_draft_{int(os.path.getmtime(video_path))}"
-        
-        # 判断可见性与私密模式
-        is_private = any(k in self.publish_mode.lower() for k in ["private", "self", "draft", "hidden"])
-        privacy_val = "only_self" if is_private else "public"
+                    # 核心新增：自动发表置顶评论闭环 (Pinned Seed Comment)
+                    if aid:
+                        try:
+                            from .bilibili_comment import BilibiliCommentClient
+                            c_client = BilibiliCommentClient(cookie_file)
+                            seed_msg = f"{content_text[:120]}\n\n欢迎在评论区交流讨论～"
+                            pin_res = c_client.post_and_top_comment(int(aid), seed_msg)
+                            logger.info(f"Bilibili automatic pinned comment result: {pin_res}")
+                        except Exception as ce:
+                            logger.warning(f"Failed to post automatic pinned comment: {ce}")
+            except Exception as e:
+                logger.exception(f"Real Bilibili upload exception: {e}")
+                return {
+                    "success": False,
+                    "error": "BILI_UPLOAD_EXCEPTION",
+                    "message": f"B站上传异常：{e}"
+                }
+
+        if not real_upload_res:
+            return {
+                "success": False,
+                "error": "BILI_NO_CREDENTIAL",
+                "message": "缺少 B站登录凭据 data/cookies_bilibili.json，未执行上传"
+            }
+
+        draft_id = real_upload_res.get("bvid")
 
         # 写入本地草稿与待审归档
         draft_record = {
