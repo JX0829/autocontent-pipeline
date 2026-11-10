@@ -59,7 +59,11 @@ accounts:
     publish_mode: "public"            # 公开发布（原 only_self_visible 已切公开）
     tid: 231                         # 科技 -> 计算机技术分区
     declare_aigc: true
-    enabled: true
+    # ⛔ 2026-11-10 下线：与 bilibili-tech-main 重复（同平台同账号类型）。
+    #    该账号没有 mid / cookie_path，活代码只认 bilibili-tech-main
+    #    （scripts/bilibili_live_uploader.py:139 按 id 精确匹配）。
+    #    两个都 enabled 会让审批卡片列两行 B站、发布时发两次。保留记录不删除。
+    enabled: false
 
   - id: "channels-tech-main"
     platform: "channels"
@@ -67,7 +71,8 @@ accounts:
     account_type: "tech"
     profile_path: "./data/browser_profiles/channels-tech"
     publish_mode: "public"           # 公开分发模式
-    declare_aigc: false
+    declare_aigc: false              # Web 端无 AI 声明控件（真机实测 2026-11-10）
+    declare_original: true           # 与 publish_live() 实际勾选保持一致，卡片才不说谎
     seed_comment:                    # 发布后自动发作者首评（漏掉的字段，2026-11-10 补齐）
       enabled: true                  # 开：发布成功后自动发首评
       pin: true                     # 能置顶就置顶（首屏默认可见）；平台不支持则降级为普通首评
