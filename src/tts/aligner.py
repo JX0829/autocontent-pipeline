@@ -65,19 +65,53 @@ def sanitize_narration_guardrail(text: str, is_tail: bool = False) -> str:
     return cleaned
 
 class TTSAligner:
-    def __init__(self, voice="zh-CN-YunxiNeural", rate="+10%"):
+    def __init__(self, voice: str, rate: str):
+        # T4.5：音色/语速必须显式传入（来自 pipeline.yaml 槽位），此处不再有默认值
+        if not voice or not rate:
+            raise ValueError("TTSAligner 需要显式 voice/rate（禁止默认音色兜底）")
         self.voice = voice
         self.rate = rate
+
+    @classmethod
+    def from_slot(cls, slot: str = "tts.tech") -> "TTSAligner":
+        """按 pipeline.yaml 的 providers.<slot>.env 解析音色与语速。
+
+        槽位缺 voice/rate，或对应环境变量未配置 → MissingConfig（拒绝静默降级）。
+        """
+        from src.pipeline.config import MissingConfig, resolve_env
+        from src.pipeline.contracts import load_pipeline
+
+        providers = (load_pipeline().get("providers") or {})
+        spec = providers.get(slot) or {}
+        env_map = spec.get("env") or {}
+        keys = {"voice": env_map.get("voice"), "rate": env_map.get("rate")}
+        missing = [k for k, v in keys.items() if not v]
+        if missing:
+            raise MissingConfig([f"providers.{slot}.env.{k}" for k in missing])
+        vals = {k: resolve_env(v) for k, v in keys.items()}
+        absent = [keys[k] for k, v in vals.items() if not v]
+        if absent:
+            raise MissingConfig(absent)
+        return cls(voice=vals["voice"], rate=vals["rate"])
 
     async def align_draft(
         self,
         draft: DraftScriptPayload,
         task_id: str,
         output_base_dir: str,
-        template_override: str | None = None
+        template_override: str | None = None,
+        props_dir: str | None = None,
+        public_prefix: str | None = None,
     ) -> AlignedRenderPayload:
-        task_audio_dir = os.path.join(output_base_dir, "tasks", task_id)
+        """T4.1：props 与分段音频可落到 run 隔离目录。
+
+        :param props_dir:    音频/JSON 的物理落盘目录（默认 {output_base_dir}/tasks/{task_id}）
+        :param public_prefix: Remotion `staticFile()` 的相对前缀（默认 tasks/{task_id}）。
+                              props 在 run_root 时，由调用方把 public/<prefix> 软链到 props_dir。
+        """
+        task_audio_dir = props_dir or os.path.join(output_base_dir, "tasks", task_id)
         os.makedirs(task_audio_dir, exist_ok=True)
+        public_prefix = public_prefix or f"tasks/{task_id}"
 
         aligned_scenes = []
         # 前置 0.5 秒 (15 帧) 专属封面定格时间，确保各大平台及相册首帧稳妥抓取大标题
@@ -92,8 +126,8 @@ class TTSAligner:
         total_scene_count = len(draft.scenes)
         for scene in draft.scenes:
             idx = scene.scene_index
-            mp3_rel_path = f"tasks/{task_id}/scene_{idx}.mp3"
-            mp3_abs_path = os.path.join(output_base_dir, mp3_rel_path)
+            mp3_rel_path = f"{public_prefix}/scene_{idx}.mp3"
+            mp3_abs_path = os.path.join(task_audio_dir, f"scene_{idx}.mp3")
 
             # 严格经过最高风控门禁清洗
             is_tail_scene = (idx == total_scene_count - 1)
@@ -166,7 +200,7 @@ class TTSAligner:
             cover_sub_text=draft.cover_sub_text,
             resource_keyword=draft.resource_keyword,
             bgm_src="sfx/bgm_loop.wav",
-            footer_callout=get_footer_callout(getattr(draft, "target_account_type", "xiaohongshu")),
+            footer_callout=get_footer_callout(getattr(draft, "target_account_type", "douyin")),
             scenes=aligned_scenes
         )
 

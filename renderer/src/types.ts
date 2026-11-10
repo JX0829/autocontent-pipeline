@@ -36,5 +36,7 @@ export interface AlignedRenderPayload extends Record<string, unknown> {
   resource_keyword: string;
   bgm_src: string;
   footer_callout?: string;
+  /** T4.4：封面右侧三卡取哪几屏，由 pipeline.yaml 的 cover.card_source 声明（默认 [0,1,3]） */
+  cover_card_source?: number[];
   scenes: AlignedSceneItem[];
 }

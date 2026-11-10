@@ -868,59 +868,6 @@ def fetch_github_ai_topics(
     return items
 
 # ─────────────────────────────────────────────────────────────
-# 9. 小红书极客与开发者垂直玩法原子抓取函数
-# ─────────────────────────────────────────────────────────────
-
-def fetch_xiaohongshu_tech(
-    query: str = "AI智能体 OR 大模型架构 OR 开源AI",
-    limit: int = 5,
-    timeout_sec: int = 10
-) -> List[Dict[str, Any]]:
-    """
-    单一信源原子函数：基于 agent-reach opencli 检索小红书前沿技术与开发玩法笔记
-    """
-    items: List[Dict[str, Any]] = []
-    agent_reach_bin = "/Users/a1/.local/bin/agent-reach"
-    if not os.path.exists(agent_reach_bin):
-        return items
-
-    cmd = [agent_reach_bin, "xiaohongshu", "search", query, "--limit", str(limit)]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
-        if res.returncode == 0 and res.stdout.strip():
-            data = json.loads(res.stdout)
-            for it in data.get("items", []):
-                title = it.get("title") or "小红书开发者前沿笔记"
-                url = it.get("url") or ""
-                author = it.get("author") or "小红书极客"
-                pub_at = it.get("published_at") or "今日热点"
-                raw = it.get("raw") or {}
-                
-                # 提取唯一的 note_id 作为去重指纹
-                note_id = ""
-                if "search_result/" in url:
-                    note_id = url.split("search_result/")[1].split("?")[0]
-                elif "discovery/item/" in url:
-                    note_id = url.split("discovery/item/")[1].split("?")[0]
-                else:
-                    note_id = hashlib.md5(url.encode()).hexdigest()[:12]
-
-                items.append({
-                    "title": f"前沿笔记: {title}",
-                    "desc": f"小红书创作者 @{author} 发布的最新 AI 实践与开发者技术探讨",
-                    "url": url,
-                    "source": "xiaohongshu",
-                    "author": author,
-                    "published_at": pub_at,
-                    "badge": "小红书 · 极客",
-                    "unique_id": f"xhs_{note_id}",
-                    "raw": raw
-                })
-    except Exception as e:
-        print(f"[Warning: Xiaohongshu fetch failed]: {e}", file=sys.stderr)
-    return items[:limit]
-
-# ─────────────────────────────────────────────────────────────
 # 10. Twitter (X) 全球 AI 领袖一手动态原子抓取函数
 # ─────────────────────────────────────────────────────────────
 
@@ -940,9 +887,24 @@ def fetch_twitter_x_tech(
     cmd = [agent_reach_bin, "twitter", "search", query, "--limit", str(limit)]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
-        if res.returncode == 0 and res.stdout.strip():
-            data = json.loads(res.stdout)
-            for it in data.get("items", []):
+        if res.returncode != 0:
+            print(f"[ERROR: Twitter fetch exit={res.returncode}] "
+                  f"{(res.stderr or res.stdout or '')[:300]}", file=sys.stderr)
+            return items
+        if not res.stdout.strip():
+            print("[ERROR: Twitter fetch returned empty stdout]", file=sys.stderr)
+            return items
+        data = json.loads(res.stdout)
+        # 🚨 agent-reach 在 backend 不可用时返回 returncode=0 + ok=false + items=[]，
+        #    旧逻辑静默返回空列表，导致 Section 1 长期消失且无任何日志。
+        if data.get("ok") is False:
+            _err = data.get("error") or {}
+            _attempts = (data.get("meta") or {}).get("attempts") or []
+            print(f"[ERROR: Twitter backend unavailable] code={_err.get('code')} "
+                  f"msg={_err.get('message')} attempts={json.dumps(_attempts, ensure_ascii=False)[:300]}",
+                  file=sys.stderr)
+            return items
+        for it in data.get("items", []):
                 text_content = it.get("text") or it.get("title") or ""
                 url = it.get("url") or ""
                 author = it.get("author") or "AI Researcher"
@@ -970,7 +932,191 @@ def fetch_twitter_x_tech(
                     "raw": it
                 })
     except Exception as e:
-        print(f"[Warning: Twitter fetch failed]: {e}", file=sys.stderr)
+        print(f"[ERROR: Twitter fetch failed]: {type(e).__name__}: {e}", file=sys.stderr)
+    if not items:
+        print("[WARN: Twitter/Section 1 本轮抓取 0 条 —— 请检查 9222 端口占用与 opencli 登录态]",
+              file=sys.stderr)
     return items[:limit]
 
 
+
+
+# ---------------------------------------------------------------------------
+# 官方厂商博客通道（Anthropic / OpenAI / DeepMind）
+# 目的：Claude 5.2 这类官方公告能结构性进入速报，而非只靠 X 转发
+# ---------------------------------------------------------------------------
+
+OFFICIAL_FEEDS = [
+    ("openai", "OpenAI 官方", "https://openai.com/news/rss.xml"),
+    ("deepmind", "DeepMind 官方", "https://deepmind.google/blog/rss.xml"),
+]
+OFFICIAL_HTML = [
+    ("anthropic", "Anthropic 官方", "https://www.anthropic.com/news"),
+]
+_UA_BLOG = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+
+def _blog_get(url: str, timeout: float = 20.0) -> str:
+    """带 gzip 解压的 GET（DeepMind 的 RSS 是 gzip 压缩流）"""
+    import gzip
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _UA_BLOG,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Encoding": "gzip, identity",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return raw.decode("utf-8", errors="replace")
+
+
+def _parse_feed_items(xml_text: str, limit: int) -> List[Dict[str, Any]]:
+    """解析 RSS 2.0 / Atom，返回 title/link/date/summary"""
+    out: List[Dict[str, Any]] = []
+    try:
+        root = ET.fromstring(xml_text.encode("utf-8", errors="replace"))
+    except Exception as exc:
+        print(f"[WARN: 官方博客 RSS 解析失败: {exc}]", file=sys.stderr)
+        return out
+
+    def _txt(el) -> str:
+        return "".join(el.itertext()).strip() if el is not None else ""
+
+    for node in root.iter():
+        tag = node.tag.split("}")[-1]
+        if tag not in ("item", "entry"):
+            continue
+        title = link = date = summary = ""
+        for ch in list(node):
+            name = ch.tag.split("}")[-1]
+            if name == "title":
+                title = _txt(ch)
+            elif name == "link":
+                link = (ch.get("href") or _txt(ch) or "").strip()
+            elif name in ("pubDate", "published", "updated", "date"):
+                date = _txt(ch)
+            elif name in ("description", "summary", "content"):
+                summary = _txt(ch)
+        if title and link:
+            out.append({"title": title, "url": link, "date": date,
+                        "summary": _strip_md_noise(summary)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _parse_anthropic_html(html_text: str, limit: int) -> List[Dict[str, Any]]:
+    """Anthropic 无 RSS，从 /news 列表页解析标题与摘要"""
+    out: List[Dict[str, Any]] = []
+    pattern = re.compile(
+        r'href="(/news/[a-z0-9\-]+)"[^>]*>\s*<span[^>]*>\s*<span[^>]*>\s*<h3[^>]*>(.*?)</h3>',
+        re.S,
+    )
+    seen = set()
+    for m in pattern.finditer(html_text):
+        href, raw_title = m.group(1), m.group(2)
+        if href in seen:
+            continue
+        seen.add(href)
+        title = _strip_md_noise(re.sub(r"<[^>]+>", "", raw_title)).strip()
+        if not title or title.lower() in ("announcements", "news"):
+            continue
+        out.append({"title": title, "url": "https://www.anthropic.com" + href,
+                    "date": "", "summary": ""})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_official_blog_posts(limit: int = 4, timeout_sec: float = 25.0,
+                              max_days: int = 7) -> List[Dict[str, Any]]:
+    """抓取官方厂商博客（OpenAI / DeepMind RSS + Anthropic HTML）
+
+    返回统一结构：title/desc/url/source/badge/published_at/unique_id
+    单个源失败只告警不中断，绝不影响其他信源。
+    """
+    items: List[Dict[str, Any]] = []
+    now = datetime.datetime.now()
+
+    for key, label, url in OFFICIAL_FEEDS:
+        try:
+            entries = _parse_feed_items(_blog_get(url, timeout_sec), limit * 3)
+        except Exception as exc:
+            print(f"[WARN: 官方博客 {label} 抓取失败: {exc}]", file=sys.stderr)
+            continue
+        for e in entries:
+            dt = None
+            if e.get("date"):
+                try:
+                    dt = parsedate_to_datetime_safe(e["date"])
+                except Exception:
+                    dt = None
+            if dt is not None and (now - dt).days > max_days:
+                continue
+            desc = shape_desc(e.get("title", ""), [e.get("summary", "")]) if e.get("summary") else e.get("title", "")
+            items.append({
+                "title": e["title"],
+                "desc": desc,
+                "url": e["url"],
+                "source": key,
+                "badge": f"📢 {label}",
+                "published_at": e.get("date") or "",
+                "formatted_cst": e.get("date") or "官方发布",
+                "unique_id": f"{key}_{hashlib.md5(e['url'].encode()).hexdigest()[:12]}",
+            })
+
+    for key, label, url in OFFICIAL_HTML:
+        try:
+            entries = _parse_anthropic_html(_blog_get(url, timeout_sec), limit * 3)
+        except Exception as exc:
+            print(f"[WARN: 官方博客 {label} 抓取失败: {exc}]", file=sys.stderr)
+            continue
+        for e in entries:
+            items.append({
+                "title": e["title"],
+                "desc": e.get("summary") or e["title"],
+                "url": e["url"],
+                "source": key,
+                "badge": f"📢 {label}",
+                "published_at": "",
+                "formatted_cst": "官方发布",
+                "unique_id": f"{key}_{hashlib.md5(e['url'].encode()).hexdigest()[:12]}",
+            })
+
+    if not items:
+        print("[WARN: 官方博客通道本轮 0 条 —— 三个源均失败或全部超期]", file=sys.stderr)
+        return []
+
+    # 按来源轮转交错，避免单一源（OpenAI 条目多）挤掉 DeepMind/Anthropic
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        buckets.setdefault(str(it.get("source")), []).append(it)
+    order = [k for k, _, _ in OFFICIAL_FEEDS] + [k for k, _, _ in OFFICIAL_HTML]
+    merged: List[Dict[str, Any]] = []
+    while len(merged) < limit and any(buckets.get(k) for k in order):
+        for k in order:
+            if buckets.get(k):
+                merged.append(buckets[k].pop(0))
+                if len(merged) >= limit:
+                    break
+    return merged
+
+
+def parsedate_to_datetime_safe(s: str) -> Optional[datetime.datetime]:
+    """RSS 日期兼容解析（RFC822 / ISO8601）"""
+    from email.utils import parsedate_to_datetime
+    s = str(s).strip()
+    try:
+        return parsedate_to_datetime(s).replace(tzinfo=None)
+    except (TypeError, ValueError) as exc:
+        print(f"[DEBUG: RSS 日期非 RFC822 格式，回退 ISO 解析: {s[:24]} ({exc})]", file=sys.stderr)
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.datetime.strptime(s[:len("2026-11-10T12:00:00+00:00")], fmt)
+            return dt.replace(tzinfo=None)
+        except ValueError as exc:
+            print(f"[DEBUG: 日期格式不匹配 {fmt}: {exc}]", file=sys.stderr)
+    print(f"[WARN: RSS 日期无法解析，按无日期处理: {s[:24]}]", file=sys.stderr)
+    return None

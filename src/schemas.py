@@ -14,11 +14,16 @@ class SceneItemDraft(BaseModel):
 class DraftScriptPayload(BaseModel):
     theme: Literal["tech-github", "ai-product", "breaking-news"]
     entity_key: str
-    title: str = Field(..., max_length=20, description="小红书/抖音双列瀑布流极客标题，严格限制在20字以内")
+    title: str = Field(..., max_length=20, description="抖音/视频号双列瀑布流极客标题，严格限制在20字以内")
     cover_main_text: str = Field(..., max_length=20)
     cover_sub_text: str = Field(..., max_length=30)
     hook_narration: str = Field(..., max_length=50)
     fact_summary_150: str = Field(..., max_length=200)
+    video_desc: Optional[str] = Field(
+        default=None,
+        max_length=240,
+        description="发布用简介（人话，100~170字）：禁斜杠命令、文件名、emoji、话题标签，供三平台统一取用",
+    )
     resource_keyword: str = Field(..., max_length=20)
     template_id: Optional[str] = Field(
         default="auto",

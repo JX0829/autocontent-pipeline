@@ -1,0 +1,7 @@
+{
+  "title": "OpenAI开源了Codex的Agent骨架",
+  "body": "海外开发者在 X 上发现，OpenAI 的 Codex 仓库已经公开了完整的 agent harness，也就是在终端里运行的那个编码智能体本体，包含 Rust 实现的 codex-rs 与命令行外壳。该仓库当前 13.4 万星、2.1 万 fork，最近一次推送就在 11 月 9 日，最新版本 v0.167.0 还新增了 agents 命令中心与跨后端切换能力。这意味着开发者可以照着这套骨架自建同类终端智能体，而不只是调用 API。这条推文发布一天内获得 15.9 万浏览、1200 次点赞。",
+  "source_url": "https://x.com/daiki1003/status/2119479131083809151",
+  "account": "douyin-tech-main",
+  "task_id": "news_codex_harness_20261110"
+}

@@ -37,7 +37,7 @@ def is_mediacrawler_available() -> bool:
     return VENV_PYTHON.exists() and (MEDIACRAWLER_DIR / "main.py").exists()
 
 def search_media_trending(
-    platform: str = "xhs",
+    platform: str = "dy",
     keywords: str = "AI,大模型,开源",
     max_count: int = 5,
     timeout_sec: int = 8
@@ -45,7 +45,7 @@ def search_media_trending(
     """
     通用搜索适配器：
     调用 MediaCrawler 官方 search 命令行获取内容
-    :param platform: xhs | dy | bili | wb | tieba | zhihu
+    :param platform: dy | bili | wb | tieba | zhihu（2026-11-09 起小红书 xhs 已下线）
     :param keywords: 搜索关键词（英文逗号隔开）
     :param max_count: 最大爬取条数
     :param timeout_sec: 超时时间（秒）
@@ -60,7 +60,6 @@ def search_media_trending(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     probe_cfg = load_probe_config()
-    xhs_probe = probe_cfg.get("xiaohongshu_probe", {})
 
     cmd = [
         str(VENV_PYTHON),
@@ -77,19 +76,8 @@ def search_media_trending(
         "--get_media=false"
     ]
 
-    # 动态注入只读探针 Cookie（优先从配置或环境变量读取，绝对隔离主号）
-    probe_cookie = os.getenv("XHS_PROBE_COOKIE") or xhs_probe.get("cookies", "")
-    if probe_cookie:
-        cmd.extend(["--lt=cookie", f"--cookies={probe_cookie}"])
-
-    # 动态注入探针代理
-    probe_proxy = os.getenv("XHS_PROBE_PROXY") or xhs_probe.get("proxy_url", "")
-    if (xhs_probe.get("enable_proxy", False) or os.getenv("XHS_PROBE_PROXY")) and probe_proxy:
-        cmd.extend([
-            "--enable_ip_proxy=true",
-            "--ip_proxy_provider_name=static",
-            f"--static_proxy_url={probe_proxy}"
-        ])
+    # 只读探针 Cookie/代理：小红书下线后不再注入（原 xiaohongshu_probe 配置已移除）
+    _ = probe_cfg
 
     logger.info(f"Executing MediaCrawler: platform={platform}, keywords={keywords}, max_count={max_count}")
     try:

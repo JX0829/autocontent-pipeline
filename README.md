@@ -68,18 +68,16 @@
 ## 🏗️ Architecture / 架构与控制流
 
 ```text
-[阶段 1: 全网热点雷达] ➔ [阶段 2: 语音与对齐] ➔ [阶段 3: 视频渲染]
-       ↓                        ↓                       ↓
-fetch_trends.py             aligner.py          render_hotspot.py
-(GitHub/Reddit/V2EX/Probe)                              ↓
-                                                [阶段 4: 消息推送]
+[阶段 1: 物料/热点] ➔ [阶段 2: 语音与对齐] ➔ [阶段 3: 双模态渲染]
+       ↓                      ↓                      ↓
+runner --material        aligner (edge-tts)     Remotion (竖版+横版)
                                                         ↓
-[阶段 6: 动态多平台分发] ⬅ [阶段 5: HITL 审批流] ⬅   approval_service.py
-       ↓                         ↓
-run_publish_worker.py       统一网关 / Event Bus
- ├── 📺 B站: 私密草稿箱 (BV...)
- ├── 📲 视频号: 公域分发/草稿
- └── 📕 真机辅助模式: 纯净素材即时推送
+                                              [阶段 4: HITL 审批]
+                                                        ↓
+[阶段 6: 平台分发] ⬅ [阶段 5: 产物交付 / 飞书素材]
+       ↓
+src/providers/* (B站 / 抖音 / 视频号)
+ └── 执行入口见 RUNBOOK.md §2③ 与 §5.1
 ```
 
 ### Directory Structure / 核心目录
@@ -97,11 +95,10 @@ autocontent-pipeline/
 │   └── browser_profiles/        # 微信视频号助手等持久化会话
 ├── renderer/                    # Remotion 4.x React 视频渲染引擎
 ├── scripts/                     # 流程编排与后台服务脚本
-│   ├── auto_generate_from_digest.py # 总控：热点生成与审批卡片推送
-│   ├── bilibili_live_uploader.py    # B站官方 API 直传脚本 (含 AIGC 声明)
-│   ├── channels_login_flow.py       # 微信视频号扫码登录与会话持久化辅助
-│   ├── channels_live_publisher.py   # 微信视频号助手自动化发布脚本
-│   └── run_publish_worker.py        # 统一多平台动态分流引擎
+│   ├── verify_all.sh                # 统一验收入口 (--fast / 默认 / --full)
+│   ├── send_run_artifacts.py        # output_only 产物交付（竖横各 2 件）
+│   ├── poll_all_comments.py         # 三平台评论巡检统一调度（cron 入口）
+│   └── hooks/                       # pipeline.yaml 声明的 21 个执行钩子
 └── src/                         # 核心模块
     ├── crawlers/                # 社交热点适配器 (MediaCrawler, Agent Reach, X CLI)
     ├── feishu/                  # 消息与审批卡片构建
