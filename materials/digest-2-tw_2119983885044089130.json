@@ -1,0 +1,12 @@
+{
+  "title": "Coding Agent先理需求再改代码",
+  "account": "douyin-tech-main",
+  "body": "Coding Agent 还没搞清需求就开始改代码？可以试试 Matt Pock 开源的这套 Skills。 先用 /grill-me 或 /grill-with-docs 追问需求，再整理成 CONTEXT.md 和 ADR；开发时用 /tdd，排查疑难 Bug 则交给 /diagnosing-bugs。 它不接管整个项目，而是把需求梳理、开发和调试拆成可复用流程。Claude Code",
+  "source_url": "https://x.com/i/status/2119983885044089130",
+  "_digest": {
+    "badge": "X · 先锋推文",
+    "published_at": "Tue Nov 10 02:42",
+    "unique_id": "tw_2119983885044089130",
+    "source": "twitter"
+  }
+}

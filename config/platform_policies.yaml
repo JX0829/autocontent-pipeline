@@ -2,20 +2,8 @@
 # 多平台差异化文本与互动策略配置中心 (autocontent-pipeline)
 
 platforms:
-  xiaohongshu:
-    display_name: "小红书"
-    freeze_until: "2026-11-06"
-    status: "active_readonly"           # 冷冻期已解除（2026-11-06 到期）：恢复只读巡检，仍严禁任何自动化写入
-    text_policy:
-      footer_callout: "💡 欢迎评论区交流"
-      seed_comment_hook: "开源项目直接在 GitHub 搜索对应项目名即可查看源码，欢迎评论区交流～"
-      max_title_chars: 20                  # 小红书 MCP 发布工具硬校验 <= 20 字符
-      filter_ai_keywords: true             # 严格过滤“AI回复/自动回复/脚本”等敏感词
-      declare_aigc: false
-    interaction_policy:
-      reply_mode: "manual_approval"        # 严格人工闭环：仅生成拟稿并推送到飞书，由人工在手机App端手动回复
-      allow_direct_api_reply: false       # 严禁脚本直接调用 API / CDP 回复
-      enable_background_polling: true     # 只读轮询已恢复：拉取评论 → AI 拟写建议 → 飞书代码块推送手机复制
+  # ⛔ 小红书（xiaohongshu）已于 2026-11-09 彻底下线：账号被封禁，
+  #    相关 provider / 巡检 / 登录脚本 / 策略 / 账号配置已全部移除（备份见 backup/xhs_removed_*）。
 
   douyin:
     display_name: "抖音"

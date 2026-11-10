@@ -13,6 +13,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.db import PipelineDB
+from src.utils.accounts import for_platform
 from src.safety.comment_funnel import CommentSafetyFunnel
 from src.providers.douyin import DouyinProvider
 import yaml
@@ -32,9 +33,8 @@ def poll_and_reply_live_comments():
     db = PipelineDB(str(PROJECT_ROOT / "data" / "pipeline_state.db"))
     funnel = CommentSafetyFunnel()
 
-    with open(PROJECT_ROOT / "config" / "accounts.yaml") as f:
-        cfg = yaml.safe_load(f)
-    acc = [a for a in cfg["accounts"] if a["id"] == "douyin-tech-main"][0]
+    # T4.2：账号从配置按平台解析，不在代码里写死账号 ID
+    acc = for_platform("douyin")
     provider = DouyinProvider(acc)
 
     from playwright.sync_api import sync_playwright
@@ -199,7 +199,7 @@ def poll_and_reply_live_comments():
                         continue
 
                 logger.info(f"Processing new live comment: '{comment_text}' by {user_name} on '{v_title[:20]}'")
-                res = funnel.process_comment(comment_text, fact_summary, keyword, hook)
+                res = funnel.process_comment_safe(comment_text, fact_summary, keyword, hook)
                 reply_content = res.get("reply")
                 logger.info(f"Funnel verdict: Classification={res['classification']}, Reply='{reply_content}'")
 

@@ -1,0 +1,377 @@
+# pipeline.yaml —— AutoContent Pipeline 声明层（唯一执行依据）
+# 由 spec_enhancement.md 附录 A 逐字落盘，二者必须保持一致：
+#   改流程 = 先改 spec 附录 A → 再同步本文件 → 再改代码（执行原则）
+# 本文件只声明契约，不含业务逻辑；禁止出现任何模型名（contract.model_decoupling）
+
+schema_version: "1.0"
+
+pipeline:
+  id: "autocontent"
+  name: "科技短视频生产流水线"
+  version: "1.3.0"
+  description: "从收到物料到竖版/横版成片的声明式流水线。只声明契约，不含业务逻辑。"
+
+requires:
+  python: ">=3.10"
+  binaries: [ffmpeg, ffprobe, npx, tesseract]
+  renderer: "remotion>=4"
+  browser:                              # v1.3（T0.4）：不声明浏览器 = 首次渲染联网下载 150MB
+    engine: chrome-headless-shell
+    probe: ["renderer/node_modules/.remotion", "~/Library/Caches/remotion"]
+    ensure_cmd: "npx remotion browser ensure"
+  fonts: [Noto Sans CJK SC]             # v1.3（T0.4）：缺字体导致 OCR bbox 判据失效
+
+contract:
+  isolation:
+    run_root: "output/{date}/{run_id}"
+    forbid_shared_dirs: ["renderer/public/tasks"]
+    template_vars: [date, run_id, task_id, account, aspect]
+  artifact_naming:                       # v1.2（P-6）：产物名唯一来源，代码不得各自命名
+    vertical:  {video: "video.mp4",          cover: "cover.png"}
+    landscape: {video: "video_16_9.mp4",     cover: "cover_16_9.png"}
+    enforce_single_source: true
+  material_contract:                     # v1.2（P-2）：物料契约唯一来源
+    schema: manifest.schema.json
+    forbid_inline_task_lists: ["NEWS_TASKS", "TASKS_DATA"]
+  config_binding:                        # v1.2（P-3/P-4）：声明即生效，禁止死键
+    require_all_env_keys_consumed: true
+    forbid_hardcoded_voice: true
+    approval_modes: [feishu, cli, auto]
+    fail_fast_missing: true              # v1.3（T1.9）：必填键缺失启动即退出
+    exit_code_missing: 78
+    required_env:                        # v1.3（T1.9）：runner 第 0 步校验，缺一即拒跑
+      - LLM_BASE_URL
+      - LLM_API_KEY
+      - LLM_MODEL_MAIN
+      - LLM_MODEL_FAST
+      - TTS_VOICE_TECH
+      - TTS_VOICE_NEWS
+      - TTS_RATE
+      - SQLITE_DB_PATH
+    optional_env:                        # v1.3（T1.9）：只在对应分支需要，缺失不阻断
+      - FEISHU_APP_ID
+      - FEISHU_APP_SECRET
+      - FEISHU_APPROVAL_CHAT_ID
+      # T4.6 审批渠道（src/approval/*）：缺省走 auto，不配也能跑
+      - APPROVAL_MODE                    # feishu | cli | auto（默认 auto）
+      - APPROVAL_NONINTERACTIVE          # cli 非 tty 时必须显式 approve/reject，否则 fail closed
+      - APPROVAL_TIMEOUT_SEC             # 等待裁决超时秒数（默认 600）
+      - APPROVAL_ALLOWED_USERS           # 逗号分隔 open_id，限定谁能批（缺省不限）
+      - APPROVAL_PUBLISH_TARGETS         # off 则不展示"将发布到哪些平台"；缺省展示默认矩阵
+      # T4.7 出片/发片解耦：publish（默认）| output_only（只出片不发片）
+      - DISPATCH_MODE
+      - DOUYIN_CDP_URL                    # 抖音 CDP 调试端口地址（默认 http://127.0.0.1:9222）
+      - TWITTER_PROXY
+      - TWITTER_CT0
+      - TWITTER_AUTH_TOKEN
+      - AUTOCONTENT_ENV_FILE
+      - AUTOCONTENT_DATA_DIR
+      - AUTOCONTENT_ALERTS_FILE
+      - FEISHU_DEFAULT_CHAT_ID
+  runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
+    script: scripts/bootstrap.py
+    enforce_on_start: true
+    forbid_network_on_first_render: true
+  intake_carriers:                       # v1.3（T1.8）：三载体共用一份 schema
+    allowed: [cli, stdin, feishu_file]
+    single_schema: manifest.schema.json
+    forbid_per_carrier_field_fill: true
+  model_decoupling:
+    forbidden_literals: ["deepseek", "gemini", "gpt", "claude", "qwen"]
+    resolve_via: "providers"
+  model_switch:
+    require_profile: true
+    forbid_caller_max_tokens: true
+    fail_on_truncated: true
+    fail_on_empty: true
+    preflight: scripts/model_switch_check.py
+  silence_tolerance:
+    forbid_except_pass: true
+    forbid_silent_skip: true
+    must_log_degraded: true
+  artifact_ownership:
+    enforce: strict
+  deduplication:
+    enabled: true
+    layers: [content, visual, send_ledger]
+    key_normalization:
+      strip_timestamp_suffix: '^(.+?)-\d{10}$'
+      strip_emoji_code: true
+      strip_punct: true
+    ledger_idempotent: true
+    write_after_external_confirm: true
+    on_duplicate: block
+
+providers:
+  llm.main:
+    kind: llm
+    env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_MAIN}
+    schema_out: DraftScriptPayload
+    profile:
+      # T1.4 实测标定（2026-11-09，deepseek-v4.1-flash @ 8317）
+      #   reasoning 实测 1056~2215（JSON 扩写形态）；真实 draft ≈6100~6700 字符 ≈4000 visible token
+      #   → max_tokens = reasoning_reserve(2560) + visible(5632)
+      max_tokens: 8192
+      reasoning_reserve: 2560
+      timeout_sec: 120
+      json_mode: true
+      min_output_chars: 80
+      expected_latency_sec: 25
+  llm.fast:
+    kind: llm
+    env: {base_url: LLM_BASE_URL, api_key: LLM_API_KEY, model: LLM_MODEL_FAST}
+    profile:
+      # T1.4 实测：分类任务 max_tokens=1024 时 reasoning 顶满 → finish=length、content 空
+      #   抬到 2048 后 reasoning=1099、finish=stop、正常返回单字母
+      max_tokens: 2048
+      reasoning_reserve: 1536
+      timeout_sec: 120
+      json_mode: false
+      min_output_chars: 1
+      expected_latency_sec: 20
+  tts.tech:
+    kind: tts
+    env: {voice: TTS_VOICE_TECH, rate: TTS_RATE}
+    profile:
+      timeout_sec: 90
+  tts.news:                             # v1.2 新增（P-3）：非 tech 账号槽位，禁止代码内 if/else 选音色
+    kind: tts
+    env: {voice: TTS_VOICE_NEWS, rate: TTS_RATE}
+    profile:
+      timeout_sec: 90
+  feishu:                               # v1.3 新增（T1.9）：原本被代码读却未声明
+    kind: saas
+    env: {app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET, approval_chat_id: FEISHU_APPROVAL_CHAT_ID}
+    profile:
+      timeout_sec: 30
+  approval.feishu:                      # 审批渠道 provider（v1.5）：卡片样式绑在这里
+    kind: approval
+    env: {app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET, chat_id: FEISHU_APPROVAL_CHAT_ID}
+    profile:
+      timeout_sec: 600                  # 等人工裁决的超时；超时按 reject 处理
+      card_style: approval_v2           # 卡片样式（approval_v2 | approval_minimal），见 src/approval/styles.py
+      header_template: blue
+      show_publish_matrix: true         # 卡片里是否列出"将发布到哪些平台"
+  approval.cli:                         # 终端审批 provider
+    kind: approval
+    profile:
+      timeout_sec: 600
+      renders_card: false               # 终端不渲染卡片，故不需要 card_style
+  db:                                   # v1.3 新增（T1.9）
+    kind: storage
+    env: {path: SQLITE_DB_PATH}
+    profile:
+      timeout_sec: 5
+
+inputs:
+  material:
+    type: json
+    required: true
+    schema: manifest.schema.json        # v1.2：物料契约唯一来源（P-2）
+    carriers: [cli, stdin, feishu_file] # v1.3（T1.8）：三载体，同一份 schema
+    min_fields: [title]                 # 其余由 llm.main 扩写
+    any_of: [[body], [source_url]]      # 至少一项事实来源，禁止凭空编造
+    prompt: "把物料发给我（标题/正文/来源 URL/截图），其余由流水线决定"
+  account:
+    type: string
+    default: "douyin-tech-main"
+  aspects:
+    type: list
+    default: [vertical, landscape]
+
+# 封面卡片数据源：消除组件内 [0,1,3] 魔数（T4.4 #6，对标 C8）
+cover:
+  card_source: [0, 1, 3]        # 取 scenes 的哪几镜作为右侧三卡
+  missing_policy: warn          # 缺 highlight_text 时告警占位，禁止静默消失
+  subtitle_source: resource_keyword
+
+steps:
+  - id: intake
+    name: "接收消息"
+    run: builtin.intake
+    produces: ["manifest.json"]
+    params:
+      carrier: "${INTAKE_CARRIER:-cli}"   # cli | stdin | feishu_file（v1.3 / T1.8）
+      schema: manifest.schema.json
+    dedupe: content
+    before_hooks: [hook.envelope_validate]
+    after_hooks: [hook.persist_task, hook.content_fingerprint]
+
+  - id: check_material
+    name: "检查资料"
+    run: builtin.check_material
+    reads: ["manifest.json"]
+    produces: ["material_check.json"]
+    before_hooks: [hook.dedupe_entity]
+    after_hooks: [hook.sensitive_scan, hook.policy_precheck, hook.silence_guard]
+    on_fail: block
+
+  - id: expand_script
+    name: "扩写生成脚本"
+    uses: llm.main
+    reads: ["manifest.json", "material_check.json"]
+    produces: ["draft_script.json"]
+    schema: DraftScriptPayload
+    retry: {max: 2, on_schema_error: true}
+    before_hooks: [hook.material_bundle, hook.prompt_render]
+    after_hooks: [hook.sensitive_scan, hook.title_length_guard, hook.silence_guard]
+
+  - id: align_tts
+    name: "TTS 对齐生成 props"
+    run: builtin.align_tts
+    reads: ["draft_script.json"]
+    produces: ["props/aligned_render.json"]
+    # 这一步是并行渲染的前提：props 由它产出，竖/横两版都只读 props，互不依赖
+
+  - id: render_vertical
+    name: "生成竖版视频"
+    run: builtin.render
+    artifact_kind: vertical            # v1.4：external_truth 按此分派校验口径
+    parallel_group: render             # 与 render_landscape 并发执行（实测省 48.8% 墙钟）
+    params: {aspect: vertical, composition: GeekShortVideo, width: 1080, height: 1920}
+    reads: ["draft_script.json", "props/aligned_render.json"]
+    produces: ["video.mp4", "cover.png"]
+    before_hooks: [hook.sensitive_scan, hook.material_check, hook.expand_narration]
+    after_hooks: [hook.frame_fingerprint, hook.frame_sample_check, hook.external_truth, hook.audio_duration_check]
+
+  - id: render_landscape
+    name: "生成横版视频"
+    run: builtin.render
+    artifact_kind: landscape           # v1.4：横版校验（画幅/时长/文字跨度）
+    params: {aspect: landscape, composition: BilibiliLandscapeVideo, width: 1920, height: 1080, landscape_cover: generate}
+    parallel_group: render             # 与 render_vertical 并发执行
+    reads: ["draft_script.json", "props/aligned_render.json"]  # 横版只读 props，video.mp4 是假依赖
+    requires_props: true                # props 由 align_tts 产出，不依赖竖版成片
+    produces: ["video_16_9.mp4", "cover_16_9.png"]
+    before_hooks: [hook.landscape_precheck]
+    after_hooks: [hook.frame_fingerprint, hook.external_truth, hook.landscape_guard]
+
+  - id: deliver
+    name: "投递飞书（供人审）"
+    run: builtin.dispatch
+    artifact_kind: sent                # v1.4：external_truth 校验"确实发出去了"
+    params:
+      enabled: true                                # false ⇒ 只出片（v1.3 / T4.7）
+      mode: "${DISPATCH_MODE:-publish}"             # publish | output_only
+      aspects: ["vertical", "landscape"]           # 两个成片都要发，与 reads 声明对齐
+    reads: ["video.mp4", "video_16_9.mp4"]
+    dedupe: send_ledger
+    # external_truth 已在两个渲染步各跑一次；dispatch 阶段还没有"已发送"事实可校验。
+    before_hooks: [hook.provenance_check, hook.send_ledger]
+    after_hooks: [hook.audit_log]
+
+  - id: approval
+    name: "人审"
+    type: gate
+    params:
+      mode: "${APPROVAL_MODE:-auto}"    # feishu | cli | auto（v1.2 / P-4）
+      message: "请确认成片"
+    options: [approve, reject]
+    on_reject: abort
+
+  # v2 发布方案：deliver → approval → publish
+  # 三重门禁，默认关闭 —— 任何一条不满足都不发布：
+  #   门禁1 配置：publish.enabled（默认 false）+ platforms 非空
+  #   门禁2 审批：approval.json 的 decision 必须 approve
+  #   门禁3 台账：send_ledger claim_send_slot 抢到才发（防重发）
+  - id: publish
+    name: "平台发布"
+    run: builtin.publish
+    config: publish                  # 配置项后置在文件末尾的顶层 publish: 段
+    reads: ["video.mp4", "video_16_9.mp4"]
+    dedupe: send_ledger
+    after_hooks: [hook.audit_log]
+
+hooks:
+  hook.envelope_validate:
+    type: observe
+    impl: scripts/hooks/envelope_validate.py
+  hook.persist_task:
+    type: transform
+    impl: scripts/hooks/persist_task.py
+  hook.dedupe_entity:
+    type: gate
+    impl: scripts/hooks/dedupe_entity.py
+    on_fail: block
+  hook.sensitive_scan:
+    type: gate
+    impl: scripts/hooks/sensitive_scan.py
+    on_fail: block
+  hook.policy_precheck:
+    type: gate
+    impl: scripts/hooks/policy_precheck.py
+    on_fail: block
+  hook.material_bundle:
+    type: transform
+    impl: scripts/hooks/material_bundle.py
+  hook.prompt_render:
+    type: transform
+    impl: scripts/hooks/prompt_render.py
+  hook.title_length_guard:
+    type: gate
+    impl: scripts/hooks/title_length_guard.py
+    on_fail: warn
+  hook.material_check:
+    type: gate
+    impl: scripts/hooks/material_check.py
+    on_fail: block
+  hook.expand_narration:
+    type: transform
+    impl: scripts/hooks/expand_narration.py
+  hook.content_fingerprint:
+    type: gate
+    impl: scripts/hooks/content_fingerprint.py
+    on_fail: warn
+  hook.frame_fingerprint:
+    type: transform
+    impl: scripts/hooks/frame_fingerprint.py
+  hook.frame_sample_check:
+    type: gate
+    impl: scripts/hooks/frame_sample_check.py
+    on_fail: block
+  hook.audio_duration_check:
+    type: gate
+    impl: scripts/hooks/audio_duration_check.py
+    on_fail: warn
+  hook.landscape_precheck:
+    type: gate
+    impl: scripts/hooks/landscape_precheck.py
+    on_fail: block
+  hook.landscape_guard:
+    type: gate
+    impl: scripts/landscape_guard.py
+    on_fail: block
+  hook.provenance_check:
+    type: gate
+    impl: scripts/hooks/provenance_check.py
+    on_fail: block
+  # hook.card_render 暂不注册：
+  #   · 产物（Card 2.0 payload）在流水线里还没有消费者 —— approval 是纯 gate，
+  #     dispatch 的执行体直接发视频，不读 card；
+  #   · Card 2.0 的真实产出路径是 run_publish_worker（QA#8 已修，独立可用）。
+  # 契约校验器要求"注册即被引用"，与其挂在一个没人用的步上，不如先不声明。
+  # 待 approval 步落地执行体（T4.6）后，再连同 card_args 一起接线。
+  hook.send_ledger:
+    type: gate
+    impl: scripts/hooks/send_ledger.py
+    on_fail: block
+  hook.silence_guard:
+    type: gate
+    impl: scripts/hooks/silence_guard.py
+    on_fail: warn
+  hook.external_truth:
+    type: gate
+    impl: scripts/hooks/external_truth.py
+    on_fail: block
+  hook.audit_log:
+    type: observe
+    impl: scripts/hooks/audit_log.py
+
+# ---------------------------------------------------------------- 发布配置
+# v2 发布方案：配置项后置集中在此，publish 步只引用（config: publish）。
+# 三重门禁第 1 条就看这里 —— enabled 默认 false，要真发必须同时改 enabled/platforms/dry_run。
+publish:
+  enabled: false        # 【门禁1】默认关闭
+  platforms: []         # 空 = 不发；取值 douyin | bilibili | channels
+  dry_run: true         # 默认只预检，不真发
+  aspect: vertical      # 发布用哪版成片

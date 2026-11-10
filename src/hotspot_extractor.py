@@ -1,4 +1,3 @@
-import os
 import sys
 import json
 import logging
@@ -12,8 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from openai import OpenAI
+from src.llm.client import LLMClient, LLMError
 from src.schemas import DraftScriptPayload
+from src.utils.normalize import normalize_entity_key
 
 logger = logging.getLogger("HotspotExtractor")
 
@@ -39,19 +39,24 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 
 生成的 DraftScriptPayload 必须遵循以下规范：
 1. theme: 必须是 "tech-github" 或 "ai-product" 或 "breaking-news"
-2. entity_key: 唯一事件或项目标识，如 github:owner/repo 或 news:event-slug
-3. title: 抖音/小红书吸引眼球的极客标题（严禁超过20字！黄金区间为14~20字，中英字符总数必须<=20字，确保小红书与抖音视频发布接口及双列瀑布流无截断展示）
+2. entity_key: 唯一事件或项目标识，如 github:owner/repo 或 news:event-slug（**严禁在结尾拼接任何时间戳/序号/随机串**——同一事件必须永远得到同一个 key，重复即视为重复选题）
+3. title: 抖音吸引眼球的极客标题（严禁超过20字！黄金区间为14~20字，中英字符总数必须<=20字，确保抖音视频发布接口及双列瀑布流无截断展示）
 4. cover_main_text: 封面正中央超大主标题（简短有力，8~12字，九宫格不裁切）
 5. cover_sub_text: 封面副标题标签（如 "开源全球首发" / "突破性进展"，6~14字）
 6. hook_narration: 黄金前3秒抓人吸睛口播（严禁超过30字！必须极其简练抓人，不超过30字）
 7. fact_summary_150: 供评论区智能防护沙箱使用的客观核心事实摘要（不超过150字）
+7.1 video_desc: **发布用简介**（100~170字，必填）。要求：
+   - 写给人读的自然口语化书面语，像给朋友介绍这件事，不要罗列要点、不要 ①②③
+   - 严禁出现斜杠命令（如 /tdd、/grill-me、/diagnosing-bugs）、文件名（如 CONTEXT.md）、代码符号、emoji
+   - 不要标题党，不要话题标签，不要「本视频」「点击」「链接」等话术，结尾不要引导语
+   - 三个平台（B站/抖音/视频号）共用这一段，必须脱离上下文也能读懂
 8. resource_keyword: 选题英文标识或项目简称（从输入项目中提取英文标识，如 t3code, browser 等，用于任务标识与目录命名，不超过10字）
 9. scenes: 严格包含 3 到 4 个分镜场景（每个分镜包含 scene_index, segment_narration, visual_type, highlight_text, sfx_cue）：
    - scene_index: 0, 1, 2, 3
    - segment_narration: 该分镜的中文旁白（自然流畅，单句不要过长）
    - visual_type: 必须是 "terminal_code"（终端代码打字机）、"ui_card"（特性卡片）、"stat_chart"（指标数据卡片）、"media_showcase"（媒体展示）之一
    - code_snippet: 当 visual_type 为 terminal_code 时提供真实的代码/命令行调用（其余类型设为 null）。必须严格遵守外部导流防护规则与合规底线：
-     * 【绝对红线·严禁外部链接与导流】：代码片段、终端命令、分镜旁白（segment_narration）、口播（hook_narration）及所有文字中【严禁出现任何完整 URL、域名或外链】（如包含 http://, https://, github.com 等完整链接）。小红书与抖音 OCR 会检测视频画面中的外链导致严重限流！展示克隆或安装命令时，只能写项目名、包名或搜索关键词，例如必须写 `pip install deepinfer` 或 `gh repo clone deepseek-ai/DeepInfer`（不带 https://github.com），或者直接写 `cd deepinfer && pip install -e .`。
+     * 【绝对红线·严禁外部链接与导流】：代码片段、终端命令、分镜旁白（segment_narration）、口播（hook_narration）及所有文字中【严禁出现任何完整 URL、域名或外链】（如包含 http://, https://, github.com 等完整链接）。抖音 OCR 会检测视频画面中的外链导致严重限流！展示克隆或安装命令时，只能写项目名、包名或搜索关键词，例如必须写 `pip install deepinfer` 或 `gh repo clone deepseek-ai/DeepInfer`（不带 https://github.com），或者直接写 `cd deepinfer && pip install -e .`。
      * 【禁止导流暗号话术·最高风控红线】：旁白、分镜台词（segment_narration）、口播（hook_narration）及文案中【严禁使用“暗号”、“私信”、“主页置顶”、“粉丝群”、“求源码/领取完整论文”等任何导流诱导互动词汇】（平台会直接判定违规限流/封禁！）。视频最后一个分镜（结尾）以及文案末尾统一且只能使用去AI化的纯净结尾，如：“欢迎在评论区交流讨论～”或“欢迎在评论区分享你的看法～”，一律禁止任何站外或私信引流诱导！
      * 【敏感拦截词过滤】：严禁在代码或台词中出现任何敏感拦截词汇或变体，包括：'api_key'、'apikey'、'sk-'、'token'、'password'、'prompt injection'、'prompt注入'、'越狱'、'jailbreak'、'system prompt'、'系统提示' 等（哪怕在注释或模拟输出中也会100%触发本地DFA安全检查报错中断！），展示客户端初始化必须写 `client = OpenAI()`，安全检测可使用“恶意指令”、“指令投毒”、“安全漏洞”代替！
    - stat_items: 当 visual_type 为 ui_card 或 stat_chart 时提供 2~3 个结构化指标 [{"label": "...", "value": "..."}]（其余类型设为 null）
@@ -62,15 +67,22 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 
 你必须只输出纯 JSON 字符串，严禁包含任何 Markdown 格式标记（如 ```json ）。"""
 
-def get_recent_pipeline_topics(limit: int = 50) -> list:
-    """从本地数据库获取最近已处理/已生成的短视频主题"""
+def get_recent_pipeline_topics(limit: int = 50, exclude_task_id: str | None = None) -> list:
+    """从本地数据库获取最近已处理/已生成的短视频主题
+
+    exclude_task_id: 排除当前正在处理的 task_id。
+    intake 会先把物料标题写入 content_tasks(entity_key)，若不排除，
+    当前选题会被自己拉进「排他黑名单」，模型据此判重复而拒答。
+    """
     db_path = PROJECT_ROOT / "data" / "pipeline_state.db"
     if not db_path.exists():
         return []
     try:
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
-        c.execute("SELECT task_id, entity_key, draft_script_json, created_at FROM content_tasks ORDER BY created_at DESC LIMIT ?", (limit,))
+        c.execute("SELECT task_id, entity_key, draft_script_json, created_at FROM content_tasks "
+                  "WHERE (? IS NULL OR task_id != ?) ORDER BY created_at DESC LIMIT ?",
+                  (exclude_task_id, exclude_task_id, limit))
         rows = c.fetchall()
         topics = []
         for tid, ek, dj, cat in rows:
@@ -93,13 +105,13 @@ def check_topic_duplicate(candidate: dict, recent_topics: list) -> tuple:
     """代码级严格硬去重判断"""
     cand_title = (candidate.get("title") or "").lower()
     cand_slug = (candidate.get("resource_keyword") or "").lower()
-    cand_key = (candidate.get("entity_key") or "").lower()
+    cand_key = normalize_entity_key(candidate.get("entity_key") or "").lower()   # T3.1
     cand_norm_title = "".join(c for c in cand_title if c.isalnum() or '\u4e00' <= c <= '\u9fff')
 
     for rec in recent_topics:
         rec_title = (rec.get("title") or "").lower()
         rec_slug = (rec.get("slug") or "").lower()
-        rec_key = (rec.get("entity_key") or "").lower()
+        rec_key = normalize_entity_key(rec.get("entity_key") or "").lower()       # T3.1
         rec_norm_title = "".join(c for c in rec_title if c.isalnum() or '\u4e00' <= c <= '\u9fff')
 
         # 1. 关键词 slug 精准比对
@@ -125,17 +137,12 @@ def check_topic_duplicate(candidate: dict, recent_topics: list) -> tuple:
     return False, ""
 
 def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
-    api_key = os.getenv("LLM_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("LLM_MODEL_MAIN", "deepseek-chat")
-
-    if not api_key:
-        raise ValueError("LLM_API_KEY 未在环境变量中配置")
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    # T1.5：模型/预算/JSON 模式/超时全部来自 pipeline.yaml 的 llm.main 槽位。
+    # 原实现把 base_url/model 默认值写死（已是失效模型），缺 .env 键即静默打错目标。
+    llm = LLMClient("llm.main")
 
     # 1. 查询近期已制作的排他黑名单
-    recent_topics = get_recent_pipeline_topics(limit=30)
+    recent_topics = get_recent_pipeline_topics(limit=30, exclude_task_id=task_id)
     exclude_items = []
     for rt in recent_topics:
         t_desc = rt.get("title") or rt.get("slug") or rt.get("entity_key")
@@ -158,15 +165,30 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
     ]
 
     for attempt in range(max_retries):
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.3 + (attempt * 0.2),
-            response_format={"type": "json_object"}
-        )
+        try:
+            data = llm.complete_json(
+                messages,
+                temperature=0.3 + (attempt * 0.2),
+                task=f"script_expand_attempt{attempt + 1}",
+            )
+        except (LLMError, json.JSONDecodeError) as exc:
+            # 截断/空返回/JSON 非法一律可见：重试到上限后上抛，不做兜底
+            logger.error(f"[Attempt {attempt+1}] LLM 输出不可用: {exc}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "user", "content": "上一次输出不合法，请重新输出完整合法的 JSON。"})
+                continue
+            raise
 
-        raw_json = response.choices[0].message.content.strip()
-        data = json.loads(raw_json)
+        raw_json = json.dumps(data, ensure_ascii=False)
+
+        # 模型可能返回状态信封（skipped/rejected/no_eligible_topic），不是合法分镜
+        if isinstance(data, dict) and data.get("status") and not data.get("theme"):
+            reason = str(data.get("reason") or data.get("message") or data.get("status"))
+            logger.warning(f"[Attempt {attempt+1}] 模型返回状态信封 status={data.get('status')} reason={reason[:200]}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "user", "content": "你必须直接输出完整合法的 DraftScriptPayload JSON（含 theme/entity_key/title/scenes 等字段），不要返回 status 信封。"})
+                continue
+            raise ValueError(f"模型连续 {max_retries} 次拒绝生成分镜，最后原因: {reason[:300]}")
 
         # 校验合法性
         payload = DraftScriptPayload(**data)
@@ -185,6 +207,10 @@ def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
                 continue
             else:
                 logger.error(f"All {max_retries} attempts picked duplicate topics! Fallback to last.")
+
+        # T3.1：写入前剥掉尾部时间戳，否则同一事件重跑会绕过 UNIQUE(entity_key)
+        if result.get("entity_key"):
+            result["entity_key"] = normalize_entity_key(result["entity_key"])
 
         if task_id:
             result["task_id"] = task_id

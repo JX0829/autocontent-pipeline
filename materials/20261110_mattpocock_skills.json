@@ -1,0 +1,6 @@
+{
+  "title": "31.9万星！Agent技能包开源",
+  "body": "Matt Pocock 把自己 .agents 目录里那套 Skills 开源了，仓库叫 skills，现有 31.9 万星、2.6 万 fork，最近一次推送在 11 月 9 日。它不接管整个项目，而是把「追问需求、写规格、TDD、排查 Bug、代码评审」拆成一个个可复用技能：先用 grill-me 或 grill-with-docs 把需求问清楚，整理成 CONTEXT.md 与 ADR，开发阶段交给 tdd，疑难 Bug 交给 diagnosing-bugs，工程目录下还有 code-review、triage、to-spec、prototype 等二十来个技能。Claude Code 可通过插件安装，其他支持 Skills 的 Agent 也能直接使用。",
+  "source_url": "https://github.com/mattpocock/skills",
+  "task_id": "repo_mattpocock_skills_20261110"
+}

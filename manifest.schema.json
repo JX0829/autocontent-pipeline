@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://autocontent.local/manifest.schema.json",
+  "title": "AutoContent 最小物料契约（manifest）",
+  "description": "使用方只需提供 title + (body 或 source_url)。其余 15 个脚本字段由 expand_script 步的 llm.main 扩写，禁止让模型凭空编造事实。",
+  "type": "object",
+  "required": ["title"],
+  "anyOf": [
+    { "required": ["body"] },
+    { "required": ["source_url"] }
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 80,
+      "description": "选题标题，原样可用"
+    },
+    "body": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 4000,
+      "description": "原文或摘要，供扩写取材"
+    },
+    "source_url": {
+      "type": "string",
+      "pattern": "^https?://",
+      "maxLength": 500,
+      "description": "来源链接；body 缺失时由抓取补齐"
+    },
+    "account": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 40,
+      "description": "目标账号；缺省取 inputs.account.default"
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string", "minLength": 3, "maxLength": 1000 },
+      "description": "实景截图（本地路径或 URL），≤3 项；缺失则渲染层生成 UI 卡"
+    },
+    "task_id": {
+      "type": "string",
+      "maxLength": 80,
+      "description": "可选：外部指定任务 ID；缺省由 runner 生成"
+    }
+  },
+  "additionalProperties": true,
+  "x-hard-rules": [
+    "body 与 source_url 至少存在 1 个（anyOf），否则 check_material 步 block",
+    "任何新物料字段必须先改本 schema，再改代码"
+  ]
+}

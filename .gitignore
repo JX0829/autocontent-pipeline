@@ -83,3 +83,26 @@ ehthumbs.db
 Thumbs.db
 .vscode/
 .idea/
+
+# === T0.3 工作区卫生（spec_enhancement.md §5 T0.3）===
+# 备份与快照：只留在本地，永不入库
+.backup/
+*.bak
+*.bak_*
+*.bak.*
+.env.bak*
+config/*.bak*
+
+# 一次性救火脚本：作废归档，禁止入库（§6 不做清单）
+scripts/_deprecated/
+
+
+# T4.1：历史产物归档与 run 级 public 软链（不进版本库）
+.archive/
+renderer/public/runs/
+
+# 删除类改造的本地备份（可回滚，不入库）
+backup/
+
+# 审批裁决文件（运行期状态，不入库）
+data/approvals/

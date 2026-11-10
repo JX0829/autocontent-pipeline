@@ -17,6 +17,7 @@ if str(PIPELINE_ROOT) not in sys.path:
     sys.path.insert(0, str(PIPELINE_ROOT))
 
 from playwright.sync_api import sync_playwright
+from src.utils.accounts import for_platform
 
 DOUYIN_CREATOR_URL = "https://creator.douyin.com/"
 
@@ -78,6 +79,8 @@ def login_and_save_state(account_id: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="抖音账号登录辅助工具")
-    parser.add_argument("--account", default="douyin-tech-main", help="账号 ID (默认: douyin-tech-main)")
+    # T4.2：默认账号从 config/accounts.yaml 解析（按平台取首个启用账号）
+    parser.add_argument("--account", default=None,
+                        help="账号 ID（缺省取 config/accounts.yaml 中首个启用的抖音账号）")
     args = parser.parse_args()
-    login_and_save_state(args.account)
+    login_and_save_state(args.account or for_platform("douyin")["id"])

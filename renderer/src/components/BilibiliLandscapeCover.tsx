@@ -81,7 +81,7 @@ export const BilibiliLandscapeCover: React.FC<AlignedRenderPayload> = (props) =>
           }}
         >
           <span>🔥</span>
-          <span>{props.cover_sub_text || 'B站科技热点 · 实操首发'}</span>
+          <span>{props.cover_sub_text || props.resource_keyword || ''}</span>
         </div>
 
         {/* 封面超大痛点主标题（B站吸睛排版，左对齐，单行不拥挤） */}
@@ -110,7 +110,7 @@ export const BilibiliLandscapeCover: React.FC<AlignedRenderPayload> = (props) =>
             maxWidth: 900,
           }}
         >
-          从0到1手搓全功能插件，传统开发门槛彻底被击穿！
+          {props.resource_keyword || ''}
         </div>
 
         {/* 底部醒目引导：置顶与源码提示 */}
@@ -140,7 +140,7 @@ export const BilibiliLandscapeCover: React.FC<AlignedRenderPayload> = (props) =>
         </div>
       </div>
 
-      {/* ──────────────── 右侧极客特性与代码悬念看板（占 38% 宽度） ──────────────── */}
+      {/* ──────────────── 右侧分镜看点看板（占 38% 宽度，全部取自真实分镜，禁止硬编码） ──────────────── */}
       <div
         style={{
           width: '38%',
@@ -150,60 +150,42 @@ export const BilibiliLandscapeCover: React.FC<AlignedRenderPayload> = (props) =>
           zIndex: 10,
         }}
       >
-        {/* 核心指标卡片 1 */}
-        <div
-          style={{
-            background: 'rgba(15, 23, 42, 0.85)',
-            border: '1px solid rgba(56, 189, 248, 0.25)',
-            borderRadius: 24,
-            padding: '28px 32px',
-            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
-          <div style={{ color: '#94a3b8', fontSize: 22, fontWeight: 600, marginBottom: 8 }}>
-            ⚡ 核心突破
-          </div>
-          <div style={{ color: '#38bdf8', fontSize: 40, fontWeight: 900 }}>
-            自然语言直接生成
-          </div>
-        </div>
-
-        {/* 核心指标卡片 2 */}
-        <div
-          style={{
-            background: 'rgba(15, 23, 42, 0.85)',
-            border: '1px solid rgba(168, 85, 247, 0.25)',
-            borderRadius: 24,
-            padding: '28px 32px',
-            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
-          <div style={{ color: '#94a3b8', fontSize: 22, fontWeight: 600, marginBottom: 8 }}>
-            🚀 实测开发耗时
-          </div>
-          <div style={{ color: '#c084fc', fontSize: 40, fontWeight: 900 }}>
-            3天代码 ➔ 30秒直出
-          </div>
-        </div>
-
-        {/* 核心指标卡片 3（全网爆火热度） */}
-        <div
-          style={{
-            background: 'rgba(15, 23, 42, 0.85)',
-            border: '1px solid rgba(255, 255, 255, 0.15)',
-            borderRadius: 24,
-            padding: '24px 32px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
-          }}
-        >
-          <span style={{ color: '#f8fafc', fontSize: 24, fontWeight: 700 }}>B站科技全站热搜</span>
-          <span style={{ color: '#e2e8f0', fontSize: 24, fontWeight: 800, fontFamily: 'monospace' }}>TOP 1 登顶 🔥</span>
-        </div>
+        {[
+          { label: '◈ 核心看点', color: '#38bdf8', border: 'rgba(56, 189, 248, 0.25)' },
+          { label: '◈ 关键机制', color: '#c084fc', border: 'rgba(168, 85, 247, 0.25)' },
+          { label: '◈ 实操提醒', color: '#f8fafc', border: 'rgba(255, 255, 255, 0.15)' },
+        ].map((card, i) => {
+          // 取哪几屏由 pipeline.yaml 的 cover.card_source 声明（默认 [0,1,3]），组件不写死魔数
+          const source = props.cover_card_source ?? [0, 1, 3];
+          const pick = source[i] ?? i;
+          const scene = props.scenes?.[pick] ?? props.scenes?.[i];
+          const text = scene?.highlight_text ?? '';
+          if (!text) {
+            // 不静默跳过：渲染占位卡并告警，"分镜缺 highlight_text"必须在成片上看得见
+            console.warn(`[cover] scene_${pick} highlight_text 缺失，渲染占位卡`);
+          }
+          return (
+            <div
+              key={i}
+              style={{
+                background: 'rgba(15, 23, 42, 0.85)',
+                border: `1px solid ${card.border}`,
+                borderRadius: 24,
+                padding: '26px 32px',
+                boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
+                backdropFilter: 'blur(16px)',
+                opacity: text ? 1 : 0.35,
+              }}
+            >
+              <div style={{ color: '#94a3b8', fontSize: 22, fontWeight: 600, marginBottom: 8 }}>
+                {card.label}
+              </div>
+              <div style={{ color: card.color, fontSize: 36, fontWeight: 900, lineHeight: 1.25 }}>
+                {text || '—'}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
