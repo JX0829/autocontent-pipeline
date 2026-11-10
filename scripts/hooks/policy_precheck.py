@@ -30,9 +30,10 @@ def _policies() -> dict:
 
 def _platform_of(account: str) -> str:
     acc = (account or "").lower()
-    for known in ("douyin", "bilibili", "xiaohongshu", "xhs", "wechat", "kuaishou"):
+    # 2026-11-09 小红书整体下线：xhs / xiaohongshu 不再作为已知平台（映射到它们等于死映射）
+    for known in ("douyin", "bilibili", "wechat", "kuaishou"):
         if acc.startswith(known):
-            return "xiaohongshu" if known == "xhs" else known
+            return known
     return acc.split("-")[0] if acc else ""
 
 

@@ -354,6 +354,18 @@ python3 scripts/publish_douyin_cdp.py --run-id <run_id>
 
 ---
 
+### 5.3 磁盘卫生：output/ 只留最近 3 天
+
+`output/` 每次全链产出 video/cover/props/音频，单天 40–90MB，不清理会一直涨（清理前 931MB）。
+
+```bash
+# 保留最近 3 天（含今天），其余移入废纸篓（可恢复，不是 rm）
+ls -d output/2026*/ | awk -F/ '$2 < "'$(date -v-2d +%Y%m%d)'"' | xargs trash
+```
+
+2026-11-10 执行结果：931MB → 170MB，只剩 `20261108 / 20261109 / 20261110`。
+无日期的历史演示目录（demo_* / template_* / catwu_spotlight 等）一并清掉。
+
 ## 6. 三平台发布（现状必须分清）
 
 **这三条都是独立 CLI，不挂在 runner 上**（`grep -rn "publish_channels\|publish_douyin_cdp" src/pipeline/` 为空）。

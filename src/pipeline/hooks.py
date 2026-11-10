@@ -313,7 +313,7 @@ create table if not exists content_tasks (
   task_id text primary key, source_url text not null, entity_key text not null unique,
   theme text not null, target_account_id text not null, status text not null,
   draft_script_json text, aligned_render_json text, video_path text, cover_path text,
-  xhs_cards_dir text, platform_draft_id text, published_video_id text,
+  platform_draft_id text, published_video_id text,
   fact_summary_150 text, resource_keyword text,
   created_at datetime default current_timestamp, updated_at datetime default current_timestamp,
   has_seed_comment integer default 0, seed_comment_text text, seed_comment_at datetime,

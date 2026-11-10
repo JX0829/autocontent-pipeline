@@ -90,7 +90,7 @@ def run():
             elements = []
             manual_count = 0
             for r in all_replied:
-                is_manual = (r.get("reply_mode") == "manual_approval" or r.get("platform") == "xiaohongshu")
+                is_manual = (r.get("reply_mode") == "manual_approval")   # xiaohongshu 已下线，去掉死分支
                 if is_manual:
                     manual_count += 1
                     reply_block = f"💡 **AI 建议回复（可长按直接复制在手机App回复）**：\n```text\n{r['reply']}\n```"

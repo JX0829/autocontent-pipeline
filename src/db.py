@@ -27,7 +27,6 @@ class PipelineDB:
                 aligned_render_json TEXT,
                 video_path TEXT,
                 cover_path TEXT,
-                xhs_cards_dir TEXT,
                 platform_draft_id TEXT,
                 published_video_id TEXT,
                 fact_summary_150 TEXT,
@@ -102,7 +101,7 @@ class PipelineDB:
             cur.execute("""
             CREATE TABLE IF NOT EXISTS artifacts (
                 task_id      TEXT NOT NULL,
-                kind         TEXT NOT NULL,          -- vertical | landscape | cover | xhs
+                kind         TEXT NOT NULL,          -- vertical | landscape | cover
                 path         TEXT NOT NULL,
                 sha256       TEXT NOT NULL,
                 frame_hash   TEXT,

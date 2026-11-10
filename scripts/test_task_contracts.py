@@ -189,7 +189,7 @@ def test_t42() -> None:
     else:
         bad("by_id(不存在) 返回 None", "返回了非 None")
 
-    empty_platforms = {"douyin", "xhs", "bilibili"} - platforms
+    empty_platforms = {"douyin", "bilibili"} - platforms   # xhs 已下线，不再纳入契约
     if empty_platforms:
         p = sorted(empty_platforms)[0]
         expect_raises(f"for_platform({p}) 无账号即报错", lambda: for_platform(p),
