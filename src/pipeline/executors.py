@@ -248,7 +248,10 @@ def exec_approval(ctx: StepContext) -> dict[str, str]:
     params = ctx.step.get("params") or {}
     mode = str(params.get("mode") or "auto")
     message = str(params.get("message") or "请确认成片")
-    result = request_approval(ctx.run_id, ctx.artifacts, message, mode=mode)
+    try:
+        result = request_approval(ctx.run_id, ctx.artifacts, message, mode=mode)
+    except Exception as exc:  # noqa: BLE001 — 渠道不可用必须变成步失败，不能裸抛到 runner
+        raise ExecutorError(f"审批渠道不可用（mode={mode}）：{exc}") from exc
 
     out = _write_json(ctx.out("approval.json"), result)
     if result.get("decision") != "approve":
@@ -316,7 +319,10 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     from src.db import PipelineDB
     from src.utils.accounts import for_platform
 
-    params = ctx.step.get("params") or {}
+    # 配置项后置：顶层 `publish:` 段 + 步骤 params（params 优先），都不写死默认值
+    from src.pipeline.contracts import load_pipeline
+    _pub_cfg = (load_pipeline() or {}).get("publish") or {}
+    params = {**_pub_cfg, **(ctx.step.get("params") or {})}
     report: dict[str, Any] = {"mode": "publish", "published": [], "skipped": [], "failed": []}
 
     def _out() -> dict[str, str]:

@@ -487,7 +487,8 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
         skip["render_landscape"] = "aspects 未包含 landscape"
 
     # v2 发布方案门禁1：publish.enabled 默认 false → 整步 SKIP（不进入执行体）
-    pparams = next((s.get("params") or {} for s in steps if s.get("id") == "publish"), {})
+    _pub_step = next((s for s in steps if s.get("id") == "publish"), {})
+    pparams = {**((cfg.get("publish") or {})), **(_pub_step.get("params") or {})}
     if not bool(pparams.get("enabled", False)) or not (pparams.get("platforms") or []):
         skip["publish"] = "publish.enabled=false 或 platforms 为空（默认关闭）"
 

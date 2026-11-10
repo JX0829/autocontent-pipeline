@@ -133,9 +133,9 @@ def main() -> int:
     check("B3 send_ledger 仍 2 行", rows("send_ledger") == 2, f"rows={rows('send_ledger')}")
 
     # ---------------------------------------------------------------- C
-    print("\n[C] 抹掉 dispatch 完成标记后重发（应命中发送台账）")
+    print("\n[C] 抹掉 deliver 完成标记后重发（应命中发送台账）")
     db = PipelineDB(str(DB))
-    db.set_step_status("g3-a", "dispatch", "PENDING")
+    db.set_step_status("g3-a", "deliver", "PENDING")   # v2：dispatch 已更名 deliver
     db.update_run_status("g3-a", "RUNNING")
     dispatch_json = PROJ / "output" / today / "g3-a" / "dispatch.json"
     if dispatch_json.exists():
@@ -151,7 +151,7 @@ def main() -> int:
     # 所以判据要说"被拦截"而不是"退出码必须是 0"——被 before_hooks 挡下时 rc=64 是正确行为。
     blocked_by_ledger = "already_sent" in out_c or already
     check("C1 命中 send_ledger already_sent", blocked_by_ledger,
-          f"dispatch.json={dispatch_json.name} rc={rc_c}")
+          f"deliver(dispatch.json)={dispatch_json.name} rc={rc_c}")
     check("C2 未新增发送", len(SENT) == 2, f"calls={len(SENT)}")
     check("C3 send_ledger 仍 2 行", rows("send_ledger") == 2, f"rows={rows('send_ledger')}")
     check("C4 重跑被台账拦截（rc=64 属预期）", rc_c in (0, 64) and blocked_by_ledger, f"rc={rc_c}")

@@ -264,10 +264,7 @@ steps:
   - id: publish
     name: "平台发布"
     run: builtin.publish
-    params:
-      enabled: false                 # 【门禁1】默认关闭；要发必须显式改 true
-      platforms: []                  # 空 = 不发；取值 douyin | bilibili | channels
-      dry_run: true                  # 默认只做预检，不真发
+    config: publish                  # 配置项后置在文件末尾的顶层 publish: 段
     reads: ["video.mp4", "video_16_9.mp4"]
     dedupe: send_ledger
     after_hooks: [hook.audit_log]
@@ -356,3 +353,12 @@ hooks:
   hook.audit_log:
     type: observe
     impl: scripts/hooks/audit_log.py
+
+# ---------------------------------------------------------------- 发布配置
+# v2 发布方案：配置项后置集中在此，publish 步只引用（config: publish）。
+# 三重门禁第 1 条就看这里 —— enabled 默认 false，要真发必须同时改 enabled/platforms/dry_run。
+publish:
+  enabled: false        # 【门禁1】默认关闭
+  platforms: []         # 空 = 不发；取值 douyin | bilibili | channels
+  dry_run: true         # 默认只预检，不真发
+  aspect: vertical      # 发布用哪版成片

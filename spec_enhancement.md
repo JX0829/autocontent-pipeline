@@ -1647,6 +1647,54 @@ for k,v in d['providers'].items():
 - **预期输出**：`OK: runner 无渠道耦合`；`cli` 模式下干跑打印 `[approval] mode=cli` 且 `EXIT=0`，不报飞书连接错误
 - **回滚**：`git checkout pipeline.yaml src/pipeline/runner.py && rm -rf src/approval/`
 
+#### 审批渠道 Provider 改造（2026-11-10）
+
+把 `src/approval` 从「if/else 硬编码渠道」改成 **Provider 注册表**，对外接口不变
+（`request_approval(run_id, artifacts, message, mode)`），调用方零改动。
+
+| 文件 | 职责 |
+|---|---|
+| `src/approval/base.py` | `ApprovalProvider` 抽象：`available()` / `ask()` / `unavailable_reason()` |
+| `src/approval/providers.py` | 内置 `FeishuApprovalProvider` / `CliApprovalProvider`（薄封装，行为不变） |
+| `src/approval/registry.py` | `register()` / `get()` / `resolve()` / `list_providers()` |
+| `src/approval/__init__.py` | 注册内置渠道 + 兼容旧接口 `request_approval` / `resolve_mode` |
+
+**语义收紧（关键）**：
+- 显式 `mode=feishu` 但无凭据 → **直接抛错，不偷偷降级**
+- `auto` 才走 `feishu → cli` 兜底，并打印跳过原因
+- 无任何可用渠道 → 抛错（**绝不默认放行**）
+- `exec_approval` 把渠道异常统一包装成 `ExecutorError` → 步 BLOCKED、`EXIT=64`（不再裸抛 traceback）
+
+**实测**：
+```
+已注册: [feishu(不可用: 缺凭据), cli(不可用: 非 tty 且未设 NONINTERACTIVE)]
+mode=whatever        → 未注册的审批渠道（列出已注册）
+mode=feishu 无凭据   → 审批渠道 feishu 不可用（显式指定不降级）
+mode=auto 都不可用   → 没有可用的审批渠道：feishu(...)；cli(...)
+APPROVAL_NONINTERACTIVE=approve + auto → 渠道=cli，decision=approve
+自定义 AlwaysApprove 注册后 mode=always → 直接生效（不改主流程）
+```
+
+#### 发布配置项后置（2026-11-10 追加）
+
+`publish` 步不再把开关塞在 `params` 里，改为引用文件末尾的顶层段：
+
+```yaml
+  - id: publish
+    run: builtin.publish
+    config: publish          # 配置项后置
+
+# ...文件末尾
+publish:
+  enabled: false
+  platforms: []
+  dry_run: true
+  aspect: vertical
+```
+
+`exec_publish` 与 `runner` 的读法统一为 `{**cfg["publish"], **step.params}`（params 优先），
+既支持集中开关，也保留单次覆盖能力。
+
 #### 发布方案 v2：deliver → approval → publish（2026-11-10，默认关闭）
 
 **步骤链（9 步）**：

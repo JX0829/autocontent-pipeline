@@ -146,6 +146,12 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 
 **关键**：`feishu` / `auto` 会**阻塞等待**（默认 600 秒），超时按 **reject** 处理。
 
+**渠道解析规则（Provider 注册表）**：
+- 显式 `APPROVAL_MODE=feishu` 但没凭据 → **直接报错，不偷偷降级**
+- `auto`（默认）才按 `feishu → cli` 兜底，并打印为什么跳过
+- 一个都不可用 → 报错，**绝不默认放行**
+- 渠道异常统一转成步失败（`EXIT=64`），不会裸抛 traceback
+
 - 无人值守（cron/批处理）→ 用 `DISPATCH_MODE=output_only`，
   或 `APPROVAL_MODE=cli` + `APPROVAL_NONINTERACTIVE=approve`
 - 想限定谁能批 → `APPROVAL_ALLOWED_USERS=ou_xxx,ou_yyy`
@@ -234,6 +240,28 @@ python3 scripts/publish_channels.py --run-id <run_id>            # 视频号
 python3 scripts/publish_douyin_cdp.py --run-id <run_id>          # 抖音（CDP 9333）
 python3 scripts/bilibili_live_uploader.py --run-id <run_id>      # B站（自动取横版+简介+标签）
 ```
+
+### 5.1.2 作者首评 / 置顶（seed_comment，2026-11-10 补齐的漏字段）
+
+发布成功后自动发作者首评、能置顶就置顶（首屏默认可见）。开关在
+`config/accounts.yaml` **每个平台账号**下：
+
+```yaml
+seed_comment:
+  enabled: true      # 发布成功后自动发首评
+  pin: true          # 能置顶就置顶（首屏默认可见）；平台不支持则降级为普通首评
+  text: ""           # 留空则用 video_desc 前 120 字 + 「欢迎在评论区交流讨论～」
+```
+
+统一解析器：`src/utils/seed_comment.py` 的 `resolve(account_cfg, draft, platform)`。
+
+| 平台 | 发首评 | 置顶 | 说明 |
+|---|---|---|---|
+| B站 | ✅ 已自动化 | ✅ | `bilibili_live_uploader.py --run-id` 上传成功后自动发；置顶接口常返回 `-404 啥都木有`（稿件刚落库），需间隔 15s 重试至多 3 次 |
+| 抖音 | ⏳ 配置就位 | ⏳ | 平台支持作者评论与置顶，但只能走 CDP 真机 UI；**待实拍验证后开启** |
+| 视频号 | ❌ | ❌ | Web 端无作者首评接口，`resolve()` 会显式告警 `SEED_COMMENT_UNSUPPORTED`，需手机端手动 |
+
+> 首评失败绝不影响发布结果，但必须打出 `SEED_COMMENT_FAILED` / `SEED_COMMENT_UNSUPPORTED`，禁止静默。
 
 ### 5.2 抖音发布：必须走 CDP 真机（**headless 必失败**）
 

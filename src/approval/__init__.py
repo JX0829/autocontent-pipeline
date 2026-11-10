@@ -1,56 +1,50 @@
-"""审批渠道适配层（T4.6）
+"""审批渠道适配层（T4.6，v2 改造为 Provider 注册表）
 
-统一接口：
+对外接口保持不变，调用方（`exec_approval` / runner）不需要改：
+
     request_approval(run_id, artifacts, message, mode=None) -> dict
-        {"decision": "approve"|"reject", "mode": <实际使用的渠道>, "reason": str, "decided_by": str}
+        {"decision": "approve"|"reject", "mode": <实际渠道>, "reason": str, "decided_by": str}
 
-为什么要有这一层：`approval` 步原先硬编码飞书卡片文案，本地/CI 手跑无法审批，
-只能假装通过。适配层把"找谁审"从流程里剥出来，runner 只认 decision。
-
-三种渠道：
-  · feishu —— 发审批卡片，轮询 data/approvals/<run_id>.json 等人工裁决，超时即 reject
-  · cli    —— 终端交互；非 tty 时必须显式给 APPROVAL_NONINTERACTIVE，否则 fail closed
-  · auto   —— 有飞书凭据走 feishu，否则降级 cli，并打印降级原因（不静默）
+改造点：
+  · 每个渠道是一个 Provider（`src/approval/providers.py`），自己声明 available()
+  · 主流程不再 if/else 硬编码渠道，只认 `registry.resolve()` 选出的 provider
+  · 新增渠道 = 实现 ApprovalProvider + `register()`，不改本文件
+  · 显式指定 mode 但不可用 → 直接抛错（不偷偷降级）；auto 才按 feishu → cli 兜底
 """
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 from typing import Any
 
-PROJ = Path(__file__).resolve().parent.parent.parent
-DECISION_DIR = PROJ / "data" / "approvals"
+from .base import ApprovalProvider
+from .providers import CliApprovalProvider, FeishuApprovalProvider
+from .registry import (REGISTRY, UnknownProvider, get, list_providers, register,
+                       resolve)
 
 VALID_MODES = ("feishu", "cli", "auto")
 
-
-def _has_feishu_creds() -> bool:
-    return bool(os.getenv("FEISHU_APP_ID") and os.getenv("FEISHU_APP_SECRET"))
+# 内置渠道注册（override=True：模块重载时不报重复注册）
+register(FeishuApprovalProvider(), override=True)
+register(CliApprovalProvider(), override=True)
 
 
 def resolve_mode(mode: str | None = None) -> tuple[str, str]:
-    """返回 (实际渠道, 降级/选择原因)。"""
-    mode = (mode or os.getenv("APPROVAL_MODE") or "auto").strip().lower()
-    if mode not in VALID_MODES:
-        raise ValueError(f"APPROVAL_MODE 非法: {mode}（可选 {VALID_MODES}）")
-    if mode != "auto":
-        return mode, f"显式指定 mode={mode}"
-    if _has_feishu_creds():
-        return "feishu", "auto：检测到 FEISHU_APP_ID/SECRET，走飞书审批"
-    return "cli", "auto：未配置飞书凭据，降级为 cli 审批"
+    """兼容旧接口：返回 (实际渠道, 选择原因)。"""
+    provider, why = resolve(mode)
+    return provider.name, why
 
 
 def request_approval(run_id: str, artifacts: dict[str, Any], message: str,
                      mode: str | None = None) -> dict[str, Any]:
-    channel, why = resolve_mode(mode)
-    print(f"  [approval] 渠道={channel}（{why}）")
-    if channel == "feishu":
-        from src.approval.feishu import ask as ask_feishu
-        result = ask_feishu(run_id, artifacts, message)
-    else:
-        from src.approval.cli import ask as ask_cli
-        result = ask_cli(run_id, artifacts, message)
-    result.setdefault("mode", channel)
+    """发起审批。渠道由注册表解析，返回统一结构。"""
+    provider, why = resolve(mode)
+    print(f"  [approval] 渠道={provider.name}（{why}）")
+    result = provider.ask(run_id, artifacts, message)
+    result.setdefault("mode", provider.name)
     result.setdefault("reason", why)
     return result
+
+
+__all__ = [
+    "ApprovalProvider", "REGISTRY", "UnknownProvider", "VALID_MODES",
+    "get", "list_providers", "register", "request_approval", "resolve", "resolve_mode",
+]
