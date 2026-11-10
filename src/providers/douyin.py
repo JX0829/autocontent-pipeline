@@ -9,6 +9,38 @@ from .base import BaseSocialProvider
 
 logger = logging.getLogger("DouyinProvider")
 
+# 可见性目标：publish_mode → (中文标签名, 候选选择器)。
+# 选择器全落空时 fail-closed —— 绝不"找不到就按默认发"，
+# 否则一次选择器改版就可能把私密内容误发成公开。
+PRIVACY_TARGETS = {
+    "private_publish": (
+        "仅自己可见",
+        ['label:has-text("仅自己可见")',
+         'xpath=//label[contains(., "仅自己可见") or contains(., "私密")]'],
+    ),
+    "public_publish": (
+        "公开可见",
+        ['label:has-text("公开可见")',
+         'label:has-text("所有人可见")',
+         'xpath=//label[contains(., "公开") or contains(., "所有人可见")]'],
+    ),
+}
+
+
+def select_privacy(page, mode: str) -> tuple[bool, str]:
+    """按 publish_mode 勾选可见性。返回 (是否成功, 失败原因)。"""
+    spec = PRIVACY_TARGETS.get(mode)
+    if spec is None:
+        return False, f"未知 publish_mode={mode}"
+    label_name, selectors = spec
+    for sel in selectors:
+        loc = page.locator(sel).first
+        if loc.count() > 0:
+            loc.click()
+            return True, ""
+    return False, f"mode={mode} 未找到「{label_name}」选项"
+
+
 class DouyinProvider(BaseSocialProvider):
     """
     抖音创作者中心自动化 Provider
@@ -176,24 +208,16 @@ class DouyinProvider(BaseSocialProvider):
                     except Exception as e:
                         logger.warning(f"Failed to toggle AIGC declaration: {e}")
 
-                # 5. 根据发布模式执行：方案 A (private_publish) 或草稿暂存 (draft_only)
-                if self.publish_mode == "private_publish":
-                    # 【核心安全保护：方案 A】强制勾选“仅自己可见”，双端立即可见，绝对不向外扩散
-                    private_label = page.locator('label:has-text("仅自己可见")').first
-                    if private_label.count() == 0:
-                        private_label = page.locator('xpath=//label[contains(., "仅自己可见") or contains(., "私密")]').first
-                    
-                    if private_label.count() == 0:
-                        logger.error("PRIVATE_LABEL_NOT_FOUND: Refusing to publish without private privacy setting!")
+                # 5. 根据发布模式执行：私密 / 公开 / 草稿
+                #    可见性由 accounts.yaml 的 publish_mode 决定，选择器缺失即 fail-closed，
+                #    绝不"找不到就按默认发"（那等于把私密内容误发成公开）。
+                if self.publish_mode in PRIVACY_TARGETS:
+                    ok, reason = select_privacy(page, self.publish_mode)
+                    if not ok:
+                        logger.error(f"PRIVACY_LABEL_NOT_FOUND: {reason}")
                         browser.close()
-                        return {
-                            "success": False,
-                            "error": "PRIVATE_LABEL_NOT_FOUND",
-                            "message": "安全策略拦截：未找到'仅自己可见'选项，严禁公开发布！"
-                        }
-                    
-                    logger.info("Selecting privacy setting: 仅自己可见 (私密作品)...")
-                    private_label.click()
+                        return {"success": False, "error": "PRIVACY_LABEL_NOT_FOUND",
+                                "message": f"发布拦截：{reason}"}
                     time.sleep(2)
 
                     # 等待视频完成上传与校验
@@ -250,8 +274,8 @@ class DouyinProvider(BaseSocialProvider):
                         try:
                             page.screenshot(path=str(diag_dir / f"publish_fail_{ts}.png"), full_page=True)
                             (diag_dir / f"publish_fail_{ts}.txt").write_text(page.inner_text("body"), encoding="utf-8")
-                        except Exception:
-                            pass
+                        except Exception as diag_exc:  # noqa: BLE001 - 诊断落盘失败必须可见但不阻断
+                            logger.warning(f"PUBLISH_DIAG_WRITE_FAILED: {diag_exc}")
                         logger.error(f"PUBLISH_SIGNAL_MISSING: signal={signal}, diag saved to {diag_dir}")
                         browser.close()
                         return {

@@ -37,7 +37,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
         title: str,
         topics: list[str],
         content_text: str,
-        declare_aigc: bool = False
+        declare_aigc: bool = False,
+        declare_original: bool = True
     ) -> Dict[str, Any]:
         """
         保存视频至微信视频号草稿箱
@@ -62,6 +63,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
             "video_path": video_path,
             "cover_path": cover_path,
             "publish_mode": self.publish_mode,
+            "declare_original": declare_original,   # 原创声明：视频号发布时勾选「声明原创」
+            "declare_aigc": declare_aigc,
             "distribution": "public" if self.publish_mode == "public" else "draft",
             "status": "PUBLIC_DISPATCHED" if self.publish_mode == "public" else "DRAFT_SAVED",
             "login_ready": self.check_login_status()
@@ -73,6 +76,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
             json.dump(draft_record, f, ensure_ascii=False, indent=2)
 
         mode_desc = "微信视频号公开分发已就绪" if self.publish_mode == "public" else "微信视频号草稿暂存成功"
+        if declare_original:
+            mode_desc += "（已标记原创声明）"
         logger.info(f"WeChat Channels {mode_desc}: {draft_id}")
         return {
             "success": True,

@@ -6,7 +6,7 @@ accounts:
     profile_path: "./data/browser_profiles/douyin-tech"
     proxy_server: ""                 # 留空则直连；生产环境填入 http://user:***@host:port
     fingerprint_seed: "fp_seed_894102_mac_m3"
-    publish_mode: "private_publish"  # 方案A：发布为仅自己可见（私密作品），双端100%立即可见，绝对不公开扩散
+    publish_mode: "public_publish"   # 公开发布（原 private_publish 仅自己可见已切公开）；可见性由 provider 勾选「公开可见」，找不到选项即 fail-closed
     schedule_delay_minutes: 120
     declare_aigc: true
     max_daily_tasks: 4
@@ -36,6 +36,7 @@ accounts:
     mid: "238305427"
     cookie_path: "./data/cookies_bilibili.json"
     tid: 95                        # 科技 -> 计算机技术
+    publish_mode: "public"         # 公开发布（原默认 private_draft 已切公开）
     is_story: 1                    # 开启 B站竖屏 Story 模式
     is_aigc: 1                     # 声明 AIGC 生成
     no_reprint: 1                  # 原创自制
@@ -47,7 +48,7 @@ accounts:
     name: "B站科技号"
     account_type: "tech"
     profile_path: "./data/browser_profiles/bilibili-tech"
-    publish_mode: "only_self_visible" # 仅自己可见/私密草稿箱，绝对不公开扩散
+    publish_mode: "public"            # 公开发布（原 only_self_visible 已切公开）
     tid: 231                         # 科技 -> 计算机技术分区
     declare_aigc: true
     enabled: true
