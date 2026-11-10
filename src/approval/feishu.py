@@ -11,10 +11,57 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("approval.feishu")
+
+# 平台 → 默认视频方向（这是平台规则，不是账号字面量；账号一律从 accounts.yaml 读）
+PLATFORM_ASPECT: dict[str, str] = {
+    "douyin": "vertical",
+    "bilibili": "landscape",
+    "channels": "vertical",
+    "weixin": "vertical",
+}
+
+
+def _publish_targets() -> list[dict[str, Any]]:
+    """从 config/accounts.yaml 读启用的账号，生成审批卡片展示的发布矩阵。
+
+    严禁在代码里写死账号 ID（T4.2 契约：账号字面量零残留）。
+    每个账号可用 publish_aspect / publish_with_title / publish_with_description /
+    declare_aigc / declare_original 覆盖默认值。
+    环境变量 APPROVAL_PUBLISH_TARGETS=off 可关闭展示。
+    """
+    if (os.getenv("APPROVAL_PUBLISH_TARGETS") or "").lower() in {"off", "0", "false"}:
+        return []
+    try:
+        import yaml
+
+        cfg = yaml.safe_load((PROJ / "config" / "accounts.yaml").read_text(encoding="utf-8")) or {}
+    except Exception as e:  # noqa: BLE001 — 配置读不到就不展示矩阵，不影响审批
+        logger.debug(f"读取 accounts.yaml 失败，审批卡片不展示发布矩阵: {e}")
+        return []
+
+    targets: list[dict[str, Any]] = []
+    for acc in cfg.get("accounts") or []:
+        if not isinstance(acc, dict) or not acc.get("enabled"):
+            continue
+        platform = str(acc.get("platform") or "")
+        targets.append({
+            "provider": platform,
+            "account": acc.get("id"),
+            "aspect": acc.get("publish_aspect") or PLATFORM_ASPECT.get(platform, "vertical"),
+            "with_title": bool(acc.get("publish_with_title", True)),
+            "with_description": bool(acc.get("publish_with_description", True)),
+            "declare_aigc": bool(acc.get("declare_aigc", acc.get("is_aigc", 0) == 1)),
+            # B站用 no_reprint=1 表示原创自制，这里统一映射成 declare_original
+            "declare_original": bool(acc.get("declare_original", acc.get("no_reprint", 0) == 1)),
+        })
+    return targets
 
 PROJ = Path(__file__).resolve().parent.parent.parent
 DECISION_DIR = PROJ / "data" / "approvals"
@@ -91,10 +138,38 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str) -> dict[str, Any]:
         dp.unlink()          # 清掉上一轮残留裁决，避免"旧 approve 放行新一轮"
 
     svc = FeishuApprovalService()
-    text = f"【待审批】{run_id}\n回 approve / reject"
+
+    # 审批消息用 Card 2.0（交互卡片）：把"将发布到哪些平台、各平台怎么发"写清楚，
+    # 附两个按钮；决策仍以回复 approve / reject 为权威路径（按钮回调可选）。
+    title = ""
+    try:
+        dp_art = artifacts.get("draft_script") if isinstance(artifacts, dict) else None
+        if dp_art and Path(dp_art).exists():
+            _d = json.loads(Path(dp_art).read_text(encoding="utf-8"))
+            title = str(_d.get("title") or _d.get("short_title") or "")
+    except Exception as e:  # noqa: BLE001 — 取标题失败不影响审批
+        logger.debug(f"读取 draft_script 标题失败，卡片标题留空: {e}")
+
     since_ms = int(time.time() * 1000) - 5000      # 容忍 5s 时钟偏差
-    msg_id, chat_id = svc.send_text_message_ex(
-        receive_id=receive_id, receive_id_type=rec_type, text=text)
+    msg_id = None
+    chat_id = ""
+    try:
+        from src.feishu.card_builder import FeishuCardBuilder
+
+        card = FeishuCardBuilder.build_approval_card2(
+            run_id=run_id, title=title, targets=_publish_targets(), delivered=True)
+        msg_id = svc.send_approval_card(receive_id=receive_id,
+                                        receive_id_type=rec_type, card_content=card)
+        if msg_id:
+            chat_id = receive_id if rec_type == "chat_id" else ""
+    except Exception as e:  # noqa: BLE001 — 卡片失败必须降级到文本，不能卡住审批
+        logger.warning(f"审批卡片发送失败，降级为文本: {e}")
+        msg_id = None
+
+    if not msg_id:
+        text = f"【待审批】{run_id}\n回 approve / reject"
+        msg_id, chat_id = svc.send_text_message_ex(
+            receive_id=receive_id, receive_id_type=rec_type, text=text)
     if not msg_id:
         return {"decision": "reject", "decided_by": "feishu_send_failed",
                 "reason": "审批通知发送失败"}
