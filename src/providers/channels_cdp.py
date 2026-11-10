@@ -189,28 +189,56 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     return {"success": False, "published": False, "status": "EDITOR_TIMEOUT",
                             "message": "等待编辑器就绪超时（视频可能仍在转码）"}
 
-                # 3. 填文案（标题 + 正文 + 话题），走 execCommand 注入
+                # 3. 填文案（描述编辑器 + 短标题 + 话题）
+                # ⚠️ 视频号的描述编辑器是 `<div contenteditable="" data-placeholder="添加描述" class="input-editor">`
+                #    contenteditable 是**空字符串**，`[contenteditable='true']` 选不到它，
+                #    旧实现于是命中了「商品链接」textarea，文案写进了垃圾桶（2026-11-10 实测）。
                 tag_str = " ".join(f"#{t}" if not str(t).startswith("#") else str(t) for t in topics[:5])
                 payload = f"{title}\n\n{content_text[:200]}\n\n{tag_str}"
-                await ui.evaluate("""(txt) => {
-                    const ed = document.querySelector("[contenteditable='true']")
-                            || document.querySelector("textarea");
-                    if (!ed) return false;
+                fill = await ui.evaluate("""(txt) => {
+                    const ed = document.querySelector('.post-desc-box .input-editor')
+                        || document.querySelector('.input-editor[data-placeholder]')
+                        || document.querySelector("[contenteditable]:not([contenteditable='false'])");
+                    if (!ed) return {ok: false, reason: 'editor_not_found'};
                     ed.focus();
-                    if (ed.tagName === 'TEXTAREA') {
-                        ed.value = txt;
-                        ed.dispatchEvent(new Event('input', {bubbles: true}));
-                    } else {
-                        document.execCommand('insertText', false, txt);
+                    ed.innerHTML = '';
+                    document.execCommand('insertText', false, txt);
+                    if (!(ed.innerText || '').trim()) {
+                        ed.innerHTML = txt.split('\\n')
+                            .map(l => `<div>${l || '<br>'}</div>`).join('');
                     }
-                    return true;
+                    ed.dispatchEvent(new InputEvent('input', {bubbles: true}));
+                    return {ok: true, text: (ed.innerText || '').trim(),
+                            cls: (ed.className || '').toString()};
                 }""", payload)
-                await asyncio.sleep(1)
-                filled_text = await ui.evaluate("""() => {
-                    const ed = document.querySelector("[contenteditable='true']")
-                            || document.querySelector("textarea");
-                    return ed ? (ed.innerText || ed.value || '') : '';
-                }""")
+                filled_text = str((fill or {}).get("text") or "")
+                editor_cls = str((fill or {}).get("cls") or "")
+
+                # 短标题（可选，展示在公众号/发现页）
+                short_title_filled = ""
+                try:
+                    short_title_filled = await ui.evaluate("""(t) => {
+                        const inp = document.querySelector("input[placeholder*='短标题']");
+                        if (!inp) return '';
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(inp, t);
+                        inp.dispatchEvent(new Event('input', {bubbles: true}));
+                        return inp.value || '';
+                    }""", title[:16])
+                except Exception as e:  # noqa: BLE001 — 短标题是加分项，失败不阻断
+                    logger.debug(f"[CHANNELS] 短标题填写失败（不阻断）: {e}")
+
+                # fail-closed：描述为空绝不发布（否则会发出「无标题无文案」的空作品）
+                if len(filled_text) < 10:
+                    await page.screenshot(path=str(shot_dir / "fail_description_empty.png"),
+                                          full_page=True)
+                    return {"success": False, "published": False,
+                            "status": "DESCRIPTION_EMPTY",
+                            "editor_class": editor_cls,
+                            "filled_text": filled_text[:120],
+                            "screenshot": str(shot_dir / "fail_description_empty.png"),
+                            "message": "描述编辑器回读为空（或过短），已中止发布（fail-closed）"}
 
                 # 4. 原创声明：label 含「原创」的 checkbox（fail-closed）
                 orig_done = False
@@ -297,6 +325,42 @@ class ChannelsCDPProvider(BaseSocialProvider):
                         break
 
                 await page.screenshot(path=str(shot_dir / "after_publish.png"), full_page=True)
+
+                # 8. 权威回读：post_list 里必须能看到这条作品的 desc.description 命中标题
+                readback = {"verified": False, "reason": "未执行"}
+                if published:
+                    try:
+                        raw = await page.evaluate("""async () => {
+                          const r = await fetch('/cgi-bin/mmfinderassistant-bin/post/post_list', {
+                            method:'POST', credentials:'include',
+                            headers:{'Content-Type':'application/json'},
+                            body: JSON.stringify({pageSize: 5, currentPage: 1, timestamp: Date.now()})
+                          });
+                          return await r.text();
+                        }""")
+                        data = json.loads(raw)
+                        items = ((data.get("data") or {}).get("list") or [])
+                        hit = None
+                        for it in items:
+                            d = it.get("desc") or {}
+                            blob = json.dumps(d, ensure_ascii=False)
+                            if title[:10] in blob:
+                                hit = {"createTime": it.get("createTime"),
+                                       "description_len": len(str(d.get("description") or "")),
+                                       "topic": bool(d.get("topic")),
+                                       "objectId": str(it.get("objectId") or "")[:32]}
+                                break
+                        if hit:
+                            readback = {"verified": True, **hit}
+                            if hit["description_len"] < 10:
+                                published = False
+                                evidence = "回读文案为空"
+                        else:
+                            readback = {"verified": False,
+                                        "reason": f"post_list 前 {len(items)} 条未见标题"}
+                    except Exception as e:  # noqa: BLE001 — 回读失败不掩盖已取得的成功证据
+                        readback = {"verified": False, "reason": f"回读异常: {str(e)[:80]}"}
+
                 return {
                     "success": published,
                     "published": published,
@@ -307,8 +371,11 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     "aigc_state": aigc_state,
                     "original_label": orig_txt,
                     "filled_text": filled_text[:200],
+                    "editor_class": editor_cls,
+                    "short_title": short_title_filled,
+                    "readback": readback,
                     "screenshot": str(shot_dir / "after_publish.png"),
-                    "message": ("已发表并取得平台侧证据" if published
+                    "message": ("已发表并取得平台侧证据（含 post_list 回读）" if published
                                 else "已点击发表但未取得平台侧证据，请人工确认（不虚报成功）"),
                 }
             finally:
