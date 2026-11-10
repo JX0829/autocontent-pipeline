@@ -102,7 +102,6 @@ def impl_path(spec: dict[str, Any]) -> Path:
 # 待对应任务把 impl 改成标准 hook 协议后，删掉这里的条目即可。
 ADAPTERS: dict[str, tuple[str, str]] = {
     "hook.landscape_guard": ("scripts.landscape_guard", "check_landscape"),
-    "hook.card_render": ("src.feishu.card_builder", "build_approval_card"),
 }
 
 
@@ -139,37 +138,6 @@ def _run_adapter(name: str, payload: dict[str, Any]) -> HookResult | None:
                               reason="" if ok else str((report or {}).get("reason") or "landscape_guard 拦截"),
                               elapsed=time.time() - t0)
 
-        # hook.card_render —— 按 context.card_kind 分派（T3.2-R3 下沉后有两类卡）
-        builder = getattr(module, "FeishuCardBuilder")
-        ctx = payload.get("context") or {}
-        card_kind = str(ctx.get("card_kind") or "")
-        if card_kind in ("mobile_copy", "post"):
-            try:
-                if card_kind == "post":
-                    card = builder.build_card2_from_post(ctx.get("post_payload") or {})
-                else:
-                    card = builder.build_mobile_copy_card(
-                        task_id=str(ctx.get("task_id") or payload.get("task_id") or ""),
-                        short_title=str(ctx.get("short_title") or ""),
-                        full_body=str(ctx.get("full_body") or ""),
-                        heading=ctx.get("heading"),
-                        lead=ctx.get("lead"),
-                    )
-            except Exception as exc:
-                return HookResult(name=name, kind="transform", ok=False,
-                                  reason=f"card_render_failed: {exc}", elapsed=time.time() - t0)
-            return HookResult(name=name, kind="transform", ok=True,
-                              patch={"card": card, "schema": card.get("schema")},
-                              elapsed=time.time() - t0)
-
-        card_args = (payload.get("context") or {}).get("card_args")
-        if not isinstance(card_args, dict):
-            return HookResult(name=name, kind="transform", ok=False,
-                              reason="adapter_args_missing: 缺 context.card_args 或 card_kind",
-                              elapsed=time.time() - t0)
-        card = builder.build_approval_card(**card_args)
-        return HookResult(name=name, kind="transform", ok=True,
-                          patch={"card": card}, elapsed=time.time() - t0)
     except Exception as exc:
         return HookResult(name=name, kind="gate", ok=False,
                           reason=f"hook_crashed(adapter): {type(exc).__name__}: {exc}",
