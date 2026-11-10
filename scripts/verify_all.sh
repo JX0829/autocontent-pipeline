@@ -37,6 +37,7 @@ run "任务契约回归"        "$PY" scripts/test_task_contracts.py
 run "静默失败扫描"        "$PY" scripts/audit_silent_failure.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send
 run "封面硬编码扫描"      "$PY" scripts/check_cover_hardcode.py
+run "发布入口收口审计"    "$PY" scripts/audit_publish_entrypoints.py
 run "cron pin 巡检"       "$PY" scripts/audit_cron_pin.py
 
 if [ "$MODE" != "fast" ]; then

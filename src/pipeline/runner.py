@@ -671,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3.5 状态库（T2.2）：真实运行才落库；干跑绝不写入
     db = None if args.dry_run else _db(Path(args.db))
+    auto_resume = False
     if db is not None:
         existing = db.find_run_by_content(content_hash, account)
         if existing and existing.get("status") == "DONE" and not args.resume:
@@ -678,6 +679,19 @@ def main(argv: list[str] | None = None) -> int:
                   f"  同内容已出片: run_id={existing['run_id']} status=DONE\n"
                   f"  content_hash={content_hash[:16]}… account={account}")
             return EXIT_OK
+        if existing and existing.get("status") != "DONE" and not args.resume:
+            # D 修复：同内容历史 run 处于 FAILED/RUNNING/PARTIAL 时按「重试」处理，
+            # 复用原 run_id 与原 run_root —— 否则新 run_root 与库里 run_id 错配，
+            # 续跑/对账必然找不到产物，表现为「重跑必崩、永远卡住」。
+            run_id = existing["run_id"]
+            if existing.get("run_root"):
+                run_root = Path(existing["run_root"])
+            task_id = str(existing.get("task_id") or task_id)
+            auto_resume = True
+            print(f"\n=== 同内容历史 run 重试 ===\n"
+                  f"  run_id={run_id} status={existing.get('status')}\n"
+                  f"  复用 run_root={run_root}\n"
+                  f"  （如需全新一版，请先归档该 run 或换物料）")
         if existing and args.resume:
             run_id = existing["run_id"]
             # 断点续跑必须回到**原来那个 run_root**，否则找不到上一步产物
@@ -702,9 +716,10 @@ def main(argv: list[str] | None = None) -> int:
     # 4. 断点
     step_ids = [s["id"] for s in cfg["steps"]]
     start_index = 0
-    if args.resume:
+    if args.resume or auto_resume:
         start_index, why = resume_point(run_id, step_ids, Path(args.db))
-        print(f"\n=== 断点续跑 ===\n  {why}")
+        label = "断点续跑" if args.resume else "同内容重试续跑"
+        print(f"\n=== {label} ===\n  {why}")
 
     # 5. 计划 + 对账
     print_plan(cfg, start_index)

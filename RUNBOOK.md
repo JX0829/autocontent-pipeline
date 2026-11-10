@@ -90,6 +90,29 @@ DISPATCH_MODE=output_only \
 
 ---
 
+### 3.1 从速报直接转物料（量产链路 A）
+
+速报快照 → 物料 JSON 不用手写：
+
+```bash
+# 看当前快照有哪些条目（编号与飞书速报一致）
+python3 scripts/digest_to_material.py --list
+
+# 第 3 条 → materials/digest-3-<uid>.json（标题自动重拟到 ≤20 字，非机械截断）
+python3 scripts/digest_to_material.py --index 3
+
+# 按 unique_id / 原文链接精确取
+python3 scripts/digest_to_material.py --unique-id tw_2119746840887537800
+python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
+```
+
+产出物字段严格对齐 `manifest.schema.json`：`title`（≤20 字）+ `body` + `source_url` + `account`
+（`account` 取自 `pipeline.yaml` 的 `inputs.account.default`，代码里没有字面量）。
+
+拿到路径后直接进 §2 ② / ③。
+
+---
+
 ## 4. 运行模式（最容易踩的两个坑）
 
 ### 4.1 发不发片
