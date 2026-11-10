@@ -197,27 +197,22 @@ def test_t42() -> None:
     else:
         skip("for_platform(空平台) 报错", "三个平台都有启用账号")
 
-    # source_url 三态
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_rh", PROJ / "scripts" / "render_hotspot.py")
-    mod = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    except SystemExit:
-        pass
-    if hasattr(mod, "_require_source_url"):
-        fn = mod._require_source_url
-        if fn({"source_url": "https://example.com/a"}) == "https://example.com/a":
-            ok("source_url 直传")
-        else:
-            bad("source_url 直传", "返回值不符")
-        if fn({"manifest": {"source_url": "https://example.com/b"}}) == "https://example.com/b":
-            ok("source_url 从 manifest 兜底")
-        else:
-            bad("source_url 从 manifest 兜底", "返回值不符")
-        expect_raises("source_url 缺失即报错", lambda: fn({}), ValueError, "了缺失")
+    # source_url 三态（契约现由 src/pipeline/manifest.py 承担）
+    from src.pipeline.manifest import load_manifest, validate
+    m = load_manifest({"title": "测试物料标题", "source_url": "https://example.com/a"})
+    if m.source_url == "https://example.com/a":
+        ok("source_url 直传")
     else:
-        bad("_require_source_url 存在", "render_hotspot.py 里找不到")
+        bad("source_url 直传", f"实际 {m.source_url}")
+    m2 = load_manifest({"title": "测试物料标题", "body": "这是一段足够长的测试正文内容，用于校验 body 兜底路径。"})
+    if m2.source_url is None and not validate(m2):
+        ok("body 存在时 source_url 可空")
+    else:
+        bad("body 存在时 source_url 可空", str(validate(m2)))
+    if any("body 或 source_url" in e for e in validate({"title": "测试物料标题"})):
+        ok("source_url 缺失即报错")
+    else:
+        bad("source_url 缺失即报错", "validate 未命中 anyOf 规则")
 
     hits = scan_literals([r"127\.0\.0\.1:8317", r"douyin-tech-main",
                           r"news\.hot-digest\.local"])
