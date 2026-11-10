@@ -162,9 +162,79 @@ python3 scripts/send_run_artifacts.py --run-id <run_id> --videos-only
 
 `artifacts.txt` 也已按 `[vertical]` / `[landscape]` 分组标注，可直接照着发。
 
+### 5.2 抖音发布：必须走 CDP 真机（**headless 必失败**）
+
+抖音对 headless 自动化有指纹识别（`navigator.webdriver`、`--remote-debugging-pipe`），
+扫码/短信验证会被判「二维码异常/已过期」并作废，`DouyinProvider` 只要页面跳回管理页就
+`return success=True`——**那是假成功，不可信**。
+
+唯一可行路径：`connect_over_cdp` 接管**已人工登录的真实 Chrome**。
+
+```bash
+# ① 启动真实 Chrome（headful，端口 9333；勿用 9222，该端口专供 Agent-Reach）
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9333 \
+  --user-data-dir="$PWD/data/browser_profiles/douyin-cdp" \
+  --no-first-run --no-default-browser-check --window-size=1280,900 about:blank
+
+# ② 在该窗口内人工扫码/验证码登录创作者中心（一次即可，会话持久化在 user-data-dir）
+
+# ③ 自检（只校验输入 + CDP 连通 + 回读作品数，不上传不发布）
+python3 scripts/publish_douyin_cdp.py --run-id <run_id> --dry-run
+
+# ④ 真实发布（按 accounts.yaml 的 publish_mode，默认「仅自己可见」私密作品）
+python3 scripts/publish_douyin_cdp.py --run-id <run_id>
+```
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 已入库，且作品列表回读命中标题 |
+| `2` | 入参/环境错误（找不到产物、缺 title、账号配置缺失） |
+| `6` | 点发布后回读未命中（风控静默拦截），截图存 `output/douyin_diag/` |
+| `7` | 需要人工二次验证（短信/扫码），截图存 `output/douyin_diag/` |
+
+**成功判据（只认这两个）**：作品数 `作品 (N)` → `作品 (N+1)`，且列表正文命中标题。
+脚本已内置幂等：标题已在列表中则直接跳过，不会重复发。
+
 ---
 
-## 6. 幂等与重跑（第二容易踩的坑）
+## 6. 三平台发布（现状必须分清）
+
+| 平台 | 实现 | 公开发布 | AI 合成声明 | 原创 |
+|---|---|---|---|---|
+| 抖音 | `src/providers/douyin.py`（Playwright CDP） | ✅ `public_publish` | ✅ 自动勾选 | — |
+| B站 | `src/providers/bilibili.py` + `scripts/bilibili_live_uploader.py` | ✅ `public` | ✅ `creation_statement_id=1` | ✅ `original=True` |
+| 视频号 | `src/providers/channels_cdp.py`（Playwright） | ✅ 发表后公开 | ✅ 勾选 | ✅ 勾选（fail-closed） |
+
+### 7.1 微信视频号
+
+登录态会过期，过期后所有发布都会返回 `LOGIN_EXPIRED`（不会假装成功）。
+
+```bash
+# ① 检查登录态
+python3 scripts/channels_login.py --check
+
+# ② 过期了就重新扫码（会打开浏览器，人工扫码）
+python3 scripts/channels_login.py
+
+# ③ 探针：确认页面能打开、登录有效（不上传不发布）
+python3 scripts/publish_channels.py --probe
+
+# ④ 真实发布（公开 + 原创 + AI 声明）
+python3 scripts/publish_channels.py --run-id <run_id>
+```
+
+**行为约定**：
+
+- 要求勾原创但页面找不到原创控件 → **中止发布**（`ORIGINAL_CHECKBOX_NOT_FOUND`），不会"找不到就默认发"
+- 点了「发表」但没拿到平台侧证据（成功文案 / URL 跳转）→ `PUBLISHED_UNVERIFIED`，不报成功
+- 每次操作截图落在 `data/browser_profiles/channels-tech/`（`before_publish.png` / `after_publish.png`）
+
+**注意**：本机 Playwright 未下载自带 Chromium，统一用系统 Chrome（`channel="chrome"`）。
+
+---
+
+## 7. 幂等与重跑（第二容易踩的坑）
 
 | 场景 | 结果 |
 |---|---|
@@ -188,7 +258,7 @@ sqlite3 data/pipeline_state.db "select dedupe_key,task_id,feishu_msg_id,sent_at 
 
 ---
 
-## 7. 验收 / 自检
+## 8. 验收 / 自检
 
 ```bash
 bash scripts/verify_all.sh --fast   # 0.7s  静态扫描 5 项（可挂 pre-commit）
@@ -209,7 +279,7 @@ python3 scripts/test_task_contracts.py   # 任务契约回归 33 项
 
 ---
 
-## 8. 故障排查
+## 9. 故障排查
 
 | 症状 | 原因 | 处理 |
 |---|---|---|
@@ -225,7 +295,7 @@ python3 scripts/test_task_contracts.py   # 任务契约回归 33 项
 
 ---
 
-## 9. 禁止事项
+## 10. 禁止事项
 
 1. **不要 `git add -A`** —— 仓库多 Agent 并行，会把别人未完成的工作裹进提交。逐文件 `git add`。
 2. **不要直接调 `PipelineDB.init_db()` 改生产库** —— 用 `scripts/migrate_db.py`（默认 dry-run，`--apply` 才写）。
@@ -235,7 +305,7 @@ python3 scripts/test_task_contracts.py   # 任务契约回归 33 项
 
 ---
 
-## 10. 文件地图
+## 11. 文件地图
 
 | 路径 | 作用 |
 |---|---|
@@ -253,7 +323,7 @@ python3 scripts/test_task_contracts.py   # 任务契约回归 33 项
 
 ---
 
-## 11. 最小排障顺序
+## 12. 最小排障顺序
 
 出问题时按这个顺序看，90% 能定位：
 

@@ -1,0 +1,6 @@
+{
+  "title": "Claude 5.2 发布：能力全面暴涨",
+  "body": "Anthropic 于 2026 年 11 月 9 日发布 Claude Fable 5.2 与 Claude Mythos 5.2，同一底座模型、不同安全阈值。官方称预发布阶段它帮工程师完成了原本不可行的软件迁移、从零设计出三台可工作的电子设备、解决了黑洞物理的两个开放问题，并用 30 小时形式化证明了费马大定理。生成速度比 5.1 快 30%，价格降到每百万输入 8 美元、输出 40 美元；开启快速模式可再提速 2.5 倍。基准上 FrontierCode 2.0 达 49.1%，超过 Opus 5.5 的 45.5% 与 GPT-6 Astra 的 42.8%；RoboDojo 机器人仿真从 27.6% 跃升到 64.9%，CVE 漏洞复现率 89.6%。",
+  "source_url": "https://www.anthropic.com/claude-fable-and-mythos-5-2",
+  "task_id": "news_claude_5_2_20261110"
+}
