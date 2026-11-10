@@ -40,6 +40,62 @@ ACCOUNT = {"id": "channels-tech-main", "platform": "channels",
            "profile_path": "./data/browser_profiles/channels-tech"}
 
 
+def compose_caption_body(draft: dict) -> str:
+    """视频号简介正文：把分镜旁白提炼成 ①②③ 要点块（不含标题与话题，由 provider 拼）"""
+    scenes = draft.get("scenes") or []
+    bullets = []
+    for sc in scenes:
+        t = str(sc.get("segment_narration") or "").strip()
+        if not t:
+            continue
+        # 末镜常带「欢迎在评论区交流讨论～」这类收尾，不放进要点
+        if "欢迎在评论区" in t or "评论区交流" in t:
+            continue
+        bullets.append(t)
+    bullets = bullets[:3]
+    fact = str(draft.get("fact_summary_150") or "").strip()
+    lines = []
+    if fact:
+        lines.append(fact)
+    if bullets:
+        if lines:
+            lines.append("")
+        marks = "①②③④⑤"
+        for i, b in enumerate(bullets):
+            lines.append(f"{marks[i]} {b}")
+    lines.append("")
+    lines.append("它不接管整个项目，只把流程拆成可复用的几步；欢迎在评论区交流讨论～")
+    return "\n".join(lines).strip()
+
+
+def build_body(draft: dict) -> str:
+    """简介正文：优先 full_body/summary，其次 150 字事实摘要，最后用分镜旁白拼要点。
+
+    历史坑：draft_script.json 只产出 fact_summary_150 + scenes[].segment_narration，
+    没有 full_body/summary，旧实现直接拿到空串 → 视频号发出「只有标题没正文」的空简介。
+    """
+    for key in ("full_body", "summary", "fact_summary_150"):
+        v = draft.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    narr = [str(s.get("segment_narration") or "").strip()
+            for s in (draft.get("scenes") or [])]
+    narr = [n for n in narr if n]
+    if not narr:
+        return ""
+    lines, buf = [], ""
+    for n in narr[:3]:
+        cand = (buf + " " + n).strip() if buf else n
+        if len(cand) > 160 and buf:
+            lines.append(buf)
+            buf = n
+        else:
+            buf = cand
+    if buf:
+        lines.append(buf)
+    return "\n".join(lines).strip()
+
+
 def load_run(run_id: str) -> tuple[str, str, str, list[str]]:
     hits = sorted(PROJ.glob(f"output/*/{run_id}"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not hits:
@@ -54,7 +110,7 @@ def load_run(run_id: str) -> tuple[str, str, str, list[str]]:
     if dp.exists():
         draft = json.loads(dp.read_text(encoding="utf-8"))
     title = (draft.get("title") or draft.get("short_title") or run_id)[:30]
-    body = draft.get("full_body") or draft.get("summary") or ""
+    body = compose_caption_body(draft) or build_body(draft)
     tags = draft.get("tags") or draft.get("topics") or []
     return str(video), str(cover), title, tags if isinstance(tags, list) else []
 
@@ -94,7 +150,7 @@ def main() -> int:
         dp = sorted(PROJ.glob(f"output/*/{args.run_id}/draft_script.json"))
         if dp:
             d = json.loads(dp[0].read_text(encoding="utf-8"))
-            body = d.get("full_body") or d.get("summary") or ""
+            body = compose_caption_body(d) or build_body(d)
     else:
         ap.error("需要 --run-id 或 --video")
 

@@ -194,7 +194,17 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 #    contenteditable 是**空字符串**，`[contenteditable='true']` 选不到它，
                 #    旧实现于是命中了「商品链接」textarea，文案写进了垃圾桶（2026-11-10 实测）。
                 tag_str = " ".join(f"#{t}" if not str(t).startswith("#") else str(t) for t in topics[:5])
-                payload = f"{title}\n\n{content_text[:200]}\n\n{tag_str}"
+                # 按整行截断，绝不把句子/话题砍成半截
+                def _cap_lines(text: str, limit: int = 360) -> str:
+                    out, total = [], 0
+                    for line in str(text or "").split("\n"):
+                        if out and total + len(line) + 1 > limit:
+                            break
+                        out.append(line)
+                        total += len(line) + 1
+                    return "\n".join(out).strip()
+
+                payload = f"{title}\n\n{_cap_lines(content_text)}\n\n{tag_str}"
                 fill = await ui.evaluate("""(txt) => {
                     const ed = document.querySelector('.post-desc-box .input-editor')
                         || document.querySelector('.input-editor[data-placeholder]')
