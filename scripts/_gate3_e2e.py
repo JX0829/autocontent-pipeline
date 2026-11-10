@@ -37,6 +37,7 @@ import src.feishu.approval_service as _svc  # noqa: E402
 from src.utils.accounts import default_account  # noqa: E402
 
 SENT: list[dict] = []
+NOTICES: list[dict] = []
 
 
 class _FakeApprovalService:
@@ -46,6 +47,11 @@ class _FakeApprovalService:
     def upload_and_send_video(self, **kw):
         SENT.append(kw)
         return f"om_fake_{len(SENT):03d}"
+
+    def send_text_message(self, receive_id, text):
+        """出片完成通知也走假传输 —— 验收绝不允许往真实群里发消息。"""
+        NOTICES.append({"receive_id": receive_id, "text": text})
+        return f"om_fake_notice_{len(NOTICES):03d}"
 
 
 _svc.FeishuApprovalService = _FakeApprovalService

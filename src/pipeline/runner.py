@@ -23,6 +23,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import time
 import re
 import shutil
 import sqlite3
@@ -392,6 +393,37 @@ def _discover_artifacts(run_root: Path) -> dict[str, str]:
     return found
 
 
+def notify_render_done(cfg: dict[str, Any], run_id: str, run_root: Path,
+                       artifacts: dict[str, str]) -> None:
+    """出片一完成立即汇报（不等审批/投递）。失败只告警，绝不影响出片流程。"""
+    ncfg = cfg.get("notify") or {}
+    if not ncfg.get("render_done", True):
+        return
+    vids = [(k, artifacts[k]) for k in ("video", "video_16_9") if artifacts.get(k)]
+    if not vids:
+        return
+
+    lines = [f"✅ 出片完成 · {run_id}"]
+    for key, path in vids:
+        f = Path(path)
+        size = f"{f.stat().st_size / 1e6:.1f}MB" if f.exists() else "缺失"
+        lines.append(f"  {key}: {f.name}（{size}）")
+    lines.append(f"  目录: {run_root}")
+
+    try:
+        from src.feishu.approval_service import FeishuApprovalService
+        chat = os.getenv("FEISHU_APPROVAL_CHAT_ID") or ""
+        if not chat:
+            print("  ! 出片通知跳过：未配置 FEISHU_APPROVAL_CHAT_ID")
+            return
+        # send_text_message 需要 (receive_id, receive_id_type, text) —— 真实签名在真机上核对过
+        id_type = "chat_id" if chat.startswith("oc_") else "open_id"
+        msg_id = FeishuApprovalService().send_text_message(chat, id_type, "\n".join(lines))
+        print(f"  ✓ 出片完成已汇报（飞书 msg_id={msg_id}）")
+    except Exception as exc:  # noqa: BLE001 — 通知失败不能把出片判失败
+        print(f"  ! 出片通知失败（不影响出片）：{type(exc).__name__}: {exc}")
+
+
 def _execute_step(cfg: dict[str, Any], step: dict[str, Any], *,
                   artifacts: dict[str, str], run_id: str, task_id: str,
                   run_root: Path, material: dict[str, Any] | None,
@@ -437,14 +469,35 @@ def _execute_step(cfg: dict[str, Any], step: dict[str, Any], *,
         if not ok:
             return False, {}, "before_hooks 阻断"
 
+    # 自动重试：pipeline.yaml 每步声明的 retry:{max,on_schema_error} 真实生效
+    # （此前是死配置 —— 声明了没人读，LLM 超时一次就整步失败）
+    rcfg = step.get("retry") or {}
     try:
-        produced = run_step(step, StepContext(
-            step=step, run_root=run_root, run_id=run_id, task_id=task_id,
-            material=material, artifacts=dict(artifacts),
-            params=params, db_path=str(db_path),
-        ))
-    except ExecutorError as exc:
-        return False, {}, f"执行失败：{exc}"
+        max_attempts = max(1, int(rcfg.get("max") or 1))
+    except (TypeError, ValueError):
+        max_attempts = 1
+    backoff = 2.0
+    produced: dict[str, str] = {}
+    last_err = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            produced = run_step(step, StepContext(
+                step=step, run_root=run_root, run_id=run_id, task_id=task_id,
+                material=material, artifacts=dict(artifacts),
+                params=params, db_path=str(db_path),
+            ))
+            last_err = ""
+            break
+        except ExecutorError as exc:
+            last_err = str(exc)
+        except Exception as exc:  # noqa: BLE001 — 超时/网络等非 ExecutorError 也必须落库成 BLOCKED
+            last_err = f"{type(exc).__name__}: {exc}"
+        if attempt < max_attempts:
+            print(f"      · 第 {attempt}/{max_attempts} 次失败：{last_err[:140]} → 重试")
+            time.sleep(backoff * attempt)
+    if last_err:
+        return False, {}, (f"执行失败（{max_attempts}/{max_attempts} 次尝试）：{last_err}"
+                           if max_attempts > 1 else f"执行失败：{last_err}")
 
     merged = dict(artifacts)
     merged.update(produced or {})
@@ -545,6 +598,8 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
             print(f"  [{sid}] 产出: {', '.join(sorted(produced)) or '（无）'}")
             if db:
                 db.set_step_status(run_id, sid, "DONE")
+            if sid.startswith("render"):
+                notify_render_done(cfg, run_id, run_root, artifacts)
         else:
             print(f"  [{group}] 并行执行 {len(batch)} 步: {', '.join(s['id'] for s in batch)}")
             for s in batch:
@@ -577,6 +632,8 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
                 if db:
                     db.update_run_status(run_id, "BLOCKED")
                 return EXIT_NOT_IMPLEMENTED
+            if any(str(s["id"]).startswith("render") for s in batch):
+                notify_render_done(cfg, run_id, run_root, artifacts)
 
         i = nxt
 
