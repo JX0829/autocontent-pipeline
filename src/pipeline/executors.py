@@ -139,8 +139,22 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     return {"draft_script": str(out)}
 
 
-def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
-    """竖版：TTS 对齐 → GeekShortVideo / CoverStill / XhsCardStill（T4.1 props 隔离）。"""
+def _load_draft(ctx: StepContext) -> dict[str, Any]:
+    path = ctx.artifacts.get("draft_script") or str(ctx.out("draft_script.json"))
+    if not Path(path).exists():
+        raise ExecutorError(f"draft_script 不存在: {path}")
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ExecutorError(f"draft_script 不是合法 JSON: {exc}") from exc
+
+
+def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
+    """TTS 对齐 → {run_root}/props/（T4.1 隔离）+ public/runs/<run_id> 软链。
+
+    软链必须在渲染前建好：Remotion 只经 public/ 供静态资源，
+    缺链接会直接 readFile ENOENT（实测踩过）。
+    """
     from src.schemas import DraftScriptPayload
     from src.tts.aligner import TTSAligner
 
@@ -149,13 +163,10 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
     slot = "tts.tech" if str(draft.get("target_account_type") or "tech") == "tech" else "tts.news"
     aligner = TTSAligner.from_slot(slot)
 
-    # T4.1：props（JSON + 分段音频）落在 {run_root}/props/，不再写 renderer/public/tasks/
     props_dir = ctx.run_root / "props"
     props_dir.mkdir(parents=True, exist_ok=True)
     public_prefix = f"runs/{ctx.run_id}"
 
-    # Remotion 只能通过 public/ 提供静态资源 → 用软链把 run 隔离目录挂进 public。
-    # 并发跑两个 run 时各自指向自己的 props，天然无交集。
     link = RENDERER / "public" / "runs" / ctx.run_id
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink() or link.exists():
@@ -168,60 +179,66 @@ def _align_and_render_vertical(ctx: StepContext, draft: dict[str, Any]) -> dict[
 
     props_path = props_dir / "aligned_render.json"
     props_data = aligned.model_dump()
-    # T4.4：封面三卡取哪几镜由 pipeline.yaml 的 cover.card_source 声明，
-    # 组件只读不写死（原实现把 [0,1,3] 硬编码在 TSX 里，改配置不生效）
+    # T4.4：封面三卡取哪几镜由 pipeline.yaml 的 cover.card_source 声明
     from src.pipeline.contracts import load_pipeline
     props_data["cover_card_source"] = (
         (load_pipeline().get("cover") or {}).get("card_source") or [0, 1, 3])
     _write_json(props_path, props_data)
+    return props_path
+
+
+def exec_align_tts(ctx: StepContext) -> dict[str, str]:
+    """builtin.align_tts：只做 TTS 对齐 + props 落盘，竖版/横版两路共用。
+
+    拆出这一步是并行渲染的前提：横版读 props，不读竖版成片。
+    """
+    draft = _load_draft(ctx)
+    return {"props": str(_prepare_props(ctx, draft))}
+
+
+def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
+    """竖版渲染（只渲染，不碰 TTS —— props 由 align_tts 产出）。"""
+    props = ctx.artifacts.get("props") or str(ctx.run_root / "props" / "aligned_render.json")
+    if not Path(props).exists():
+        raise ExecutorError(f"竖版 props 不存在: {props}（align_tts 未产出）")
 
     video = ctx.out("video.mp4")
     cover = ctx.out("cover.png")
-
     _remotion("render", "src/index.ts", "GeekShortVideo", str(video),
-              f"--props={props_path.resolve()}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p")
+              f"--props={Path(props).resolve()}", "--codec=h264", "--crf=18",
+              "--pixel-format=yuv420p")
     _remotion("still", "src/index.ts", "CoverStill", str(cover),
-              f"--props={props_path.resolve()}", "--image-format=png")
-
-    _assert_has_audio(video)   # 无声片零容忍：缺音轨直接失败，不进入分发
-
-    return {"video": str(video), "cover": str(cover), "props": str(props_path)}
+              f"--props={Path(props).resolve()}", "--image-format=png")
+    _assert_has_audio(video)   # 无声片零容忍
+    return {"video": str(video), "cover": str(cover)}
 
 
 def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
     """横版：复用 scripts/render_landscape.py（内置 landscape_guard 出厂校验）。
 
-    T4.1：直接渲染到 run_root，产物名已是规范名 `video_16_9.mp4` / `cover_16_9.png`，
-    不再复制改名（命名统一后无中间态）。
+    T4.1：直接渲染到 run_root，产物名已是规范名 `video_16_9.mp4` / `cover_16_9.png`。
     """
     from scripts.render_landscape import render_landscape
 
     props = ctx.artifacts.get("props") or str(ctx.run_root / "props" / "aligned_render.json")
     if not Path(props).exists():
-        props = str(RENDERER / "public" / "tasks" / ctx.task_id / "aligned_render.json")
-    if not Path(props).exists():
-        raise ExecutorError(f"横版 props 不存在: {props}（竖版 TTS 对齐未产出）")
+        raise ExecutorError(f"横版 props 不存在: {props}（align_tts 未产出）")
 
     info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""))
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
     _assert_has_audio(video)   # 横版同样不许出无声片
-
     return {"video_16_9": str(video), "cover_16_9": str(cover)}
 
 
 def exec_render(ctx: StepContext) -> dict[str, str]:
-    """builtin.render：按 params.aspect 分派竖版 / 横版。"""
-    draft_path = ctx.artifacts.get("draft_script") or str(ctx.out("draft_script.json"))
-    if not Path(draft_path).exists():
-        raise ExecutorError(f"draft_script.json 不存在: {draft_path}")
-    draft = json.loads(Path(draft_path).read_text(encoding="utf-8"))
-
-    aspect = str((ctx.step.get("params") or {}).get("aspect") or "vertical")
+    """builtin.render：按 params.aspect 分派竖版 / 横版（两者都只读 props）。"""
+    draft = _load_draft(ctx)
+    aspect = str((ctx.params or {}).get("aspect") or "vertical")
     if aspect == "landscape":
         return _render_landscape(ctx, draft)
-    return _align_and_render_vertical(ctx, draft)
+    return _render_vertical_only(ctx, draft)
 
 
 def exec_approval(ctx: StepContext) -> dict[str, str]:
@@ -342,6 +359,7 @@ EXECUTORS: dict[str, Callable[[StepContext], dict[str, str]]] = {
     "builtin.intake": exec_intake,
     "builtin.check_material": exec_check_material,
     "llm.main": exec_expand_script,
+    "builtin.align_tts": exec_align_tts,
     "builtin.render": exec_render,
     "gate.approval": exec_approval,
     "builtin.dispatch": exec_dispatch,

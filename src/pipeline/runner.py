@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -390,6 +391,73 @@ def _discover_artifacts(run_root: Path) -> dict[str, str]:
     return found
 
 
+def _execute_step(cfg: dict[str, Any], step: dict[str, Any], *,
+                  artifacts: dict[str, str], run_id: str, task_id: str,
+                  run_root: Path, material: dict[str, Any] | None,
+                  account: str, db_path: Path) -> tuple[bool, dict[str, str], str]:
+    """执行单个 step（before_hooks → 执行体 → after_hooks）。
+
+    **不写数据库**：状态回写交给主线程，这样并行组里的多个 step 不会争同一连接。
+    返回 (是否成功, 产物, 失败原因)。
+    """
+    from .executors import ExecutorError, StepContext, run_step
+
+    sid = step["id"]
+    params = step.get("params") or {}
+    aspect = str(params.get("aspect") or "")
+    kind = str(step.get("artifact_kind") or {"vertical": "vertical",
+                                             "landscape": "landscape"}.get(aspect, ""))
+    draft: dict[str, Any] = {}
+    if artifacts.get("draft_script"):
+        try:
+            draft = json.loads(Path(artifacts["draft_script"]).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"      ! draft_script 读取失败: {exc}")
+
+    payload = {
+        "task_id": task_id, "run_id": run_id, "run_root": str(run_root),
+        "step_id": sid, "artifacts": dict(artifacts),
+        "context": {
+            "run_id": run_id, "account": account or (material or {}).get("account"),
+            "manifest": material, "db_path": str(db_path),
+            "artifact_kind": kind,
+            "aspect": {"vertical": "9:16", "landscape": "16:9"}.get(aspect, aspect),
+            "landscape_cover": str(params.get("landscape_cover") or ""),
+            "video_key": "video_16_9" if kind == "landscape" else "video",
+            "cover_key": "cover_16_9" if kind == "landscape" else "cover",
+            "draft": draft,
+            "expect_text": str(draft.get("cover_main_text") or ""),
+        },
+    }
+
+    before = [h for h in (step.get("before_hooks") or []) if h]
+    if before:
+        ok, _ = _run_hooks(cfg, before, payload)
+        if not ok:
+            return False, {}, "before_hooks 阻断"
+
+    try:
+        produced = run_step(step, StepContext(
+            step=step, run_root=run_root, run_id=run_id, task_id=task_id,
+            material=material, artifacts=dict(artifacts),
+            params=params, db_path=str(db_path),
+        ))
+    except ExecutorError as exc:
+        return False, {}, f"执行失败：{exc}"
+
+    merged = dict(artifacts)
+    merged.update(produced or {})
+
+    after = [h for h in (step.get("after_hooks") or []) if h]
+    if after:
+        payload["artifacts"] = dict(merged)
+        payload["context"]["artifacts"] = dict(merged)
+        ok, _ = _run_hooks(cfg, after, payload)
+        if not ok:
+            return False, {}, "after_hooks 阻断"
+    return True, produced or {}, ""
+
+
 def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
               task_id: str, start_index: int = 0, db_path: Path = DEFAULT_DB,
               rerun_done: bool = False, material: dict[str, Any] | None = None,
@@ -421,91 +489,88 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
     if db:
         db.update_run_status(run_id, "RUNNING")
 
-    for i, step in enumerate(steps):
+    i = 0
+    while i < len(steps):
+        step = steps[i]
         sid = step["id"]
+
         if i < start_index and not rerun_done:
             print(f"  [{sid}] SKIP（断点已过）")
             if db:
                 db.set_step_status(run_id, sid, "SKIPPED")
+            i += 1
             continue
 
         if sid in skip:
             print(f"  [{sid}] SKIP（{skip[sid]}）")
             if db:
                 db.set_step_status(run_id, sid, "SKIPPED")
+            i += 1
             continue
 
-        if db:
-            db.set_step_status(run_id, sid, "RUNNING")
-        print(f"  [{sid}] …")
+        # 收集同组连续步（并行组）
+        group = step.get("parallel_group")
+        batch = [step]
+        nxt = i + 1
+        if group:
+            while (nxt < len(steps)
+                   and steps[nxt].get("parallel_group") == group
+                   and steps[nxt]["id"] not in skip
+                   and nxt >= start_index):
+                batch.append(steps[nxt])
+                nxt += 1
 
-        params = step.get("params") or {}
-        aspect = str(params.get("aspect") or "")
-        kind = str(step.get("artifact_kind") or {"vertical": "vertical",
-                                                 "landscape": "landscape"}.get(aspect, ""))
-        draft = {}
-        if artifacts.get("draft_script"):
-            try:
-                draft = json.loads(Path(artifacts["draft_script"]).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                print(f"      ! draft_script 读取失败: {exc}")
-
-        payload = {
-            "task_id": task_id, "run_id": run_id, "run_root": str(run_root),
-            "step_id": sid, "artifacts": dict(artifacts),
-            "context": {
-                "run_id": run_id, "account": account or (material or {}).get("account"),
-                "manifest": material, "db_path": str(db_path),
-                "artifact_kind": kind,
-                "aspect": {"vertical": "9:16", "landscape": "16:9"}.get(aspect, aspect),
-                "landscape_cover": str(params.get("landscape_cover") or ""),
-                "video_key": "video_16_9" if kind == "landscape" else "video",
-                "cover_key": "cover_16_9" if kind == "landscape" else "cover",
-                "draft": draft,
-                "expect_text": str(draft.get("cover_main_text") or ""),
-            },
-        }
-
-        before = [h for h in (step.get("before_hooks") or []) if h]
-        if before:
-            ok, _ = _run_hooks(cfg, before, payload)
-            if not ok:
-                print(f"  [{sid}] before_hooks 阻断")
-                if db:
-                    db.set_step_status(run_id, sid, "BLOCKED")
-                    db.update_run_status(run_id, "BLOCKED")
-                return EXIT_NOT_IMPLEMENTED
-
-        try:
-            produced = run_step(step, StepContext(
-                step=step, run_root=run_root, run_id=run_id, task_id=task_id,
-                material=material, artifacts=dict(artifacts),
-                params=step.get("params") or {}, db_path=str(db_path),
-            ))
-        except ExecutorError as exc:
-            print(f"  [{sid}] 执行失败：{exc}")
+        if len(batch) == 1:
             if db:
-                db.set_step_status(run_id, sid, "BLOCKED")
-                db.update_run_status(run_id, "BLOCKED")
-            return EXIT_NOT_IMPLEMENTED
-
-        artifacts.update(produced or {})
-        print(f"  [{sid}] 产出: {', '.join(sorted(produced or {})) or '（无）'}")
-
-        after = [h for h in (step.get("after_hooks") or []) if h]
-        if after:
-            payload["artifacts"] = dict(artifacts)
-            payload["context"]["artifacts"] = dict(artifacts)
-            ok, _ = _run_hooks(cfg, after, payload)
+                db.set_step_status(run_id, sid, "RUNNING")
+            print(f"  [{sid}] …")
+            ok, produced, why = _execute_step(
+                cfg, step, artifacts=artifacts, run_id=run_id, task_id=task_id,
+                run_root=run_root, material=material, account=account, db_path=db_path)
             if not ok:
-                print(f"  [{sid}] after_hooks 阻断")
+                print(f"  [{sid}] {why}")
                 if db:
                     db.set_step_status(run_id, sid, "BLOCKED")
                     db.update_run_status(run_id, "BLOCKED")
                 return EXIT_NOT_IMPLEMENTED
+            artifacts.update(produced)
+            print(f"  [{sid}] 产出: {', '.join(sorted(produced)) or '（无）'}")
+            if db:
+                db.set_step_status(run_id, sid, "DONE")
+        else:
+            print(f"  [{group}] 并行执行 {len(batch)} 步: {', '.join(s['id'] for s in batch)}")
+            for s in batch:
+                if db:
+                    db.set_step_status(run_id, s["id"], "RUNNING")
+                print(f"  [{s['id']}] …")
+            snapshot = dict(artifacts)   # 组内共享同一份输入快照
+            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                futures = [
+                    pool.submit(_execute_step, cfg, s, artifacts=snapshot, run_id=run_id,
+                                task_id=task_id, run_root=run_root, material=material,
+                                account=account, db_path=db_path)
+                    for s in batch
+                ]
+                results = [(s, f.result()) for s, f in zip(batch, futures)]
 
-        if db:
-            db.set_step_status(run_id, sid, "DONE")
+            blocked = False
+            for s, (ok, produced, why) in results:
+                if ok:
+                    artifacts.update(produced)
+                    print(f"  [{s['id']}] 产出: {', '.join(sorted(produced)) or '（无）'}")
+                    if db:
+                        db.set_step_status(run_id, s["id"], "DONE")
+                else:
+                    print(f"  [{s['id']}] {why}")
+                    if db:
+                        db.set_step_status(run_id, s["id"], "BLOCKED")
+                    blocked = True
+            if blocked:
+                if db:
+                    db.update_run_status(run_id, "BLOCKED")
+                return EXIT_NOT_IMPLEMENTED
+
+        i = nxt
 
     if output_only:
         write_artifacts_manifest(run_root, artifacts, dispatch_mode)

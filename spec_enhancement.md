@@ -1467,7 +1467,24 @@ for k,v in d['providers'].items():
   audio_src: runs/t41-a/scene_0.mp3  vs  runs/t41-b/scene_0.mp3
   ```
   （文件名天然同名，但落在不同 run 目录，互不覆盖）
-- **回归**：`hooks --selftest` 22/22 · GATE-1 PASS · GATE-2 PASS · 干跑 `DRY RUN OK`（执行体 7/7 已接）
+- **并行渲染（v1.4 优化，实测）**：竖版与横版改并发执行，步骤 7 → 8
+  ```
+  intake → check_material → expand_script → align_tts → ┬ render_vertical ─┐
+                                                        └ render_landscape ┴→ approval → dispatch
+  ```
+  - 前提：props 从 `render_vertical` 里拆出为独立步 `align_tts`，横版只读 props、不读竖版成片
+  - `pipeline.yaml`：两渲染步标 `parallel_group: render`；`runner` 用线程池并发同组连续步
+  - `runner._execute_step()` 不写库（状态由主线程回写），避免并发争同一 sqlite 连接
+  - **基准实测（150 帧 ×4，ffprobe 验证帧数一致）**：
+    ```
+    串行 竖 26.0s + 横 27.0s = 53.0s
+    并行 竖 27.2s ∥ 横 25.5s = 27.2s      → 省 25.8s（-48.8%）
+    争抢损耗仅 0.2s（墙钟 ≈ max(竖,横)，机器 10 核/4 P 核）
+    ```
+  - **全链实测**：8 步全链 `20261110-083931-5f63` 耗时 **189s（3.2 min）**，
+    `steps_json` 全 DONE、`approval/dispatch` SKIPPED（output_only），
+    两版成片时间戳 08:42:25 / 08:42:28（3 秒内先后完成 → 确实并发）
+- **回归**：`hooks --selftest` 22/22 · GATE-1 PASS · 干跑 `DRY RUN OK`（执行体 8/8 已接）
 - **回滚**：`git checkout src/tts/aligner.py src/pipeline/executors.py scripts/render_landscape.py scripts/landscape_guard.py`
 
 #### T4.2 去硬编码
