@@ -3,8 +3,6 @@
   "count": 37,
   "violations": [
     "scripts/bootstrap.py::swallow_exception::b81040cc8f#1",
-    "scripts/channels_login_flow.py::swallow_exception::e6d06af814#1",
-    "scripts/channels_login_flow.py::swallow_exception::e6d06af814#2",
     "scripts/hooks/_common.py::swallow_exception::03b155404b#1",
     "scripts/hooks/_common.py::swallow_exception::2955367b52#1",
     "scripts/hooks/_common.py::swallow_exception::733f66f99d#1",

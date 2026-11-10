@@ -53,7 +53,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
         full_caption = f"{pure_title}\n\n{content_text[:200]}\n\n{topic_str}"
 
         draft_id = f"channels_draft_{int(os.path.getmtime(video_path))}"
-        
+        intent = "public" if self.publish_mode == "public" else "draft"
+
         draft_record = {
             "platform": "channels",
             "account_id": self.account_id,
@@ -63,10 +64,13 @@ class ChannelsCDPProvider(BaseSocialProvider):
             "video_path": video_path,
             "cover_path": cover_path,
             "publish_mode": self.publish_mode,
-            "declare_original": declare_original,   # 原创声明：视频号发布时勾选「声明原创」
+            # 如实标注：本 provider 无真实上传实现，只是素材就绪
+            "distribution": f"pending_manual_{intent}",
+            "status": "MATERIAL_READY",
+            "published": False,
+            "publish_target": "channels_manual_upload",
+            "declare_original": declare_original,
             "declare_aigc": declare_aigc,
-            "distribution": "public" if self.publish_mode == "public" else "draft",
-            "status": "PUBLIC_DISPATCHED" if self.publish_mode == "public" else "DRAFT_SAVED",
             "login_ready": self.check_login_status()
         }
 
@@ -75,15 +79,29 @@ class ChannelsCDPProvider(BaseSocialProvider):
         with open(draft_store_dir / f"{draft_id}.json", "w", encoding="utf-8") as f:
             json.dump(draft_record, f, ensure_ascii=False, indent=2)
 
-        mode_desc = "微信视频号公开分发已就绪" if self.publish_mode == "public" else "微信视频号草稿暂存成功"
+        # ⚠️ 本 provider 目前**只生成发布素材记录，不做真实上传**（无任何浏览器操作）。
+        #    历史实现返回 status=PUBLIC_DISPATCHED + "公开分发已就绪"，属虚报成功：
+        #    调用方会误以为视频已在视频号公开且已勾原创，实际平台侧什么都没发生。
+        #    与项目铁律一致（状态只能代表平台侧已确认），此处如实降级为「素材就绪」。
+        #    真实 CDP 发布（含原创/AI 声明勾选）需单独立项，完成前不得声称已发布。
+        flags = []
         if declare_original:
-            mode_desc += "（已标记原创声明）"
-        logger.info(f"WeChat Channels {mode_desc}: {draft_id}")
+            flags.append("原创声明")
+        if declare_aigc:
+            flags.append("AI 声明")
+        flag_desc = f"，待勾选：{'/'.join(flags)}" if flags else ""
+
+        mode_desc = f"微信视频号素材已就绪（未真实发布，需人工上传{flag_desc}）"
+        logger.warning(f"[CHANNELS] {mode_desc}: {draft_id} — 本 provider 无真实上传实现")
+
         return {
-            "success": True,
+            "success": True,               # 素材生成成功
+            "published": False,            # 但**未发布**，调用方必须据此判断
             "draft_id": draft_id,
             "distribution": draft_record["distribution"],
             "status": draft_record["status"],
             "login_ready": draft_record["login_ready"],
+            "declare_original": declare_original,
+            "declare_aigc": declare_aigc,
             "message": f"{mode_desc}: {draft_id}"
         }
