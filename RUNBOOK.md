@@ -227,9 +227,9 @@ python3 scripts/publish_douyin_cdp.py --run-id <run_id>
 |---|---|---|---|---|
 | 抖音 | `src/providers/douyin.py`（Playwright CDP） | ✅ `public_publish` | ✅ 自动勾选 | — |
 | B站 | `src/providers/bilibili.py` + `scripts/bilibili_live_uploader.py` | ✅ `public` | ✅ `creation_statement_id=1` | ✅ `original=True` |
-| 视频号 | `src/providers/channels_cdp.py`（Playwright） | ✅ 发表后公开 | ✅ 勾选 | ✅ 勾选（fail-closed） |
+| 视频号 | `src/providers/channels_cdp.py`（Playwright） | ✅ 发表后公开 | ❌ **Web 端无此控件** | ✅ 勾选（fail-closed） |
 
-### 7.1 微信视频号
+### 6.1 微信视频号（真机实测 2026-11-10，照着做，别自己摸索）
 
 登录态会过期，过期后所有发布都会返回 `LOGIN_EXPIRED`（不会假装成功）。
 
@@ -237,21 +237,47 @@ python3 scripts/publish_douyin_cdp.py --run-id <run_id>
 # ① 检查登录态
 python3 scripts/channels_login.py --check
 
-# ② 过期了就重新扫码（会打开浏览器，人工扫码）
-python3 scripts/channels_login.py
+# ② 过期了就重新扫码（打开浏览器；--qr-out 会自动把二维码截成图，方便发给操作人）
+python3 scripts/channels_login.py --qr-out /Users/a1/Downloads/qr/qr.png
 
-# ③ 探针：确认页面能打开、登录有效（不上传不发布）
+# ③ 探针：确认登录有效、发布 iframe 可达（不上传不发布）
 python3 scripts/publish_channels.py --probe
 
-# ④ 真实发布（公开 + 原创 + AI 声明）
+# ④ 只验证到发表前（上传+填文案+勾原创，不产生公开内容）
+python3 scripts/publish_channels.py --run-id <run_id> --stop-before-publish
+
+# ⑤ 真实发布
 python3 scripts/publish_channels.py --run-id <run_id>
 ```
 
+**三个必须知道的硬约束（踩过，别重复踩）**：
+
+1. **不能直连发布页**：访问 `/platform/post/create` 会被重定向回 `/platform` 首页，
+   必须先点首页的「发表视频」按钮。
+2. **表单在 wujie 微前端 iframe 里，且 Playwright 选择器全部失效**：
+   iframe 是 `micro/content/post/create`，它的 `document` 被 wujie 代理过 ——
+   `frame.evaluate("document.querySelectorAll('*')")` 能看到 2587 个元素，
+   但 `frame.query_selector()` / `frame.locator()` **一律返回 0**。
+   → 所有交互必须走 `frame.evaluate(...)`，不要浪费时间调选择器。
+3. **上传不能用 `set_input_files`**：页面里确实有 `input[type=file]`（display:none），
+   但 `set_input_files` 设不进去。正确做法：
+   ```python
+   async with page.expect_file_chooser() as fc:
+       await ui.evaluate("document.querySelector(\"input[type='file']\").click()")
+   chooser = await fc.value
+   await chooser.set_files(video_path)
+   ```
+
+**AI 声明**：视频号 Web 端**确认没有**「含 AI 合成内容」控件
+（`内容由AI生成 / AI生成 / 人工智能生成 / AIGC / AI创作` 全扫零命中），
+只能手机端补勾。返回 `aigc_state="NOT_SUPPORTED_ON_WEB"`，不要以为漏做了。
+
 **行为约定**：
 
-- 要求勾原创但页面找不到原创控件 → **中止发布**（`ORIGINAL_CHECKBOX_NOT_FOUND`），不会"找不到就默认发"
+- 要求勾原创但找不到原创复选框 → **中止发布**（`ORIGINAL_CHECKBOX_NOT_FOUND`）
 - 点了「发表」但没拿到平台侧证据（成功文案 / URL 跳转）→ `PUBLISHED_UNVERIFIED`，不报成功
-- 每次操作截图落在 `data/browser_profiles/channels-tech/`（`before_publish.png` / `after_publish.png`）
+- `--stop-before-publish` 会在后台留一条已上传未发表的记录，**需要人工清理**
+- 截图落在 `data/browser_profiles/channels-tech/`（`before_publish.png` / `after_publish.png`）
 
 **注意**：本机 Playwright 未下载自带 Chromium，统一用系统 Chrome（`channel="chrome"`）。
 
