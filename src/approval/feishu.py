@@ -125,144 +125,6 @@ def _scan_chat_reply(svc, chat_id: str, since_ms: int) -> dict[str, Any] | None:
     return None
 
 
-# ── 卡片按钮回调（长连接）────────────────────────────────────────────
-# 卡片按钮是 behaviors:[{"type":"callback"}]，点下去飞书会推 card.action.trigger。
-# 没人消费时客户端直接弹错误码（用户看到的就是这个）。这里在**审批等待期间**
-# 挂一个飞书长连接收事件，把裁决写成 dp（裁决文件），ask() 的循环本来就在读它。
-# 不常驻、不起服务：ask() 返回即断开。
-_CARD_STATE: dict[str, Any] = {"client": None, "thread": None, "run_id": "", "active": False}
-
-
-def _card_ws_enabled() -> bool:
-    return (os.getenv("FEISHU_CARD_WS", "1").strip().lower()
-            not in ("0", "false", "no", "off"))
-
-
-def _card_value(payload: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """从 P2CardActionTrigger 里取出 (button value, context, operator)，兼容对象/字典两种形态。"""
-    raw: Any = payload if isinstance(payload, dict) else getattr(payload, "d", None)
-    if not isinstance(raw, dict):
-        # SDK 对象形态：P2CardActionTrigger.d / .event.d
-        raw = getattr(payload, "event", None)
-        raw = getattr(raw, "d", None) if raw is not None else None
-        if not isinstance(raw, dict):
-            raw = {}
-    evt = raw.get("event") if isinstance(raw.get("event"), dict) else raw
-    value = (evt.get("action") or {}).get("value") or {}
-    ctx = evt.get("context") or {}
-    op = evt.get("operator") or {}
-    return (value if isinstance(value, dict) else {},
-            ctx if isinstance(ctx, dict) else {},
-            op if isinstance(op, dict) else {})
-
-
-def _write_card_decision(dp: Path, decision: str, who: str, evidence_msg_id: str = "") -> None:
-    DECISION_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = dp.with_name(dp.name + ".tmp")
-    tmp.write_text(json.dumps({
-        "decision": decision, "by": who or "card",
-        "evidence_msg_id": evidence_msg_id, "at": int(time.time()),
-    }, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(dp)          # 原子替换，避免 ask() 读到半截 JSON
-
-
-def _make_card_handler(run_id: str, dp: Path, allowed: set[str],
-                       response_cls: Any) -> Any:
-    """构造 card.action.trigger 处理器（抽出来是为了能单测，不依赖真长连接）。"""
-
-    def _toast(msg: str, kind: str = "info") -> Any:
-        return response_cls({"toast": {"type": kind, "content": msg}})
-
-    def _on_card(payload: Any) -> Any:
-        value, ctx, op = _card_value(payload)
-        rid = str(value.get("run_id") or "")
-        decision = str(value.get("decision") or "").strip().lower()
-        who = str(op.get("open_id") or op.get("user_id") or "")
-        print(f"  [approval] 收到卡片动作：run_id={rid or '空'} decision={decision or '空'}"
-              f" who={who or '空'}", flush=True)
-        if not _CARD_STATE.get("active"):
-            return _toast("本次审批已结束", "warning")
-        if rid and rid != run_id:
-            return _toast("这张卡属于别的审批单", "warning")
-        if decision not in ("approve", "reject"):
-            return _toast(f"按钮值无法识别：{decision or '空'}", "error")
-        if allowed and who not in allowed:
-            return _toast("你没有审批权限", "error")
-        if dp.exists():
-            return _toast("这条已经裁过了", "warning")
-        _write_card_decision(dp, decision, f"card:{who}",
-                             str(ctx.get("open_message_id") or ""))
-        print(f"  [approval] 卡片按钮 → {decision}（by {who or 'unknown'}）", flush=True)
-        return _toast(f"已记录：{decision}", "success")
-
-    return _on_card
-
-
-def _run_ws(client: Any) -> None:
-    try:
-        client.start()
-    except Exception as exc:  # noqa: BLE001 — 线程里不能抛，否则审批等待会静默失效
-        print(f"  [approval] 卡片长连接异常退出：{type(exc).__name__}: {exc}")
-
-
-def _start_card_listener(run_id: str, dp: Path) -> bool:
-    """审批等待期挂长连接收卡片按钮回调。返回是否已启动。"""
-    if not _card_ws_enabled():
-        print("  [approval] 卡片回调已关闭（FEISHU_CARD_WS=0），只能回复 approve/reject")
-        return False
-    if _CARD_STATE.get("active"):
-        return True
-    app_id = os.getenv("FEISHU_APP_ID") or ""
-    app_secret = os.getenv("FEISHU_APP_SECRET") or ""
-    if not app_id or not app_secret:
-        print("  [approval] 卡片回调跳过：缺 FEISHU_APP_ID / FEISHU_APP_SECRET")
-        return False
-    try:
-        import lark_oapi as lark
-        from lark_oapi.event.callback.model.p2_card_action_trigger import (
-            P2CardActionTriggerResponse,
-        )
-    except ImportError as exc:
-        print(f"  [approval] 卡片回调跳过：lark_oapi 不可用（{exc}）")
-        return False
-
-    _on_card = _make_card_handler(run_id, dp, _allowed_users(), P2CardActionTriggerResponse)
-
-    try:
-        handler = (lark.EventDispatcherHandler.builder("", "")
-                   .register_p2_card_action_trigger(_on_card)
-                   .build())
-        client = lark.ws.Client(app_id, app_secret, event_handler=handler,
-                                log_level=lark.LogLevel.WARNING)
-        thread = threading.Thread(target=_run_ws, args=(client,), daemon=True,
-                                  name="feishu-card-ws")
-        thread.start()
-    except Exception as exc:  # noqa: BLE001 — 回调起不来要能退回回复路径
-        print(f"  [approval] 卡片回调启动失败（退回回复路径）：{type(exc).__name__}: {exc}")
-        return False
-
-    _CARD_STATE.update({"client": client, "thread": thread, "run_id": run_id, "active": True})
-    print("  [approval] 卡片回调就绪（飞书长连接），可直接点按钮裁决")
-    return True
-
-
-def _stop_card_listener() -> None:
-    client = _CARD_STATE.get("client")
-    _CARD_STATE.update({"client": None, "run_id": "", "active": False})
-    if client is None:
-        return
-    try:
-        # SDK 没有公开 stop()；_disconnect 是协程，且用的是 lark_oapi.ws.client 的模块级 loop，
-        # 必须 run_coroutine_threadsafe 丢回那个 loop（直接 await/调用都会 "never awaited"）。
-        import asyncio
-
-        from lark_oapi.ws.client import loop as _ws_loop
-        asyncio.run_coroutine_threadsafe(client._disconnect(), _ws_loop).result(timeout=5)
-        print("  [approval] 卡片长连接已断开")
-    except Exception as exc:      # noqa: BLE001 — 关不掉也不该影响审批结果
-        print(f"  [approval] 卡片长连接关闭异常（忽略）：{type(exc).__name__}: {exc}")
-
-
 def ask(run_id: str, artifacts: dict[str, Any], message: str,
         profile: dict[str, Any] | None = None) -> dict[str, Any]:
     from src.feishu.approval_service import FeishuApprovalService
@@ -334,18 +196,11 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
     deadline = time.time() + timeout
     print(f"  [approval] 已发飞书审批（msg_id={msg_id}, chat={chat_id}），"
           f"等待回复，超时 {timeout}s")
-    card_ws = _start_card_listener(run_id, dp)
-    last_scan = 0.0
-    try:
-        return _wait_decision(svc, dp, msg_id, chat_id, since_ms, deadline, card_ws,
-                              timeout)
-    finally:
-        if card_ws:
-            _stop_card_listener()
+    return _wait_decision(svc, dp, msg_id, chat_id, since_ms, deadline, timeout)
 
 
 def _wait_decision(svc, dp: Path, msg_id, chat_id: str, since_ms: int,
-                   deadline: float, card_ws: bool, timeout: int = 0) -> dict[str, Any]:
+                   deadline: float, timeout: int = 0) -> dict[str, Any]:
     """等裁决：卡片文件 → 群回复，先到先得。"""
     last_scan = 0.0
     while time.time() < deadline:
@@ -375,4 +230,4 @@ def _wait_decision(svc, dp: Path, msg_id, chat_id: str, since_ms: int,
 
     return {"decision": "reject", "decided_by": "feishu_timeout",
             "reason": f"等待审批超时（{timeout or '?'}s），按拒绝处理",
-            "feishu_msg_id": msg_id, "card_ws": card_ws}
+            "feishu_msg_id": msg_id}

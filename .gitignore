@@ -14,15 +14,20 @@ cookies.json
 *bilibili_qr*.json
 data/*qr*.json
 
-*.png
-*.jpg
-*.jpeg
-*.mp4
-*.mp3
-*.wav
+# 运行时产物（图片/音视频只会产生在这三处；不要用 *.png 一刀切，
+# 否则 renderer/public 里真需要的静态素材永远提交不进来）
+data/**/*.png
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.mp4
+data/**/*.mp3
+data/**/*.wav
+renderer/output/
 
 # Runtime Data & Logs
 data/*.db
+data/*.db-wal
+data/*.db-shm
 data/*.sqlite
 data/*.jsonl
 data/*.json
@@ -68,6 +73,12 @@ yarn-error.log*
 # Remotion Output / Cache
 .remotion
 renderer/public/tasks/
+renderer/public/runs/
+
+# 渲染必需的静态素材：必须提交（曾经被上面的 *.wav 一刀切掉，
+# 导致 fresh clone 里 Root.tsx 引用的 sfx/bgm_loop.wav 不存在）
+!renderer/public/sfx/
+!renderer/public/sfx/*.wav
 
 # External submodules / tools
 external/MediaCrawler/
