@@ -141,6 +141,24 @@ def record_degraded(event: str, detail: dict[str, Any], db_path: Path | None = N
 
 # ------------------------------------------------------------------ 客户端
 
+def _is_transient(exc: BaseException) -> bool:
+    """可重试错误：超时 / 连接失败 / 429 / 5xx。
+
+    鉴权、参数错误重试一万次也没用，只会浪费时间和配额，所以不重试。
+    """
+    name = type(exc).__name__.lower()
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if any(k in name for k in ("timeout", "connection", "ratelimit", "apiconnection")):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    try:
+        status = int(status)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return status == 429 or 500 <= status < 600
+
+
 class LLMClient:
     """按 provider 槽位调用 LLM。预算/超时/JSON 模式全部来自 pipeline.yaml。"""
 
@@ -232,13 +250,33 @@ class LLMClient:
             params["extra_headers"] = extra_headers
 
         usage = Usage(slot=self.slot, model=self.model)
+        # 重试预算同样来自 pipeline.yaml 的 profile.retry（默认 1 次 = 不重试）
+        rcfg = self.profile.get("retry") or {}
+        attempts = max(1, int(rcfg.get("max_attempts") or 1))
+        backoff = float(rcfg.get("backoff_sec") or 0)
         t0 = time.time()
-        try:
-            resp = self._openai().chat.completions.create(**params)
-        except Exception as exc:  # 网络/鉴权/超时 —— 留痕后原样上抛
-            usage.latency_sec = time.time() - t0
-            self._record(usage, "llm_call_failed", {"task": task, "error": f"{type(exc).__name__}: {exc}"[:300]})
-            raise
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = self._openai().chat.completions.create(**params)
+                break
+            except Exception as exc:  # 网络/鉴权/超时 —— 留痕后按策略重试或上抛
+                usage.latency_sec = time.time() - t0
+                transient = _is_transient(exc)
+                if attempt < attempts and transient:
+                    self._record(usage, "llm_call_retry", {
+                        "task": task, "attempt": attempt, "max_attempts": attempts,
+                        "error": f"{type(exc).__name__}: {exc}"[:300]})
+                    wait = backoff * attempt
+                    print(f"      · LLM {type(exc).__name__}（第 {attempt}/{attempts} 次）"
+                          f"{wait:.1f}s 后重试")
+                    if wait > 0:
+                        time.sleep(wait)
+                    continue
+                self._record(usage, "llm_call_failed", {
+                    "task": task, "attempt": attempt, "max_attempts": attempts,
+                    "transient": transient,
+                    "error": f"{type(exc).__name__}: {exc}"[:300]})
+                raise
 
         usage.latency_sec = time.time() - t0
         u = getattr(resp, "usage", None)

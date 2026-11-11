@@ -1734,6 +1734,43 @@ publish:
 `exec_publish` 与 `runner` 的读法统一为 `{**cfg["publish"], **step.params}`（params 优先），
 既支持集中开关，也保留单次覆盖能力。
 
+#### expand_script 超时落库 + 自动重试 + 出片即汇报（2026-11-10）
+
+**三个真问题**：
+
+1. `pipeline.yaml` 里 `expand_script` 早就声明了 `retry: {max: 2, on_schema_error: true}`，
+   但**没有一行代码读它** —— 死配置。LLM 超时一次整步就废。
+2. 超时抛的是 `openai.APITimeoutError`（非 `ExecutorError`），`_execute_step` 只 catch
+   `ExecutorError`，于是异常**穿过 runner 变成 traceback**：进程栈崩、`pipeline_runs`
+   永远停在 `RUNNING`，事后没人知道这单是怎么死的。
+3. 出片完成后毫无反馈，要等 `deliver` 才见片子。
+
+**改法**：
+
+| 位置 | 改动 |
+|---|---|
+| `runner._execute_step` | 读 `step.retry.max` 做重试（线性退避 2s×n），耗尽才 BLOCKED；新增 `except Exception` 兜底 → 任何异常都落库 |
+| `runner.notify_render_done` | 渲染步成功后立刻发飞书文本（`notify.render_done` 控制，默认开），失败只告警不判失败 |
+| `llm/client.py` | 新增 `_is_transient()`：超时/连接/429/5xx 可重试，鉴权/参数错误不重试（`profile.retry` 声明才启用） |
+| `pipeline.yaml` | 新增顶层 `notify: {render_done: true}` |
+| `_gate3_e2e.py` | 假服务补 `send_text_message` —— 验收绝不往真实群发消息 |
+
+**实测**：
+
+```
+重试：前 2 次 TimeoutError → 第 3 次成功（调用 3 次，ok=True）
+耗尽：一直失败 → 「执行失败（3/3 次尝试）：RuntimeError: 网络断开」
+落库：EXIT=64 · pipeline_runs.status=BLOCKED · steps_json={"expand_script":"BLOCKED"}
+汇报（单测）：✅ 出片完成 · run123 / video 2.5MB / video_16_9 1.5MB / 目录 …
+开关：notify.render_done=false → 发送 0 条
+通知失败：飞书 500 → 仅告警，出片流程不受影响
+真实链路：全链跑完 → 「✓ 出片完成已汇报（飞书 msg_id=om_x100b60079e41fca4c0b89e1fcf9c20f）」
+```
+
+**踩坑**：单测里假服务的 `send_text_message(receive_id, text)` 是两参数，
+真实签名是 `(receive_id, receive_id_type, text)` —— 假替身骗过了单测，
+第一次真跑才炸出 `TypeError`。**假替身必须和真签名一致**。
+
 #### 发布方案 v2：deliver → approval → publish（2026-11-10，默认关闭）
 
 **步骤链（9 步）**：
