@@ -162,7 +162,22 @@ export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
   );
 };
 
+// 封面的 `$ pip install xxx` 只在 resource_keyword 真的像包名时才渲染。
+// 否则（中文短语、整句、空值）会渲染成 `$ pip install tool` 这种假命令——所有非开源类选题都是错的。
+const PACKAGE_NAME_RE = /^[A-Za-z][A-Za-z0-9._-]{1,39}$/;
+const TOPIC_LABEL: Record<string, string> = {
+  'tech-github': '开源技术速递',
+  'ai-product': 'AI 产品速递',
+  'breaking-news': '科技快讯',
+};
+const topicLabel = (theme?: string) => TOPIC_LABEL[theme || ''] || '科技速递';
+const asPackageName = (kw?: string) => {
+  const v = (kw || '').trim();
+  return PACKAGE_NAME_RE.test(v) ? v.toLowerCase() : '';
+};
+
 const CoverStillInner: React.FC<AlignedRenderPayload> = (props) => {
+  const pkg = asPackageName(props.resource_keyword);
   const { id, tokens, layout } = useTemplate();
 
   return (
@@ -275,9 +290,9 @@ const CoverStillInner: React.FC<AlignedRenderPayload> = (props) => {
         }}
       >
         <span style={{ color: tokens.accentPrimary, fontSize: 26, fontFamily: 'monospace', fontWeight: 700 }}>
-          $ pip install {props.resource_keyword ? props.resource_keyword.toLowerCase() : 'tool'}
+          {pkg ? `$ pip install ${pkg}` : (props.cover_sub_text || topicLabel(props.theme))}
         </span>
-        <span style={{ color: tokens.textSecondary, fontSize: 20 }}>开源技术速递</span>
+        <span style={{ color: tokens.textSecondary, fontSize: 20 }}>{topicLabel(props.theme)}</span>
       </div>
     </div>
   );
