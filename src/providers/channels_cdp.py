@@ -118,18 +118,51 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     return {"success": False, "published": False, "status": "LOGIN_EXPIRED",
                             "message": "登录态已过期，被重定向到登录页；先跑 scripts/channels_login.py 重新扫码"}
 
-                # 进发布页：首页点「发表视频」（直接访问 post/create 会被跳回）
+                # 进发布页：优先点「发表视频」
+                # 2026-11-11 UI 改版：入口从首页挪进了内容管理列表 iframe
+                # （micro/content/post/list），主文档里再也找不到该按钮。
+                async def _find_create_entry():
+                    try:
+                        btn = await page.query_selector("button:has-text('发表视频')")
+                        if btn:
+                            return btn
+                    except Exception as e:  # noqa: BLE001 — 页面抖动
+                        logger.debug(f"[CHANNELS] 主文档找入口失败: {e}")
+                    for f in page.frames:
+                        if "micro/content/post/list" in (f.url or ""):
+                            try:
+                                hit = await f.query_selector("button:has-text('发表视频')")
+                                if hit:
+                                    return hit
+                            except Exception as e:  # noqa: BLE001 — iframe 可能重建
+                                logger.debug(f"[CHANNELS] 列表 iframe 找入口失败: {e}")
+                    return None
+
                 if "/post/create" not in page.url:
-                    entry = await page.query_selector("button:has-text('发表视频')")
+                    entry = await _find_create_entry()
+                    if not entry:
+                        # 退化路径：先进内容管理列表页，再找入口
+                        try:
+                            await page.goto(f"{self.HOME_URL.rstrip('/')}/post/list",
+                                            wait_until="domcontentloaded", timeout=45000)
+                        except Exception as e:  # noqa: BLE001 — 跳转失败不影响后续重试
+                            logger.debug(f"[CHANNELS] 进内容管理列表页失败: {e}")
+                        for _ in range(15):
+                            await asyncio.sleep(1)
+                            entry = await _find_create_entry()
+                            if entry:
+                                break
                     if not entry:
                         return {"success": False, "published": False, "status": "CREATE_ENTRY_NOT_FOUND",
-                                "message": "首页找不到「发表视频」入口，无法进入发布页"}
+                                "message": "首页与内容管理 iframe 都找不到「发表视频」入口，无法进入发布页"}
                     await entry.click()
                     for _ in range(15):
                         await asyncio.sleep(1)
-                        if "/post/create" in page.url:
+                        if "/post/create" in page.url or any(
+                                "micro/content/post/create" in (f.url or "") for f in page.frames):
                             break
-                    if "/post/create" not in page.url:
+                    if "/post/create" not in page.url and not any(
+                            "micro/content/post/create" in (f.url or "") for f in page.frames):
                         return {"success": False, "published": False, "status": "CREATE_PAGE_TIMEOUT",
                                 "message": f"点击「发表视频」后未进入发布页，当前 URL={page.url}"}
 

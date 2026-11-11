@@ -768,6 +768,15 @@ def main(argv: list[str] | None = None) -> int:
                   f"\n  run_root={run_root}")
         run_id = db.upsert_run(run_id, task_id, content_hash, account, run_root, status="RUNNING")
 
+        # 收尸：进程被外部杀掉时状态库会永远停在 RUNNING（2026-11-10 的 astryx-1/freecc-1）。
+        # 这里只如实标记，不删产物；同内容重跑仍按「重试」复用原 run_id 与原目录。
+        try:
+            reaped = db.fail_stale_runs(int(os.getenv("STALE_RUN_MINUTES", "15")))
+            if reaped:
+                print(f"\n=== 清理僵尸 RUNNING ===\n  {', '.join(reaped)} → ABANDONED（超过阈值未更新）")
+        except Exception as exc:  # noqa: BLE001 — 收尸失败不能阻断本次运行
+            print(f"  [warn] 僵尸 RUNNING 清理失败: {type(exc).__name__}: {exc}")
+
     print("\n=== 运行上下文 ===")
     print(f"  run_id   : {run_id}")
     print(f"  task_id  : {task_id}")

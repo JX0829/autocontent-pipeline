@@ -492,6 +492,35 @@ python3 -m src.publish_ledger --deleted <publish_key>
 python3 scripts/test_publish_ledger.py   # 19 断言
 ```
 
+### 7.2 发布凭证回查（post_id 一直是空）
+
+上传接口的返回值里经常没有 bvid，台账 `post_id` 因此一直空 —— 拦得住，但报错说不出是哪条。
+现在 B站发布成功后会调只读的稿件列表接口**按标题回查 bvid**（`src/publish_evidence.py`），重试 3 次 × 5s
+（稿件刚落库有几秒延迟），查不到返回空串，**不影响发布结论**。
+
+```bash
+python3 scripts/test_publish_evidence.py   # 7 断言（离线桩，不联网）
+```
+
+### 7.3 僵尸 RUNNING 收尸
+
+进程被外部杀掉时（`SIGKILL`/终端关闭），状态库会永远停在 `RUNNING` —— 2026-11-10 的
+`astryx-1` / `freecc-1` 就是这样卡在 `expand_script` 的。
+
+判据：`status=RUNNING` 且 `updated_at` **超过 15 分钟**没更新（最长单步渲染约 2.5 分钟，不会误杀）。
+收尸只改状态为 `ABANDONED`，**不删产物、不动 run_root**，下次同内容重跑仍按「重试」复用原 run_id 与原目录。
+
+```bash
+python3 scripts/reap_stale_runs.py              # 只列出（dry-run）
+python3 scripts/reap_stale_runs.py --apply      # 真标记为 ABANDONED
+python3 scripts/reap_stale_runs.py --minutes 30 # 换阈值
+```
+
+runner 每次真实运行开始时也会自动收尸一次（阈值取 `STALE_RUN_MINUTES`，默认 15）。
+
+另外 `expand_script` 现在**最多试 2 次**（`EXPAND_SCRIPT_ATTEMPTS`），两次都失败会明确抛错落库成
+`BLOCKED`，不再出现「界面上一直显示在跑，其实早死了」。
+
 ---
 
 ## 8. 验收 / 自检
