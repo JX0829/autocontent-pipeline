@@ -1,0 +1,6 @@
+{
+  "title": "AI形式化证明Signal无漏洞",
+  "body": "Google DeepMind 发布 AlphaProof Code，多模型智能体框架：人类专家和 AI 一起定要证明什么，再由一组智能体完成证明。他们用它验证了 Signal 核心加密代码，这是首次由 AI 对广泛部署的协议实现做完整形式化验证。安全目标先翻译成 Lean 规格、专家逐步复核，证明由 Lean 机器校验；团队还重新植入两个真实历史漏洞，系统都判定不安全。",
+  "source_url": "https://deepmind.google/blog/introducing-alphaproof-code/",
+  "task_id": "news_alphaproof_code_20261110"
+}
