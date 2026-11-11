@@ -241,11 +241,15 @@ def main() -> int:
                 return 3
         rc = publish(video, title, summary, tags, args.cdp_url, args.dry_run, account)
         if led_key:
-            from src.publish_ledger import mark_failed, mark_published
+            from src.publish_ledger import record_outcome
+            # rc=2 是参数/校验类失败（还没进发布流程）→ 可重试；rc=1 可能点了发布但没确认 → 禁止重发
             if rc == 0:
-                mark_published(led_key, "")
+                state = record_outcome(led_key, True)
+            elif rc == 2:
+                state = record_outcome(led_key, False, status="VALIDATION", reason=f"publish rc={rc}")
             else:
-                mark_failed(led_key, f"publish rc={rc}")
+                state = record_outcome(led_key, False, status="SUBMIT_UNKNOWN", reason=f"publish rc={rc}")
+            _log(f"台账: {state}")
         return rc
     except FileNotFoundError as exc:
         _log(str(exc))

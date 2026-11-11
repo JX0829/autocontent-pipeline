@@ -54,10 +54,21 @@ async def main():
         if not args.tags:
             args.tags = ",".join(str(t) for t in (draft.get("tags") or []))
 
+    # 参数与登录态校验放在查重之前：确定发不出去的错误不该占用台账位
+    missing = [k for k in ("video", "title", "desc", "tags") if not getattr(args, k)]
+    if missing:
+        print(json.dumps({"error": f"缺少参数: {', '.join(missing)}（或使用 --run-id）"}))
+        sys.exit(2)
+
+    cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
+    if not cookie_file.exists():
+        print(json.dumps({"error": "No cookies_bilibili.json found"}))
+        sys.exit(1)
+
     # 发布前查重：同一视频在同一账号已发过就不再发（不可撤回的公开内容）
     led_key = ""
     if not missing_probe(args):
-        from src.publish_ledger import PublishBlocked, check_and_claim, mark_failed, mark_published
+        from src.publish_ledger import PublishBlocked, check_and_claim
         try:
             acct = "bilibili-main"
             try:
@@ -69,16 +80,6 @@ async def main():
         except PublishBlocked as exc:
             print(json.dumps({"blocked": str(exc)}, ensure_ascii=False))
             sys.exit(3)
-
-    missing = [k for k in ("video", "title", "desc", "tags") if not getattr(args, k)]
-    if missing:
-        print(json.dumps({"error": f"缺少参数: {', '.join(missing)}（或使用 --run-id）"}))
-        sys.exit(2)
-
-    cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
-    if not cookie_file.exists():
-        print(json.dumps({"error": "No cookies_bilibili.json found"}))
-        sys.exit(1)
 
     with open(cookie_file, "r", encoding="utf-8") as f:
         cookies = json.load(f)
@@ -182,12 +183,20 @@ async def main():
         print(json.dumps({"seed_comment_error": logger_msg}, ensure_ascii=False))
 
     if led_key:
-        from src.publish_ledger import mark_failed, mark_published
+        from src.publish_ledger import record_outcome
         ok = isinstance(res, dict) and not res.get("error")
         if ok:
-            mark_published(led_key, str(res.get("bvid") or res.get("aid") or ""))
+            state = record_outcome(led_key, True,
+                                   external_id=str(res.get("bvid") or res.get("aid") or ""))
         else:
-            mark_failed(led_key, str(res.get("error") or "")[:200])
+            err = str((res or {}).get("error") or "unknown") if isinstance(res, dict) else "unknown"
+            # 只有"确定没提交"的错误才允许重试（status 用 SAFE_RETRY_SIGNALS 里的标记）
+            if "缺少参数" in err:
+                state = record_outcome(led_key, False, status="MISSING_PARAM", reason=err)
+            else:
+                # 提交后返回 error / 结构异常 → 平台可能已收到，禁止自动重发
+                state = record_outcome(led_key, False, status="SUBMIT_UNKNOWN", reason=err)
+        print(json.dumps({"ledger": state}, ensure_ascii=False))
     print(json.dumps(res, ensure_ascii=False))
 
 if __name__ == "__main__":

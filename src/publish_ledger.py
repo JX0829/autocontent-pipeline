@@ -46,6 +46,23 @@ CREATE TABLE IF NOT EXISTS publish_ledger (
 _IDX = ("CREATE INDEX IF NOT EXISTS idx_publish_slot "
         "ON publish_ledger(platform, account, video_sha256)")
 
+# 这些状态码/原因代表「平台侧确定没收到这条内容」，可以安全重试。
+# 反例（务必别加进来）：PUBLISHED_UNVERIFIED、submit 之后的超时/异常、
+# 任何"点了发布但没看到结果"的情况 —— 那些标 unverified，禁止自动重发。
+SAFE_RETRY_SIGNALS = (
+    "LOGIN_EXPIRED",             # 未登录，根本没进提交
+    "ORIGINAL_CHECKBOX_NOT_FOUND",  # 找不到原创勾选，停在提交前
+    "NOT_SUPPORTED_ON_WEB",
+    "STOPPED_BEFORE_PUBLISH",    # 故意停在发表前
+    "DRY_RUN",
+    "MISSING_PARAM",
+    "VALIDATION",
+    "FILE_NOT_FOUND",
+    "MATERIAL_READY",            # 素材就绪但未提交
+)
+
+BLOCKING_STATUSES = ("published", "claimed", "unverified")
+
 
 class PublishBlocked(RuntimeError):
     """查重拦截：这条内容在这个平台这个账号已经发过了（或正在发）。"""
@@ -99,10 +116,15 @@ def check_and_claim(platform: str, account: str, video_path: str | Path,
         row = conn.execute(
             "SELECT status, post_id, updated_at FROM publish_ledger WHERE publish_key=?",
             (key,)).fetchone()
-        if row and row[0] in ("published", "claimed"):
+        if row and row[0] in BLOCKING_STATUSES:
             if row[0] == "published":
                 raise PublishBlocked(
                     f"{platform}/{account} 已发布过同一视频（post_id={row[1] or '未知'}，时间 {row[2]}）")
+            if row[0] == "unverified":
+                raise PublishBlocked(
+                    f"{platform}/{account} 上次发布结果未知（unverified @ {row[2]}）——"
+                    f"平台可能已经收到这条，先去后台核对；确认没发出再清理："
+                    f"python3 -m src.publish_ledger --release {key}")
             raise PublishBlocked(
                 f"{platform}/{account} 有未收尾的发布（claimed @ {row[2]}）——"
                 f"先确认上次是否发出，再清理台账：python3 -m src.publish_ledger --release {key}")
@@ -149,6 +171,51 @@ def mark_failed(key: str, reason: str = "", *, path: Path | None = None) -> None
         conn.close()
 
 
+def mark_unverified(key: str, reason: str = "", *, path: Path | None = None) -> None:
+    """结果未知 → 标 unverified：占位保留，**禁止自动重发**，等人工去平台核对。
+
+    典型场景：点了"发表"之后超时/异常、页面报 PUBLISHED_UNVERIFIED。
+    这类不能标 failed —— failed 允许重试，而"可能已经发出去"的情况下重试就是重复发布。
+    """
+    conn = connect(path)
+    try:
+        conn.execute("UPDATE publish_ledger SET status='unverified', reason=?, updated_at=?"
+                     " WHERE publish_key=?", (reason[:500], _now(), key))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def classify_failure(status: str = "", reason: str = "") -> str:
+    """判断这次失败是「确定没发出去」(failed，可重试) 还是「结果未知」(unverified，禁止重发)。
+
+    默认 **unverified** —— 宁可拦住让人核对，也不自动重发。只有命中 SAFE_RETRY_SIGNALS
+    的明确前置失败才允许重试。
+    """
+    blob = f"{status} {reason}".upper()
+    if any(sig in blob for sig in SAFE_RETRY_SIGNALS):
+        return "failed"
+    return "unverified"
+
+
+def record_outcome(key: str, published: bool, *, external_id: str = "",
+                   status: str = "", reason: str = "",
+                   path: Path | None = None) -> str:
+    """统一收尾入口：成功 → published；确定没发出 → failed；其余 → unverified。
+
+    返回值是最终落库的 status，方便 CLI 打印如实结果。
+    """
+    if published:
+        mark_published(key, external_id, path=path)
+        return "published"
+    detail = (reason or status or "unknown")[:500]
+    if classify_failure(status, reason) == "failed":
+        mark_failed(key, detail, path=path)
+        return "failed"
+    mark_unverified(key, detail, path=path)
+    return "unverified"
+
+
 def mark_deleted(key: str, *, path: Path | None = None) -> None:
     """平台上人工删除了 → 允许以后重发同一视频。"""
     conn = connect(path)
@@ -161,10 +228,12 @@ def mark_deleted(key: str, *, path: Path | None = None) -> None:
 
 
 def release(key: str, *, path: Path | None = None) -> bool:
-    """清掉未收尾的 claimed 占位（仅在确认上次没发出去时使用）。"""
+    """清掉未收尾的占位（claimed / unverified）。仅在人工确认上次没发出去时使用。"""
     conn = connect(path)
     try:
-        cur = conn.execute("DELETE FROM publish_ledger WHERE publish_key=? AND status='claimed'", (key,))
+        cur = conn.execute(
+            "DELETE FROM publish_ledger WHERE publish_key=? AND status IN ('claimed','unverified')",
+            (key,))
         conn.commit()
         return cur.rowcount == 1
     finally:
