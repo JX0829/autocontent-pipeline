@@ -357,43 +357,49 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
         raise ExecutorError(f"待发布视频不存在: {video}")
 
     db = PipelineDB(str(ctx.db_path))
+    from src.publish_ledger import (PublishBlocked, check_and_claim, record_outcome,
+                                    release as ledger_release)
     video_sha = hashlib.sha256(video.read_bytes()).hexdigest()
     content_key = hashlib.sha256(
         json.dumps(draft, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    del content_key  # 去重口径已下沉到 publish_ledger（平台|账号|内容哈希），此处不再自算
 
     for plat in platforms:
         account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
         acct_id = str(account.get("id") or "")
-        key = f"{content_key}|{video_sha}|{acct_id}"
 
-        # ---- 门禁3：台账幂等 ----
-        if not db.claim_send_slot(key, ctx.task_id, plat, acct_id, str(video)):
-            report["skipped"].append({"platform": plat, "gate": "ledger",
-                                      "reason": "already_published（台账已存在）"})
+        # ---- 门禁3：平台发布台账（与飞书 send_ledger 分开，fail-closed）----
+        try:
+            key, _info = check_and_claim(plat, acct_id, video, str(draft.get("title") or ""))
+        except PublishBlocked as exc:
+            report["skipped"].append({"platform": plat, "gate": "ledger", "reason": str(exc)})
             continue
 
         if dry_run:
-            _release_slot(db, key)
+            ledger_release(key)               # 预检不占用台账位
             report["skipped"].append({"platform": plat, "gate": "dry_run",
                                       "reason": "dry_run=true，只预检不真发"})
             continue
 
         try:
             res = _invoke_provider(plat, account, video, cover, draft, dry_run=False)
-        except Exception as exc:  # noqa: BLE001 — provider 异常要释放台账位并如实上报
-            _release_slot(db, key)
-            report["failed"].append({"platform": plat, "error": f"{type(exc).__name__}: {exc}"})
+        except Exception as exc:  # noqa: BLE001 — 结果未知，禁止自动重发
+            state = record_outcome(key, False, status="SUBMIT_UNKNOWN",
+                                   reason=f"{type(exc).__name__}: {exc}")
+            report["failed"].append({"platform": plat, "ledger": state,
+                                     "error": f"{type(exc).__name__}: {exc}"})
             continue
 
         if res.get("success"):
             msg_id = str(res.get("msg_id") or res.get("bvid") or res.get("draft_id")
                          or f"{plat}_{ctx.task_id}")
-            db.mark_sent(key, msg_id)
-            report["published"].append({"platform": plat, "msg_id": msg_id,
+            state = record_outcome(key, True, external_id=msg_id)
+            report["published"].append({"platform": plat, "msg_id": msg_id, "ledger": state,
                                         "status": res.get("status") or res.get("distribution") or "ok"})
         else:
-            _release_slot(db, key)
-            report["failed"].append({"platform": plat,
+            state = record_outcome(key, False, status=str(res.get("status") or ""),
+                                   reason=str(res.get("message") or res.get("error") or "unknown"))
+            report["failed"].append({"platform": plat, "ledger": state,
                                      "error": res.get("message") or res.get("error") or "unknown"})
 
     _out()

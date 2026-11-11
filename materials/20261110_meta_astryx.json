@@ -1,0 +1,6 @@
+{
+  "title": "Meta开源设计系统 一天涨3千星",
+  "body": "Meta 开源了内部用了八年的设计系统 Astryx，仓库 2.16 万星、1672 fork，今日新增 3111 星，MIT 协议，支撑内部 13000 多个应用。含 150 多个无障碍组件、品牌主题、暗色模式、模板和命令行工具，基于 React 19 与 StyleX。处于 Beta 阶段。",
+  "source_url": "https://github.com/meta/astryx",
+  "task_id": "repo_meta_astryx_20261110"
+}
