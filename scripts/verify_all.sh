@@ -40,6 +40,8 @@ run "封面硬编码扫描"      "$PY" scripts/check_cover_hardcode.py
 run "发布入口收口审计"    "$PY" scripts/audit_publish_entrypoints.py
 run "卡片 Card2.0 契约"   "$PY" scripts/test_card_builder.py
 run "发布台账语义"        "$PY" scripts/test_publish_ledger.py
+run "发布凭证回查"        "$PY" scripts/test_publish_evidence.py
+run "僵尸 RUNNING 收尸"   "$PY" scripts/test_stale_runs.py
 run "cron pin 巡检"       "$PY" scripts/audit_cron_pin.py
 
 if [ "$MODE" != "fast" ]; then

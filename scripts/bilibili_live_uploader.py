@@ -184,10 +184,16 @@ async def main():
 
     if led_key:
         from src.publish_ledger import record_outcome
+        bvid = ""
         ok = isinstance(res, dict) and not res.get("error")
         if ok:
-            state = record_outcome(led_key, True,
-                                   external_id=str(res.get("bvid") or res.get("aid") or ""))
+            # 台账要留**可核对**的凭证：上传接口的返回值常常没有 bvid，
+            # 所以去稿件列表按标题回查（稿件刚落库会有几秒延迟，重试 3 次）。
+            bvid = str(res.get("bvid") or "") if isinstance(res, dict) else ""
+            if not bvid:
+                from src.publish_evidence import resolve_bvid_by_title
+                bvid = resolve_bvid_by_title(args.title, cookies)
+            state = record_outcome(led_key, True, external_id=bvid)
         else:
             err = str((res or {}).get("error") or "unknown") if isinstance(res, dict) else "unknown"
             # 只有"确定没提交"的错误才允许重试（status 用 SAFE_RETRY_SIGNALS 里的标记）
@@ -196,7 +202,7 @@ async def main():
             else:
                 # 提交后返回 error / 结构异常 → 平台可能已收到，禁止自动重发
                 state = record_outcome(led_key, False, status="SUBMIT_UNKNOWN", reason=err)
-        print(json.dumps({"ledger": state}, ensure_ascii=False))
+        print(json.dumps({"ledger": state, "bvid": bvid if ok else ""}, ensure_ascii=False))
     print(json.dumps(res, ensure_ascii=False))
 
 if __name__ == "__main__":

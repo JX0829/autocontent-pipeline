@@ -337,6 +337,51 @@ class PipelineDB:
             )
             conn.commit()
 
+    # ================================================================
+    # 僵尸 RUNNING 收尸
+    # ================================================================
+    # 起因（2026-11-10）：astryx-1 / freecc-1 卡在 expand_script，状态库永远停在
+    # RUNNING —— 进程被外部杀掉时没有任何代码路径会写失败，库里的状态因此说谎。
+    # 判据：status=RUNNING 但 updated_at 超过 N 分钟没动 = 进程已死，不是在跑。
+    # 最长单步（渲染）约 2.5 分钟，默认阈值 15 分钟，不会误杀活着的 run。
+
+    def list_stale_runs(self, minutes=15):
+        cutoff = f"-{int(minutes)} minutes"
+        with self.get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT run_id, task_id, account, status, steps_json, updated_at "
+                "FROM pipeline_runs WHERE status='RUNNING' "
+                "AND updated_at < datetime('now', ?) ORDER BY updated_at",
+                (cutoff,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def fail_stale_runs(self, minutes=15, new_status="ABANDONED"):
+        """把僵尸 RUNNING 标成 ABANDONED（步骤层的 RUNNING 同步改）。
+
+        不删任何产物、不动 run_root —— 只让状态库不再说谎，
+        下次同内容重跑会按「重试」复用原 run_id 与原目录。
+        """
+        stale = self.list_stale_runs(minutes)
+        if not stale:
+            return []
+        with self.get_conn() as conn:
+            for r in stale:
+                try:
+                    steps = json.loads(r.get("steps_json") or "{}")
+                except json.JSONDecodeError:
+                    steps = {}
+                for sid, st in list(steps.items()):
+                    if st == "RUNNING":
+                        steps[sid] = new_status
+                conn.execute(
+                    "UPDATE pipeline_runs SET status=?, steps_json=?, updated_at=CURRENT_TIMESTAMP "
+                    "WHERE run_id=?",
+                    (new_status, json.dumps(steps, ensure_ascii=False), r["run_id"]),
+                )
+            conn.commit()
+        return [r["run_id"] for r in stale]
+
     def get_run(self, run_id):
         with self.get_conn() as conn:
             conn.row_factory = sqlite3.Row
