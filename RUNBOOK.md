@@ -525,6 +525,56 @@ runner 每次真实运行开始时也会自动收尸一次（阈值取 `STALE_RU
 
 ---
 
+### 7.4 审批卡片「点按钮即裁决」（2026-11-11 打通）
+
+审批卡按钮是 `behaviors:[{type:"callback"}]`，点下去飞书推 `card.action.trigger`。
+这条链路走过三个坑，最后落在一个**不依赖 site-packages** 的方案上：
+
+| 坑 | 现象 | 结论 |
+|---|---|---|
+| ① pipeline 内进程内长连接 | 连得上，420 秒收不到任何回调 | 审批 app 与小何网关**同一个 app_id**，飞书对同 app 多客户端**随机投递**，事件被网关抢走 |
+| ② 只在一个 profile 装处理程序 | 有时成功、有时没反应 | 共用该 app 的 4 个 profile（xiao-he / xiao-kai / xiao-pin / xiao-xie）都可能收到，必须都装 |
+| ③ 改 site-packages 适配器把它变成 COMMAND | 能用，但 hermes 升级会被覆盖 | 改用官方扩展点 `pre_gateway_dispatch`（见下），补丁已撤 |
+
+**最终机制（三处，全在 profile 侧，升级不丢）：**
+
+```
+飞书点击 → 适配器转成文本 {"decision":"approve","run_id":"xxx"}
+        → 插件 pipeline-approval-bridge 的 pre_gateway_dispatch 钩子认出来
+        → 共享模块校验（run_id 正则 / decision 白名单 / 产物目录必须存在 / 拒绝改判）
+        → 原子写 data/approvals/<run_id>.json
+        → 返回 {"action":"skip"} —— 消息丢弃，不进 LLM（0 token）
+```
+
+- 共享实现：`~/Downloads/workspace/team/tools/pipeline_card_bridge.py`
+- 各 profile 薄壳：`~/.hermes/profiles/<p>/plugins/pipeline-approval-bridge/`（10 行，`register_bridge(ctx)`）
+- 覆盖 profile：`xiao-he` `xiao-kai` `xiao-pin` `xiao-xie`（**同一飞书 app 的所有消费者**，缺一个就有 1/4 概率失效）
+- 生效条件：改完必须 `hermes --profile <p> gateway restart`（网关不能从自身进程内重启）
+
+**排障口径：**
+
+```bash
+# 点击有没有落到某个网关
+grep -h "Routing card action" ~/.hermes/profiles/*/logs/gateway.log | tail -3
+# 插件有没有处理、消息有没有被吞掉
+grep -h "pipeline-card-bridge\|pre_gateway_dispatch skip" ~/.hermes/profiles/*/logs/gateway.log | tail -3
+# 裁决文件是否存在
+ls -la data/approvals/
+```
+
+实测证据（2026-11-11 13:53）：
+
+```
+[xiao-pin] [pipeline-card-bridge] dispatch: ✅ 已记录 cardtest-4 → approve
+[xiao-pin] pre_gateway_dispatch skip: reason=✅ 已记录 cardtest-4 → approve platform=feishu
+裁决文件: {"decision": "approve", "by": "card:hermes", "at": 1794376399}
+```
+
+> 兜底：文字回复 `approve` / `reject` 仍然有效（`ask()` 同时扫会话回复与裁决文件），
+> 按钮挂了不至于卡死审批。
+
+---
+
 ## 8. 验收 / 自检
 
 ```bash
