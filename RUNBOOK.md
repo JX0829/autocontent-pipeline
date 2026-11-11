@@ -453,6 +453,45 @@ sqlite3 data/pipeline_state.db "select dedupe_key,task_id,feishu_msg_id,sent_at 
 ... -m src.pipeline.runner --material m.json --run-id my-test-1 --resume
 ```
 
+### 7.1 平台发布台账（publish_ledger）—— 2026-11-11 事故后新增
+
+**事故**：同一条视频在 B站被发了两遍（07:49 / 07:56，两条一模一样的稿件）。
+根因是三个发布 CLI 直接调 submit，没有任何"这条发过没"的记录；第一次返回异常时只能重跑，于是多了一条。
+
+台账口径：`publish_key = sha256(platform | account | video_sha256)[:32]`
+（按**视频内容**算，跟文件名、标题、run_id 无关 —— 改个标题重发同样会被拦）
+
+| status | 含义 | 再次发布时 |
+|---|---|---|
+| `claimed` | 已占位，正在发（或进程中途死了） | ⛔ 拦住 |
+| `published` | 平台已确认，`post_id` 是 bvid/aid | ⛔ 拦住，并打印 post_id |
+| `unverified` | **发了但拿不到证据**（超时、PUBLISHED_UNVERIFIED） | ⛔ 拦住，要求人工核对 |
+| `failed` | 确认没发出去（未登录、找不到原创勾选、参数错） | ✅ 允许重试 |
+| `deleted` | 平台上人工删掉了 | ✅ 允许重发 |
+
+原则：**只有拿到"确定没发出去"的证据才允许重试**，其余一律拦住让人核对。
+（把 `unverified` 并回 `failed` 会重新打开重复发布的口子，`scripts/test_publish_ledger.py` 有断言盯着。）
+
+运维命令：
+
+```bash
+# 看台账
+python3 -m src.publish_ledger --list
+python3 -m src.publish_ledger --list bilibili
+
+# 去平台核对后：确认没发出去 → 释放占位（claimed / unverified 都能清）
+python3 -m src.publish_ledger --release <publish_key>
+
+# 平台上确实删掉了这条 → 标记 deleted，允许以后重发
+python3 -m src.publish_ledger --deleted <publish_key>
+```
+
+跑测试（已挂 `verify_all.sh --fast`）：
+
+```bash
+python3 scripts/test_publish_ledger.py   # 19 断言
+```
+
 ---
 
 ## 8. 验收 / 自检
