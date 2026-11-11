@@ -85,18 +85,19 @@ def test_common(card: dict, label: str) -> None:
 
 
 def test_buttons(card: dict, label: str) -> None:
+    """按钮已改纯展示：卡片里不该再有 button / behaviors。
+
+    原因：飞书卡片回调（card.action.trigger）未开通时，带 behaviors=callback 的按钮
+    点下去只会弹错误码（200830）。所以裁决一律走群里回复 approve/reject，
+    卡片上只保留字样，不渲染任何可点元素。
+    """
     btns: list[dict] = []
     collect_buttons(card, btns)
-    check(f"{label}: 两个按钮（确认/不发布）", len(btns) == 2, str(len(btns)))
-    decisions = set()
-    for b in btns:
-        beh = (b.get("behaviors") or [{}])[0]
-        check(f"{label}: 按钮 behaviors=callback ({b.get('text', {}).get('content')})",
-              beh.get("type") == "callback")
-        val = beh.get("value") or {}
-        decisions.add(val.get("decision"))
-        check(f"{label}: 按钮 value 带 run_id ({val.get('decision')})", bool(val.get("run_id")))
-    check(f"{label}: 动作为 approve + reject", decisions == {"approve", "reject"}, str(decisions))
+    check(f"{label}: 无按钮元素（已改纯展示）", len(btns) == 0, str(len(btns)))
+    raw = json.dumps(card, ensure_ascii=False)
+    check(f"{label}: 卡片里无 behaviors 回调", '"behaviors"' not in raw)
+    check(f"{label}: 文案给出回复指令",
+          "approve" in raw and "reject" in raw)
 
 
 def test_v2() -> None:

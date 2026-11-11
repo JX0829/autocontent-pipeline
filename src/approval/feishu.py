@@ -134,7 +134,12 @@ _CARD_STATE: dict[str, Any] = {"client": None, "thread": None, "run_id": "", "ac
 
 
 def _card_ws_enabled() -> bool:
-    return (os.getenv("FEISHU_CARD_WS", "1").strip().lower()
+    """默认关闭：卡片按钮已改纯展示，没有可点的回调，开长连接也只是白等。
+
+    以后若恢复带 behaviors 的按钮、并在开放平台开了「卡片回传交互 → 长连接」，
+    把 FEISHU_CARD_WS 置 1 即可重新启用。
+    """
+    return (os.getenv("FEISHU_CARD_WS", "0").strip().lower()
             not in ("0", "false", "no", "off"))
 
 
@@ -208,7 +213,7 @@ def _run_ws(client: Any) -> None:
 def _start_card_listener(run_id: str, dp: Path) -> bool:
     """审批等待期挂长连接收卡片按钮回调。返回是否已启动。"""
     if not _card_ws_enabled():
-        print("  [approval] 卡片回调已关闭（FEISHU_CARD_WS=0），只能回复 approve/reject")
+        print("  [approval] 卡片按钮为纯展示，裁决请回复 approve/reject")
         return False
     if _CARD_STATE.get("active"):
         return True

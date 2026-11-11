@@ -69,25 +69,8 @@ def style_approval_minimal(
         "body": {
             "elements": [
                 {"tag": "markdown", "content": "\n".join(lines)},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {"tag": "column", "width": "auto", "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "✅ 确认发布"},
-                            "type": "primary",
-                            "behaviors": [{"type": "callback",
-                                           "value": {"decision": "approve", "run_id": run_id}}],
-                        }]},
-                        {"tag": "column", "width": "auto", "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "❌ 不发布"},
-                            "type": "danger",
-                            "behaviors": [{"type": "callback",
-                                           "value": {"decision": "reject", "run_id": run_id}}],
-                        }]},
-                    ],
-                },
+                # 纯展示：不带 behaviors 的按钮在飞书里仍可点、仍会报错，所以干脆不渲染 button
+                {"tag": "markdown", "content": "**✅ 确认发布** ｜ **❌ 不发布**（仅展示）"},
             ]
         },
     }

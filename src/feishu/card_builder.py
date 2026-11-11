@@ -62,32 +62,12 @@ class FeishuCardBuilder:
         elements: list[Dict[str, Any]] = [
             {"tag": "markdown", "content": "\n".join(lines)},
             {"tag": "hr"},
-            {"tag": "markdown", "content": "回复 **approve** 确认发布 / **reject** 放弃"},
-            {
-                "tag": "column_set",
-                "columns": [
-                    {
-                        "tag": "column", "width": "auto",
-                        "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "✅ 确认发布"},
-                            "type": "primary",
-                            "behaviors": [{"type": "callback",
-                                           "value": {"decision": "approve", "run_id": run_id}}],
-                        }],
-                    },
-                    {
-                        "tag": "column", "width": "auto",
-                        "elements": [{
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "❌ 不发布"},
-                            "type": "danger",
-                            "behaviors": [{"type": "callback",
-                                           "value": {"decision": "reject", "run_id": run_id}}],
-                        }],
-                    },
-                ],
-            },
+            # 纯展示：不再渲染 button。飞书卡片回调（card.action.trigger）未开通时，
+            # 带 behaviors=callback 的按钮点下去只会弹错误码（用户看到 200830），
+            # 所以这里只摆字样，裁决一律走群里回复。
+            {"tag": "markdown", "content": "**✅ 确认发布** ｜ **❌ 不发布**"},
+            {"tag": "markdown",
+             "content": "回复 **approve** 确认发布 / **reject** 放弃（按钮仅作展示，不可点）"},
         ]
         return {
             "schema": CARD2_SCHEMA,
