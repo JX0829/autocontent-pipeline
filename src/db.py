@@ -290,11 +290,25 @@ class PipelineDB:
 
     # ---------------------------------------------------------------- run 生命周期
 
-    def upsert_run(self, run_id, task_id, content_hash, account, run_root, status="RUNNING"):
-        """建/更新 run。同 (content_hash, account) 已有 run 时复用其 run_id（不重复建）。"""
+    def upsert_run(self, run_id, task_id, content_hash, account, run_root, status="RUNNING",
+                   force_new=False):
+        """建/更新 run。同 (content_hash, account) 已有 run 时复用其 run_id（不重复建）。
+
+        force_new=True：显式指定新 run_id 时**不复用**历史 run。`uq_run_content` 是唯一
+        索引，所以要先把旧行的 content_hash 归档改名（保留旧行与它的 run_root，便于对账），
+        否则新 run 插不进去。归档值形如 `<hash>#superseded:<旧 run_id>`，
+        `find_run_by_content` 用等值匹配，因此不会再命中它。
+        """
         existing = self.find_run_by_content(content_hash, account)
         if existing and existing["run_id"] != run_id:
-            return existing["run_id"]
+            if not force_new:
+                return existing["run_id"]
+            with self.get_conn() as conn:
+                conn.execute(
+                    "UPDATE pipeline_runs SET content_hash = ? WHERE run_id = ?",
+                    (f"{content_hash}#superseded:{existing['run_id']}", existing["run_id"]),
+                )
+                conn.commit()
         with self.get_conn() as conn:
             conn.execute(
                 """INSERT INTO pipeline_runs
