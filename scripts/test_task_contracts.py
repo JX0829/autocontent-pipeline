@@ -340,9 +340,257 @@ def test_t47() -> None:
         bad("交付脚本拒绝不存在的 run", f"rc={r.returncode}")
 
 
+def test_p0_blockers() -> None:
+    """P0 三项阻断回归（2026-11-11 移交单）：B站入口 / 出片两条 / 抖音 claim。
+
+    每条都对应一次实测复现：修复前崩溃或留脏台账，修复后必须是「可读错误 + 约定退出码」。
+    """
+    from src.pipeline.runner import find_runs_for_identity, resolve_run_identity
+    from src.db import PipelineDB
+
+    old_root = PROJ / "output" / "20261107" / "old-id"
+    new_root = PROJ / "output" / "20261111" / "new-id"
+
+    def ident(content, named=None, explicit="", resume=False):
+        return resolve_run_identity(
+            content, named, explicit_run_id=explicit, resume=resume,
+            new_run_id="gen-id", new_run_root=new_root, task_id="new-task")
+
+    blocked = {"run_id": "old-id", "status": "BLOCKED",
+               "run_root": str(old_root), "task_id": "old-task"}
+    done = {"run_id": "old-id", "status": "DONE", "run_root": str(old_root), "task_id": "old-task"}
+
+    # 0) force_new 落库：唯一索引 uq_run_content 下必须能建第二条 run，旧行转归档
+    with tempfile.TemporaryDirectory() as td:
+        db = PipelineDB(str(Path(td) / "s.db"))
+        h = "hash-p0"
+        db.upsert_run("run-a", "task-a", h, "acct", Path(td) / "a")
+        same = db.upsert_run("run-b", "task-b", h, "acct", Path(td) / "b")
+        forced = db.upsert_run("run-b", "task-b", h, "acct", Path(td) / "b", force_new=True)
+        found = db.find_run_by_content(h, "acct") or {}
+        archived = db.get_run("run-a") or {}
+        if (same, forced, found.get("run_id"), archived.get("content_hash"), archived.get("run_root")) \
+                == ("run-a", "run-b", "run-b", f"{h}#superseded:run-a", str(Path(td) / "a")):
+            ok("force_new 建新 run 并归档旧行（唯一索引不冲突、旧 run_root 保留）")
+        else:
+            bad("force_new 建新 run 并归档旧行", f"same={same} forced={forced} "
+                                               f"found={found.get('run_id')} archived={archived.get('content_hash')}")
+
+    # 1) 显式新 --run-id + 同内容 BLOCKED → 全新目录（不劫持旧 run）
+    rid, root, task, mode, force = ident(blocked, explicit="new-id")
+    if (rid, Path(root), mode, force) == ("new-id", new_root, "explicit_new", True):
+        ok("显式 --run-id 不复用 BLOCKED 历史 run（走新目录 + force_new）", f"mode={mode}")
+    else:
+        bad("显式 --run-id 不复用 BLOCKED 历史 run",
+            f"实际 {(rid, root, mode, force)}")
+
+    # 2) 同内容已 DONE：即便显式给新 run_id 也必须幂等跳过（GATE-3 B 段契约）
+    if ident(done, explicit="new-id")[3] == "skip":
+        ok("同内容 DONE 时幂等跳过（显式 run-id 也不越过）")
+    else:
+        bad("同内容 DONE 时幂等跳过", f"{ident(done, explicit='new-id')}")
+
+    # 3) 显式 run-id 在库里有记录 → 按 **id** 用它自己的 run_root（不按内容猜）
+    named = {"run_id": "g3-a", "status": "RUNNING",
+             "run_root": str(PROJ / "output" / "20261111" / "g3-a"), "task_id": "t-a"}
+    rid2, root2, _, mode2, force2 = ident(blocked, named, explicit="g3-a", resume=True)
+    if (rid2, Path(root2), mode2, force2) == ("g3-a", PROJ / "output" / "20261111" / "g3-a",
+                                              "resume", False):
+        ok("显式 run-id 按 id 取原 run_root（resume 不被内容行劫持）")
+    else:
+        bad("显式 run-id 按 id 取原 run_root", f"{(rid2, root2, mode2)}")
+
+    # 4) 未显式指定时的复用规则必须保留（否则续跑找不到产物）
+    rid3, root3, _, mode3, force3 = ident(blocked)
+    if (rid3, Path(root3), mode3, force3) == ("old-id", old_root, "retry", False):
+        ok("未显式指定 run-id 时仍复用历史 run（retry）")
+    else:
+        bad("未显式指定 run-id 时仍复用历史 run（retry）", f"{(rid3, root3, mode3)}")
+    if ident(None, None)[3] == "fresh":
+        ok("无历史 run → fresh")
+    else:
+        bad("无历史 run → fresh", f"{ident(None, None)}")
+
+    # 4b) 接线：两个查询各查一次，显式 run-id 必须按 id 取（只测纯函数会漏这里）
+    class _FakeDB:
+        def __init__(self):
+            self.by_content = 0
+            self.by_id: list[str] = []
+
+        def find_run_by_content(self, content_hash, account):
+            self.by_content += 1
+            return blocked
+
+        def get_run(self, run_id):
+            self.by_id.append(run_id)
+            return None
+
+    fake = _FakeDB()
+    c_run, n_run = find_runs_for_identity(fake, "h", "acct", "new-id")
+    if c_run == blocked and n_run is None and fake.by_content == 1 and fake.by_id == ["new-id"]:
+        ok("显式 run-id 时按 id 查（接线）")
+    else:
+        bad("显式 run-id 时按 id 查（接线）",
+            f"content={fake.by_content} by_id={fake.by_id}")
+
+    # 5) render 前置清理：失效软链必须删，指向有效目录的软链必须留
+    import shutil
+    from src.pipeline.executors import RENDERER, _prune_dangling_public_links
+
+    runs_dir = RENDERER / "public" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    dead = runs_dir / "__p0_dangling__"
+    live = runs_dir / "__p0_live__"
+    keep = Path(tempfile.mkdtemp(prefix="p0props-"))
+    for link, target in ((dead, Path("/tmp/__p0_no_such_dir__")), (live, keep)):
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target, target_is_directory=True)
+    try:
+        pruned = _prune_dangling_public_links()
+        if "__p0_dangling__" in pruned and not dead.exists() and live.is_symlink() and live.exists():
+            ok("render 前置清理失效软链（有效软链不动）", f"pruned={pruned}")
+        else:
+            bad("render 前置清理失效软链", f"pruned={pruned} dead_exists={dead.exists()} live={live.exists()}")
+    finally:
+        for link in (dead, live):
+            if link.is_symlink():
+                link.unlink()
+        shutil.rmtree(keep, ignore_errors=True)
+
+    # 5b) 接线：exec_render 必须在读 draft/渲染**之前**先清软链（只测函数本身会漏）
+    import src.pipeline.executors as _ex
+    hits: list[int] = []
+    _orig_prune = _ex._prune_dangling_public_links
+    _ex._prune_dangling_public_links = lambda: hits.append(1) or []
+
+    class _Ctx:
+        run_root = Path(tempfile.mkdtemp(prefix="p0ctx-"))
+        run_id = "p0ctx"
+        task_id = "p0ctx"
+        material = None
+        artifacts: dict = {}
+        params: dict = {}
+        step: dict = {}
+        db_path = ""
+
+    try:
+        try:
+            _ex.exec_render(_Ctx())
+        except Exception:  # noqa: BLE001 — 没有 draft 必然报错，只关心 prune 是否已执行
+            pass
+    finally:
+        _ex._prune_dangling_public_links = _orig_prune
+        shutil.rmtree(_Ctx.run_root, ignore_errors=True)
+    if hits:
+        ok("exec_render 在渲染前调用软链清理（接线）")
+    else:
+        bad("exec_render 在渲染前调用软链清理（接线）", "prune 未被调用")
+
+    # 6) B 站上传器入口：provider 形态（非 --run-id）不能再崩在 `import src`
+    from src.utils.py_interp import find_interpreter
+    bili_py, probes = find_interpreter()
+    if not bili_py:
+        skip("B站上传器入口（provider 形态）", f"无解释器可 import bilibili_api: "
+                                          f"{[p['reason'] for p in probes][-1:]}")
+    else:
+        bad_video = subprocess.run(
+            [bili_py, "scripts/bilibili_live_uploader.py", "--video", "/tmp/__p0_none__.mp4",
+             "--title", "P0", "--desc", "x", "--tags", "科技"],
+            cwd=str(PROJ), capture_output=True, text=True, timeout=120)
+        if bad_video.returncode == 2 and "视频不存在" in bad_video.stdout \
+                and "No module named 'src'" not in (bad_video.stdout + bad_video.stderr):
+            ok("B站上传器 provider 形态（不再崩 import src）", f"rc={bad_video.returncode}")
+        else:
+            bad("B站上传器 provider 形态（不再崩 import src）",
+                f"rc={bad_video.returncode} err={bad_video.stderr.strip()[-120:]}")
+
+        blank = subprocess.run(
+            [bili_py, "scripts/bilibili_live_uploader.py", "--video", "/tmp/__p0_none__.mp4",
+             "--title", "   ", "--desc", "x", "--tags", "科技"],
+            cwd=str(PROJ), capture_output=True, text=True, timeout=120)
+        if blank.returncode == 2 and "title" in blank.stdout:
+            ok("B站上传器拦纯空格标题（不再吃 21009）", f"rc={blank.returncode}")
+        else:
+            bad("B站上传器拦纯空格标题", f"rc={blank.returncode} out={blank.stdout.strip()[-120:]}")
+
+        # 走台账的真实形态：同一视频已有未收尾 claim → rc=3（证明 `import src` 已通）
+        import shutil as _sh
+        tmpdir = tempfile.mkdtemp(prefix="p0ledger-")
+        try:
+            video = Path(tmpdir) / "tiny.mp4"
+            video.write_bytes(b"x")
+            env = dict(os.environ, SQLITE_DB_PATH=str(Path(tmpdir) / "ledger.sqlite"))
+            from src.publish_ledger import check_and_claim
+            check_and_claim("bilibili", "bilibili-tech-main", video, "P0",
+                            path=Path(tmpdir) / "ledger.sqlite")
+            blocked = subprocess.run(
+                [bili_py, "scripts/bilibili_live_uploader.py", "--video", str(video),
+                 "--title", "P0", "--desc", "x", "--tags", "科技"],
+                cwd=str(PROJ), capture_output=True, text=True, timeout=120, env=env)
+            if blocked.returncode == 3 and "blocked" in blocked.stdout:
+                ok("B站上传器走到台账查重（import src 打通）", f"rc={blocked.returncode}")
+            else:
+                bad("B站上传器走到台账查重（import src 打通）",
+                    f"rc={blocked.returncode} out={blocked.stdout.strip()[-160:]} "
+                    f"err={blocked.stderr.strip()[-120:]}")
+        finally:
+            _sh.rmtree(tmpdir, ignore_errors=True)
+
+    # 7) 抖音：CDP 掉线 → rc=2 且**不留 claim**，第二次不被自己拦住
+    import shutil as _sh2
+    tmpdir = tempfile.mkdtemp(prefix="p0dy-")
+    try:
+        video = Path(tmpdir) / "tiny.mp4"
+        video.write_bytes(b"x")
+        db_path = Path(tmpdir) / "ledger.sqlite"
+        env = dict(os.environ, SQLITE_DB_PATH=str(db_path))
+        args = [sys.executable, "scripts/publish_douyin_cdp.py", "--video", str(video),
+                "--title", "P0抖音", "--cdp-url", "http://127.0.0.1:1"]
+        first = subprocess.run(args, cwd=str(PROJ), capture_output=True, text=True,
+                               timeout=180, env=env)
+        second = subprocess.run(args, cwd=str(PROJ), capture_output=True, text=True,
+                                timeout=180, env=env)
+        rows = 0
+        if db_path.exists():
+            import sqlite3
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute("SELECT COUNT(*) FROM publish_ledger").fetchone()[0]
+        if first.returncode == 2 and second.returncode == 2 and rows == 0:
+            ok("抖音 CDP 掉线不留 claim（两次都 rc=2，不被查重拦）", f"rows={rows}")
+        else:
+            bad("抖音 CDP 掉线不留 claim",
+                f"rc1={first.returncode} rc2={second.returncode} rows={rows}")
+    finally:
+        _sh2.rmtree(tmpdir, ignore_errors=True)
+
+    # 8) 前置失败释放 claim 的状态机：claimed → VALIDATION → failed（可重试）
+    from src.publish_ledger import PublishBlocked, check_and_claim as _claim, record_outcome
+    tmpdir = tempfile.mkdtemp(prefix="p0rel-")
+    try:
+        video = Path(tmpdir) / "tiny.mp4"
+        video.write_bytes(b"y")
+        db_path = Path(tmpdir) / "ledger.sqlite"
+        key, _ = _claim("douyin", "douyin-tech-main", video, "P0", path=db_path)
+        state = record_outcome(key, False, status="VALIDATION", reason="preflight", path=db_path)
+        try:
+            key2, _ = _claim("douyin", "douyin-tech-main", video, "P0", path=db_path)
+        except PublishBlocked as exc:
+            key2 = ""
+            why = str(exc)
+        else:
+            why = ""
+        if state == "failed" and key2 == key:
+            ok("前置失败释放 claim 后可重新占位", f"state={state}")
+        else:
+            bad("前置失败释放 claim 后可重新占位", f"state={state} key2={key2} why={why[:60]}")
+    finally:
+        _sh2.rmtree(tmpdir, ignore_errors=True)
+
+
 def main() -> int:
-    print("=== 任务契约回归（T4.1 / T4.2 / T4.5 / T4.7）===")
-    for fn in (test_t41, test_t42, test_t45, test_t47):
+    print("=== 任务契约回归（T4.1 / T4.2 / T4.5 / T4.7 / P0 阻断）===")
+    for fn in (test_t41, test_t42, test_t45, test_t47, test_p0_blockers):
         try:
             fn()
         except Exception as e:  # noqa: BLE001 — 单个分区炸掉不该吞掉其余结果
