@@ -126,12 +126,10 @@ def exec_check_material(ctx: StepContext) -> dict[str, str]:
 def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     """llm.main：把物料扩写成 DraftScriptPayload（走 LLMClient，槽位来自 pipeline.yaml）。
 
-    重试策略：LLM 偶发超时/连接抖动会让整条 run 白等一轮（2026-11-10 两次卡在
-    expand_script）。这里最多试 2 次，第二次失败必须**抛错落库**，
-    让 run 明确变成 BLOCKED 而不是留在 RUNNING。
+    重试不在这里做：`pipeline.yaml` 的 `expand_script.retry.max` 由 `runner._execute_step`
+    统一读取（小品 PR #1，2026-11-10），`llm/client.py` 另有 `_is_transient()` 区分
+    超时/连接/429/5xx。此处只负责「扩写 → schema 校验 → 落盘」，失败即抛。
     """
-    import time
-
     from src.hotspot_extractor import pick_and_convert_hotspot
     from src.schemas import DraftScriptPayload
 
@@ -140,23 +138,7 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     if not news_text.strip():
         raise ExecutorError("物料没有可用于扩写的正文")
 
-    attempts = max(1, int(os.getenv("EXPAND_SCRIPT_ATTEMPTS", "2")))
-    last_exc: Exception | None = None
-    for i in range(1, attempts + 1):
-        try:
-            data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id)
-            break
-        except Exception as exc:  # noqa: BLE001 — 记下最后一次原因，最后一次必须抛出
-            last_exc = exc
-            if i >= attempts:
-                raise ExecutorError(
-                    f"expand_script 连续 {attempts} 次失败（最后一次 {type(exc).__name__}: {exc}）"
-                ) from exc
-            print(f"  [expand_script] 第 {i} 次失败（{type(exc).__name__}: {exc}），{3}s 后重试")
-            time.sleep(3)
-    else:  # pragma: no cover — 循环必然 break 或 raise
-        raise ExecutorError(f"expand_script 无产出: {last_exc}")
-
+    data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id)
     payload = DraftScriptPayload(**data)            # schema 校验（失败即抛，不兜底）
     out = _write_json(ctx.out("draft_script.json"), payload.model_dump())
     return {"draft_script": str(out)}

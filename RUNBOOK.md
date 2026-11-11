@@ -518,8 +518,10 @@ python3 scripts/reap_stale_runs.py --minutes 30 # 换阈值
 
 runner 每次真实运行开始时也会自动收尸一次（阈值取 `STALE_RUN_MINUTES`，默认 15）。
 
-另外 `expand_script` 现在**最多试 2 次**（`EXPAND_SCRIPT_ATTEMPTS`），两次都失败会明确抛错落库成
-`BLOCKED`，不再出现「界面上一直显示在跑，其实早死了」。
+> 补充：`expand_script` 的重试**不在这里做** —— `pipeline.yaml` 的 `expand_script.retry.max`
+> 由 `runner._execute_step` 统一读取，`llm/client.py` 的 `_is_transient()` 区分超时/连接/429/5xx
+> （小品 PR #1，2026-11-10）。收尸解决的是它覆盖不到的情况：**进程被 SIGKILL/超时强杀**，
+> 任何代码路径都没机会写库。
 
 ---
 
