@@ -52,6 +52,31 @@ class DraftScriptPayload(BaseModel):
                     v = sub.rstrip("！!，,:：、-—|?？ ")
         return v
 
+    @field_validator("fact_summary_150", mode="before")
+    @classmethod
+    def sanitize_fact_summary(cls, v: str) -> str:
+        """名字里的 150 就是真上限：超长按标点截断，别让整条草稿崩在 string_too_long。
+
+        200 的 max_length 保留作兜底（截断逻辑失效时仍然会拦），但正常路径不该走到 200。
+        为什么不是靠 on_schema_error 重试：同样的输入第二次还是超长，白烧一次 LLM。
+        """
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if len(v) <= 150:
+            return v
+        sub = v[:150]
+        delimiters = ("。", "！", "？", "；", "，", "、", "…", ".", "!", "?", ";", ",")
+        best_cut = -1
+        for d in delimiters:
+            idx = sub.rfind(d)
+            if idx >= 100:          # 太靠前会把摘要截成半句，宁可硬切
+                best_cut = max(best_cut, idx)
+        if best_cut != -1:
+            cut = sub[:best_cut].rstrip("。！？；，、… .!?;,")
+            return cut + ("。" if not cut.endswith(("。", "！", "？", "…")) else "")
+        return sub.rstrip("。！？；，、… .!?;,")
+
 class SubtitleItem(BaseModel):
     text: str
     start_ms: int
