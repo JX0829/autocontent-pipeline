@@ -15,7 +15,45 @@ import argparse
 import asyncio
 from pathlib import Path
 from copy import copy, deepcopy
-from bilibili_api import Credential, video_uploader
+
+PROJ = Path(__file__).resolve().parent.parent
+# provider 走的是 `--video/--title/--desc/--tags` 形态（不是 --run-id）：
+# 此时 sys.path[0] 是 scripts/，`from src.publish_ledger import ...` 必崩
+# ModuleNotFoundError。路径必须插在模块头，不能只放在 --run-id 分支里。
+if str(PROJ) not in sys.path:
+    sys.path.insert(0, str(PROJ))
+
+
+def _load_bilibili_api():
+    """延迟导入 bilibili_api：缺依赖时给可读错误 + 约定退出码，而不是裸栈。
+
+    该包不在项目解释器里（PEP668 锁定），只有 bili-cli 的 venv 装了它。
+    原先在模块头 import，任何解释器不对都会在参数校验之前崩掉。
+    """
+    try:
+        from bilibili_api import Credential, video_uploader
+    except ModuleNotFoundError as exc:
+        print(json.dumps({
+            "error": f"缺少依赖 {exc.name}（当前解释器 {sys.executable}）",
+            "hint": "用装了 bilibili-api-python 的解释器运行；或设 BILI_PYTHON 指向它，"
+                    "或 uv pip install bilibili-api-python",
+        }, ensure_ascii=False))
+        sys.exit(2)
+    return Credential, video_uploader
+
+
+def _norm_title(raw: str) -> tuple[str, str]:
+    """标题边界归一化：纯空格/全角空格不是有效标题（平台侧报 21009 标题不合法）。
+
+    返回 (标题, 警告)；警告非空要打到 stdout，不能静默截断。
+    """
+    title = str(raw or "").strip()
+    warn = ""
+    if len(title) > 80:
+        warn = f"标题 {len(title)} 字超过 B 站上限 80，已截断"
+        title = title[:80]
+    return title, warn
+
 
 def missing_probe(args) -> bool:
     """参数不全时不查重（先让缺参数报错更直观）。"""
@@ -23,6 +61,7 @@ def missing_probe(args) -> bool:
 
 
 async def main():
+    Credential, video_uploader = _load_bilibili_api()
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=False, default="")
     parser.add_argument("--cover", required=False, default="")
@@ -38,8 +77,6 @@ async def main():
     run_root = None
     # --run-id 模式：文案统一走 src/utils/video_desc，避免各平台各写一套
     if args.run_id:
-        PROJ = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline")
-        sys.path.insert(0, str(PROJ))
         hits = sorted(PROJ.glob(f"output/*/{args.run_id}/video_16_9.mp4"), key=lambda p: p.stat().st_mtime)
         if not hits:
             print(json.dumps({"error": f"找不到 run '{args.run_id}' 的 video_16_9.mp4"}))
@@ -55,9 +92,17 @@ async def main():
             args.tags = ",".join(str(t) for t in (draft.get("tags") or []))
 
     # 参数与登录态校验放在查重之前：确定发不出去的错误不该占用台账位
-    missing = [k for k in ("video", "title", "desc", "tags") if not getattr(args, k)]
+    # 标题先归一化：`"   "` / `"\u3000"` 也是无效标题，平台侧只回 21009（看不懂）
+    args.title, title_warn = _norm_title(args.title)
+    if title_warn:
+        print(json.dumps({"warning": title_warn}, ensure_ascii=False))
+    missing = [k for k in ("video", "title", "desc", "tags") if not str(getattr(args, k) or "").strip()]
     if missing:
-        print(json.dumps({"error": f"缺少参数: {', '.join(missing)}（或使用 --run-id）"}))
+        print(json.dumps({"error": f"缺少参数: {', '.join(missing)}（或使用 --run-id）"},
+                         ensure_ascii=False))
+        sys.exit(2)
+    if not Path(args.video).exists():
+        print(json.dumps({"error": f"视频不存在: {args.video}"}, ensure_ascii=False))
         sys.exit(2)
 
     cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")

@@ -62,6 +62,9 @@ contract:
       # T4.7 出片/发片解耦：publish（默认）| output_only（只出片不发片）
       - DISPATCH_MODE
       - DOUYIN_CDP_URL                    # 抖音 CDP 调试端口地址（默认 http://127.0.0.1:9222）
+      # 2026-11-11 P0：B站上传解释器（需 bilibili_api）。缺省时 src/utils/py_interp.py
+      # 会对候选解释器逐个真 import 探测；设了就用它（不再硬编码 ~/.agent-reach 路径）
+      - BILI_PYTHON
       # 2026-11-11：僵尸 RUNNING 收尸（scripts/reap_stale_runs.py + runner 启动自检）
       - STALE_RUN_MINUTES                 # 多久没更新算进程已死（默认 15；最长单步渲染约 2.5 分钟）
       - PIPELINE_DB                       # 收尸 CLI 用的状态库路径（默认 data/pipeline_state.db）
