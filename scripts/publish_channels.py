@@ -158,6 +158,17 @@ def main() -> int:
         ap.error("需要 --run-id 或 --video")
 
     print(f"视频: {video}\n标题: {title}\n话题: {tags}")
+
+    # 发布前查重（probe / dry-run / stop-before-publish 不占位、不查重）
+    led_key = ""
+    if not (args.dry_run or args.stop_before_publish):
+        from src.publish_ledger import PublishBlocked, check_and_claim, mark_failed, mark_published
+        try:
+            led_key, _info = check_and_claim("channels", ACCOUNT["id"], video, title)
+        except PublishBlocked as exc:
+            print(f"⛔ 发布前查重拦截：{exc}")
+            return 3
+
     res = p.publish_live(
         video_path=video, cover_path=cover, title=title, content_text=body,
         topics=list(tags), declare_original=not args.no_original,
@@ -168,6 +179,12 @@ def main() -> int:
 
     if args.dry_run:
         return 0 if res.get("status") == "DRY_RUN_OK" else 2
+    if led_key:
+        from src.publish_ledger import mark_failed, mark_published
+        if res.get("published"):
+            mark_published(led_key, str(res.get("post_id") or res.get("msg_id") or ""))
+        else:
+            mark_failed(led_key, str(res.get("status") or res.get("reason") or "")[:200])
     return 0 if res.get("published") else 1
 
 

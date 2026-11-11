@@ -229,7 +229,24 @@ def main() -> int:
         seed_on, seed_pin, _ = _seed_comment_plan(account, draft)
         if seed_on:
             _log(f"seed_comment: 已配置(置顶={seed_pin})，抖音 CDP 首评链路待实拍验证后启用")
-        return publish(video, title, summary, tags, args.cdp_url, args.dry_run, account)
+        # 发布前查重（dry-run 不查重，避免占位把真实发布挡死）
+        led_key = ""
+        if not args.dry_run:
+            from src.publish_ledger import PublishBlocked, check_and_claim
+            try:
+                led_key, _info = check_and_claim("douyin", str(account.get("id") or "douyin"),
+                                                 video, title)
+            except PublishBlocked as exc:
+                _log(f"⛔ 发布前查重拦截：{exc}")
+                return 3
+        rc = publish(video, title, summary, tags, args.cdp_url, args.dry_run, account)
+        if led_key:
+            from src.publish_ledger import mark_failed, mark_published
+            if rc == 0:
+                mark_published(led_key, "")
+            else:
+                mark_failed(led_key, f"publish rc={rc}")
+        return rc
     except FileNotFoundError as exc:
         _log(str(exc))
         return 2

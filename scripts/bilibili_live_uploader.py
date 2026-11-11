@@ -17,6 +17,11 @@ from pathlib import Path
 from copy import copy, deepcopy
 from bilibili_api import Credential, video_uploader
 
+def missing_probe(args) -> bool:
+    """参数不全时不查重（先让缺参数报错更直观）。"""
+    return not (getattr(args, "video", "") and getattr(args, "title", ""))
+
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=False, default="")
@@ -48,6 +53,22 @@ async def main():
         args.desc = args.desc or build_desc(draft, platform="bilibili", run_root=run_root)
         if not args.tags:
             args.tags = ",".join(str(t) for t in (draft.get("tags") or []))
+
+    # 发布前查重：同一视频在同一账号已发过就不再发（不可撤回的公开内容）
+    led_key = ""
+    if not missing_probe(args):
+        from src.publish_ledger import PublishBlocked, check_and_claim, mark_failed, mark_published
+        try:
+            acct = "bilibili-main"
+            try:
+                from src.utils.accounts import for_platform
+                acct = str(for_platform("bilibili").get("id") or acct)
+            except Exception:  # noqa: BLE001 — 账号配置缺失不阻塞查重，用兜底 id
+                pass
+            led_key, _info = check_and_claim("bilibili", acct, Path(args.video), args.title)
+        except PublishBlocked as exc:
+            print(json.dumps({"blocked": str(exc)}, ensure_ascii=False))
+            sys.exit(3)
 
     missing = [k for k in ("video", "title", "desc", "tags") if not getattr(args, k)]
     if missing:
@@ -160,6 +181,13 @@ async def main():
         logger_msg = f"SEED_COMMENT_FAILED: {exc}"
         print(json.dumps({"seed_comment_error": logger_msg}, ensure_ascii=False))
 
+    if led_key:
+        from src.publish_ledger import mark_failed, mark_published
+        ok = isinstance(res, dict) and not res.get("error")
+        if ok:
+            mark_published(led_key, str(res.get("bvid") or res.get("aid") or ""))
+        else:
+            mark_failed(led_key, str(res.get("error") or "")[:200])
     print(json.dumps(res, ensure_ascii=False))
 
 if __name__ == "__main__":
