@@ -268,6 +268,67 @@ EXECUTORS_PENDING = {
 }
 
 
+def find_runs_for_identity(db, content_hash: str, account: str,
+                           explicit_run_id: str) -> tuple[dict[str, Any] | None,
+                                                          dict[str, Any] | None]:
+    """返回 (同内容历史 run, 显式 run-id 指向的那条 run)。
+
+    两个查询解决两件不同的事：
+      · 同内容（uq_run_content）：判断「这条内容是不是已经出完片了」→ 防重复出片/重发；
+      · 显式 run_id：用户点名的 run，必须按 **id** 取，不能按内容猜 —— 按内容猜就是
+        「换新 run_id 却仍去读上一版已删目录」那个 bug 的根。
+    """
+    content_run = db.find_run_by_content(content_hash, account)
+    named_run = db.get_run(explicit_run_id) if explicit_run_id else None
+    return content_run, named_run
+
+
+def resolve_run_identity(content_run: dict[str, Any] | None,
+                         named_run: dict[str, Any] | None, *, explicit_run_id: str,
+                         resume: bool, new_run_id: str, new_run_root: Path,
+                         task_id: str) -> tuple[str, Path, str, str, bool]:
+    """决定本次 run 的 (run_id, run_root, task_id, mode, force_new)。
+
+    这是「重跑必崩」的第三个成因（2026-11-11 17:19）：用户显式传新 `--run-id`
+    重跑时，原实现被 `find_run_by_content` 查到的旧 run **无条件覆盖**，于是仍去读
+    上一版（BLOCKED）的产物目录 —— 那个目录里往往是已删/半成品，报的是
+    「draft_script 不存在」，看不出是 run 身份被劫持。
+
+    但**不能**把「显式优先」无限放大：`uq_run_content` 上的幂等跳过是防重复出片/重发的
+    承重设计（GATE-3 的 B 段就是这个契约），同内容已 DONE 时必须继续跳过。
+
+    优先级（从上到下命中即返回）：
+      skip          同内容已 DONE 且非 resume → 幂等跳过（即便显式给了新 run_id）
+      retry/resume  显式 run_id 指向的 run 存在 → 用它自己的 run_root（不按内容猜）
+      explicit_new  显式 run_id 在库里没有 → 全新目录；若同内容有未完成的 run，
+                    调用方要用 force_new 归档它的 content_hash（唯一索引让路）
+      retry         同内容历史 run 未完成（未显式 run_id）→ 复用原 run_id/run_root
+      resume        显式 --resume → 回到原 run
+      fresh         没有任何历史
+    """
+    if content_run and content_run.get("status") == "DONE" and not resume:
+        return new_run_id, new_run_root, task_id, "skip", False
+
+    if named_run:
+        run_id = named_run["run_id"] or new_run_id
+        run_root = Path(named_run["run_root"]) if named_run.get("run_root") else new_run_root
+        task_id = str(named_run.get("task_id") or task_id)
+        return run_id, run_root, task_id, ("resume" if resume else "retry"), False
+
+    if explicit_run_id:
+        return explicit_run_id, new_run_root, task_id, "explicit_new", bool(content_run)
+
+    if content_run:
+        run_id = content_run["run_id"] or new_run_id
+        # 断点续跑/重试必须回到**原来那个 run_root**，否则找不到上一步产物
+        run_root = Path(content_run["run_root"]) if content_run.get("run_root") else new_run_root
+        # task_id 也必须回到原值：TTS props 落在 renderer/public/tasks/<task_id>/
+        task_id = str(content_run.get("task_id") or task_id)
+        return run_id, run_root, task_id, ("resume" if resume else "retry"), False
+
+    return new_run_id, new_run_root, task_id, "fresh", False
+
+
 def _resolve_pending(step: dict[str, Any]) -> str:
     executor = step.get("run") or step.get("uses") or ""
     if executor in EXECUTORS_PENDING:
@@ -745,7 +806,8 @@ def main(argv: list[str] | None = None) -> int:
     account = args.account or ((cfg.get("inputs") or {}).get("account") or {}).get("default") \
         or ((material or {}).get("account"))
     account = account or "unknown"
-    run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid() % 0xFFFF:04x}"
+    explicit_run_id = str(args.run_id or "")
+    run_id = explicit_run_id or f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid() % 0xFFFF:04x}"
     task_id = str((material or {}).get("task_id") or (material or {}).get("id") or run_id)
     run_root = PROJ / "output" / f"{datetime.now():%Y%m%d}" / run_id
     content_hash = content_hash_of(cfg, material)
@@ -754,35 +816,38 @@ def main(argv: list[str] | None = None) -> int:
     db = None if args.dry_run else _db(Path(args.db))
     auto_resume = False
     if db is not None:
-        existing = db.find_run_by_content(content_hash, account)
-        if existing and existing.get("status") == "DONE" and not args.resume:
+        # 两个查询各管一件事：同内容（幂等跳过）+ 显式 run_id（按 id 取，不按内容猜）
+        content_run, named_run = find_runs_for_identity(db, content_hash, account, explicit_run_id)
+        run_id, run_root, task_id, mode, force_new = resolve_run_identity(
+            content_run, named_run, explicit_run_id=explicit_run_id,
+            resume=bool(args.resume), new_run_id=run_id, new_run_root=run_root,
+            task_id=task_id)
+        if mode == "skip":
+            assert content_run is not None   # skip 只可能在查到同内容 DONE 时返回
             print(f"\n=== 幂等跳过（uq_run_content）===\n"
-                  f"  同内容已出片: run_id={existing['run_id']} status=DONE\n"
+                  f"  同内容已出片: run_id={content_run['run_id']} status=DONE\n"
                   f"  content_hash={content_hash[:16]}… account={account}")
             return EXIT_OK
-        if existing and existing.get("status") != "DONE" and not args.resume:
-            # D 修复：同内容历史 run 处于 FAILED/RUNNING/PARTIAL 时按「重试」处理，
+        if mode == "explicit_new":
+            if content_run:
+                print(f"\n=== 显式 --run-id 优先 ===\n"
+                      f"  run_id={run_id}（同内容存在未完成 run {content_run['run_id']}，"
+                      f"不复用其目录；旧行保留备查）")
+        if mode == "retry":
+            # 同内容历史 run 处于 FAILED/RUNNING/PARTIAL 时按「重试」处理，
             # 复用原 run_id 与原 run_root —— 否则新 run_root 与库里 run_id 错配，
             # 续跑/对账必然找不到产物，表现为「重跑必崩、永远卡住」。
-            run_id = existing["run_id"]
-            if existing.get("run_root"):
-                run_root = Path(existing["run_root"])
-            task_id = str(existing.get("task_id") or task_id)
             auto_resume = True
             print(f"\n=== 同内容历史 run 重试 ===\n"
-                  f"  run_id={run_id} status={existing.get('status')}\n"
+                  f"  run_id={run_id} status={(named_run or content_run or {}).get('status')}\n"
                   f"  复用 run_root={run_root}\n"
-                  f"  （如需全新一版，请先归档该 run 或换物料）")
-        if existing and args.resume:
-            run_id = existing["run_id"]
-            # 断点续跑必须回到**原来那个 run_root**，否则找不到上一步产物
-            if existing.get("run_root"):
-                run_root = Path(existing["run_root"])
-            # task_id 也必须回到原值：TTS props 落在 renderer/public/tasks/<task_id>/
-            task_id = str(existing.get("task_id") or task_id)
-            print(f"\n=== 续跑已有 run ===\n  run_id={run_id} status={existing.get('status')}"
+                  f"  （如需全新一版，请显式传 --run-id <新 id>）")
+        if mode == "resume":
+            print(f"\n=== 续跑已有 run ===\n  run_id={run_id} "
+                  f"status={(named_run or content_run or {}).get('status')}"
                   f"\n  run_root={run_root}")
-        run_id = db.upsert_run(run_id, task_id, content_hash, account, run_root, status="RUNNING")
+        run_id = db.upsert_run(run_id, task_id, content_hash, account, run_root,
+                               status="RUNNING", force_new=force_new)
 
         # 收尸：进程被外部杀掉时状态库会永远停在 RUNNING（2026-11-10 的 astryx-1/freecc-1）。
         # 这里只如实标记，不删产物；同内容重跑仍按「重试」复用原 run_id 与原目录。
