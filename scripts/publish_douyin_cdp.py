@@ -52,6 +52,17 @@ def _log(msg: str) -> None:
     LOG.info(msg)
 
 
+def _release_claim(key: str, reason: str) -> None:
+    """前置阶段失败（确定没提交）→ 标 failed 释放占位，下次可重试。
+
+    VALIDATION 在 `SAFE_RETRY_SIGNALS` 里，`record_outcome` 会把它落成 failed，
+    而 failed/deleted 是允许重新 claim 的状态。
+    """
+    from src.publish_ledger import record_outcome
+    state = record_outcome(key, False, status="VALIDATION", reason=reason[:200])
+    _log(f"台账: {state}（前置失败已释放 claim）")
+
+
 def _normalize_tags(tags: list[str]) -> str:
     return " ".join(t if str(t).startswith("#") else f"#{t}" for t in tags if str(t).strip())
 
@@ -89,6 +100,47 @@ def _open_page(ctx):
     return ctx.pages[0] if ctx.pages else ctx.new_page()
 
 
+class PublishPreflightError(RuntimeError):
+    """发布**前置**阶段失败（CDP 连不上 / 上传页没准备好 / 没点到「发布」）。
+
+    这一阶段失败 == 平台侧确定没收到内容，可以安全释放台账 claim 并重试；
+    点过「发布」之后的异常一律按 SUBMIT_UNKNOWN 处理（禁止盲目重发）。
+    """
+
+
+CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def chrome_launch_hint(cdp_url: str) -> str:
+    """掉线时的可执行指引（照抄 RUNBOOK §5.2 的启动命令）。"""
+    port = cdp_url.rsplit(":", 1)[-1].strip("/") or "9333"
+    return (f'"{CHROME_BIN}" --remote-debugging-port={port} '
+            f'--user-data-dir={PROJ}/data/browser_profiles/douyin-cdp '
+            f'--no-first-run --no-default-browser-check --window-size=1280,900 about:blank')
+
+
+def _probe_cdp(cdp_url: str, timeout: float = 3.0) -> tuple[bool, str]:
+    """`GET /json/version` 探活（3 秒超时）。
+
+    原先直接 `connect_over_cdp`：掉线时抛的是 playwright 的 ECONNREFUSED 长栈，
+    而且**已经占了台账 claim**，于是下一次发布被自己拦住。探活必须在 claim 之前。
+    """
+    import urllib.error
+    import urllib.request
+
+    url = f"{cdp_url.rstrip('/')}/json/version"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            raw = resp.read(4096).decode("utf-8", "replace")
+        data = json.loads(raw)
+        browser = str(data.get("Browser") or "?")
+        return True, browser
+    except urllib.error.URLError as exc:
+        return False, f"{type(exc).__name__}: {exc.reason}"
+    except Exception as exc:  # noqa: BLE001 — 探活失败原因必须原样回给用户
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def _seed_comment_plan(account: dict, draft: dict) -> tuple[bool, bool, str]:
     """作者首评：配置在 accounts.yaml 的 seed_comment 块。抖音需 CDP UI 实拍验证后才能开启。"""
     try:
@@ -102,7 +154,10 @@ def _seed_comment_plan(account: dict, draft: dict) -> tuple[bool, bool, str]:
 
 def publish(video: Path, title: str, summary: str, tags: list[str],
             cdp_url: str, dry_run: bool, account: dict) -> int:
-    from playwright.sync_api import sync_playwright
+    try:
+        from playwright.sync_api import sync_playwright
+    except ModuleNotFoundError as exc:
+        raise PublishPreflightError(f"缺少 playwright（当前解释器 {sys.executable}）: {exc.name}") from exc
 
     caption = f"{title} {_normalize_tags(tags)}\n{summary}".strip()
     if dry_run:
@@ -111,11 +166,15 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
         _log(f"[dry-run] account={account.get('id')} publish_mode={account.get('publish_mode')}")
 
     with sync_playwright() as pw:
-        browser = pw.chromium.connect_over_cdp(cdp_url)
-        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = _open_page(ctx)
+        # ── 前置阶段：连会话 + 读管理页。失败时平台侧一定没收到内容。
+        try:
+            browser = pw.chromium.connect_over_cdp(cdp_url)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = _open_page(ctx)
 
-        before_text, before_line = _read_works(page)
+            before_text, before_line = _read_works(page)
+        except Exception as exc:  # noqa: BLE001 — 统一转成可释放 claim 的前置错误
+            raise PublishPreflightError(f"CDP 会话不可用（{cdp_url}）: {exc}") from exc
         _log(f"CDP ok | BEFORE {before_line or '未识别'} | title_present={title in before_text} | url={page.url}")
         if dry_run:
             _log("[dry-run] 输入与 CDP 会话均正常，未上传未发布")
@@ -125,42 +184,47 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
             _log("该标题已在作品列表中，视为已发布，跳过（幂等）")
             return 0
 
-        page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(5)
-        page.locator('input[type="file"]').first.set_input_files(str(video))
-        page.wait_for_selector('div[contenteditable="true"]', timeout=90000)
-        time.sleep(3)
-        editor = page.locator('div[contenteditable="true"]').first
-        editor.click()
-        editor.fill("")
-        editor.type(caption, delay=10)
-        time.sleep(2)
-
-        for _ in range(40):
-            if "上传成功" in page.inner_text("body"):
-                break
+        # ── 仍未点「发布」：上传页准备阶段的失败同样可安全重试
+        try:
+            page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=60000)
+            time.sleep(5)
+            page.locator('input[type="file"]').first.set_input_files(str(video))
+            page.wait_for_selector('div[contenteditable="true"]', timeout=90000)
             time.sleep(3)
+            editor = page.locator('div[contenteditable="true"]').first
+            editor.click()
+            editor.fill("")
+            editor.type(caption, delay=10)
+            time.sleep(2)
 
-        if str(account.get("publish_mode") or "") == "private_publish":
-            label = page.locator('xpath=//label[contains(., "仅自己可见")]').first
-            if label.count():
-                label.click()
-                time.sleep(1)
-                _log("已勾选「仅自己可见」")
-
-        clicked = False
-        for i in range(page.locator('button:has-text("发布")').count()):
-            btn = page.locator('button:has-text("发布")').nth(i)
-            try:
-                if btn.inner_text().strip() == "发布" and btn.is_visible() and btn.is_enabled():
-                    btn.click()
-                    clicked = True
+            for _ in range(40):
+                if "上传成功" in page.inner_text("body"):
                     break
-            except Exception as exc:  # noqa: BLE001 - 单个按钮不可点不应中断整轮查找
-                LOG.debug(f"跳过不可点按钮 #{i}: {exc}")
-        if not clicked:
-            _log("未找到可点击的「发布」按钮")
-            return 2
+                time.sleep(3)
+
+            if str(account.get("publish_mode") or "") == "private_publish":
+                label = page.locator('xpath=//label[contains(., "仅自己可见")]').first
+                if label.count():
+                    label.click()
+                    time.sleep(1)
+                    _log("已勾选「仅自己可见」")
+
+            clicked = False
+            for i in range(page.locator('button:has-text("发布")').count()):
+                btn = page.locator('button:has-text("发布")').nth(i)
+                try:
+                    if btn.inner_text().strip() == "发布" and btn.is_visible() and btn.is_enabled():
+                        btn.click()
+                        clicked = True
+                        break
+                except Exception as exc:  # noqa: BLE001 - 单个按钮不可点不应中断整轮查找
+                    LOG.debug(f"跳过不可点按钮 #{i}: {exc}")
+            if not clicked:
+                _log("未找到可点击的「发布」按钮")
+                return 2
+        except Exception as exc:  # noqa: BLE001 — 未点发布 ⇒ 不是「可能已提交」
+            raise PublishPreflightError(f"上传页准备失败（未点「发布」）: {exc}") from exc
+
         _log("已点击「发布」")
         time.sleep(6)
 
@@ -236,6 +300,14 @@ def main() -> int:
         if not video.exists():
             _log(f"视频不存在: {video}")
             return 2
+        # CDP 探活必须在**占台账之前**：掉线时留下 claim 会让之后每次发布都被自己拦住
+        ok, detail = _probe_cdp(args.cdp_url)
+        if not ok:
+            _log(f"⛔ CDP 不可用（{args.cdp_url}）：{detail}")
+            _log(f"  先启动已登录的 Chrome（RUNBOOK §5.2）：")
+            _log(f"  {chrome_launch_hint(args.cdp_url)}")
+            return 2
+        _log(f"CDP 探活 ok（{args.cdp_url}）: {detail}")
         seed_on, seed_pin, _ = _seed_comment_plan(account, draft)
         if seed_on:
             _log(f"seed_comment: 已配置(置顶={seed_pin})，抖音 CDP 首评链路待实拍验证后启用")
@@ -249,7 +321,23 @@ def main() -> int:
             except PublishBlocked as exc:
                 _log(f"⛔ 发布前查重拦截：{exc}")
                 return 3
-        rc = publish(video, title, summary, tags, args.cdp_url, args.dry_run, account)
+        rc = None
+        try:
+            rc = publish(video, title, summary, tags, args.cdp_url, args.dry_run, account)
+        except PublishPreflightError as exc:
+            # 没点「发布」⇒ 平台确定没收到：释放 claim，允许重试
+            _log(f"⛔ 发布前置失败（未点「发布」，不占用台账）：{exc}")
+            if led_key:
+                _release_claim(led_key, f"preflight: {exc}")
+            return 2
+        except Exception as exc:  # noqa: BLE001 — 点过发布后的未知异常：可能已提交，禁止重发
+            _log(f"⚠ 发布中断（可能已提交，禁止盲目重发）：{type(exc).__name__}: {exc}")
+            if led_key:
+                from src.publish_ledger import record_outcome
+                state = record_outcome(led_key, False, status="SUBMIT_UNKNOWN",
+                                       reason=f"{type(exc).__name__}: {exc}"[:200])
+                _log(f"台账: {state}")
+            return 1
         if led_key:
             from src.publish_ledger import record_outcome
             # rc=2 是参数/校验类失败（还没进发布流程）→ 可重试；rc=1 可能点了发布但没确认 → 禁止重发
