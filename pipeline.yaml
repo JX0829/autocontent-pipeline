@@ -235,7 +235,8 @@ steps:
     reads: ["draft_script.json", "props/aligned_render.json"]
     produces: ["video.mp4", "cover.png"]
     before_hooks: [hook.sensitive_scan, hook.material_check, hook.expand_narration]
-    after_hooks: [hook.frame_fingerprint, hook.frame_sample_check, hook.external_truth, hook.audio_duration_check]
+    # hook.textbook_duration_guard：课文故事出片时长断言（非课文物料直接放行，见 hook 实现）
+    after_hooks: [hook.frame_fingerprint, hook.frame_sample_check, hook.external_truth, hook.audio_duration_check, hook.textbook_duration_guard]
 
   - id: render_landscape
     name: "生成横版视频"
@@ -247,7 +248,7 @@ steps:
     requires_props: true                # props 由 align_tts 产出，不依赖竖版成片
     produces: ["video_16_9.mp4", "cover_16_9.png"]
     before_hooks: [hook.landscape_precheck]
-    after_hooks: [hook.frame_fingerprint, hook.external_truth, hook.landscape_guard]
+    after_hooks: [hook.frame_fingerprint, hook.external_truth, hook.landscape_guard, hook.textbook_duration_guard]
 
   - id: deliver
     name: "投递飞书（供人审）"
@@ -336,6 +337,10 @@ hooks:
     type: gate
     impl: scripts/hooks/audio_duration_check.py
     on_fail: warn
+  hook.textbook_duration_guard:            # 2026-11-12（F-2026-11-12 §11.3 缺口1）：课文故事时长硬断言
+    type: gate
+    impl: scripts/hooks/textbook_duration_guard.py
+    on_fail: block
   hook.landscape_precheck:
     type: gate
     impl: scripts/hooks/landscape_precheck.py

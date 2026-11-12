@@ -79,3 +79,40 @@ accounts:
       text: ""                       # 留空则用 video_desc 前 120 字 + 欢迎语
     enabled: true
 
+  # ---------------------------------------------------------------- edu（课文故事）
+  # 2026-11-12（F-2026-11-12 §11.3 缺口4）：新增 edu 账号类型，供「课文背后」系列发布。
+  # 默认 enabled=false：浏览器 profile / 平台资质未就绪前不参与 for_platform() 选取，
+  # 因此现有科技链路发布行为完全不变。开通时置 true 并补齐 profile_path 即可。
+  - id: "channels-edu-textbook"
+    platform: "channels"
+    name: "课文背后（视频号）"
+    account_type: "edu"
+    profile_path: "./data/browser_profiles/channels-edu"
+    publish_mode: "public"
+    declare_aigc: false              # 与 channels-tech 一致：Web 端无 AI 声明控件
+    declare_original: true
+    max_daily_tasks: 3
+    seed_comment:
+      enabled: true
+      pin: true
+      text: ""
+    enabled: false                   # 待账号资质 + 浏览器 profile 就绪
+
+  - id: "douyin-edu-textbook"
+    platform: "douyin"
+    name: "课文背后（抖音）"
+    account_type: "edu"
+    profile_path: "./data/browser_profiles/douyin-edu"
+    proxy_server: ""
+    fingerprint_seed: "fp_seed_edu_20261112"
+    publish_mode: "public_publish"
+    schedule_delay_minutes: 120
+    declare_aigc: true
+    max_daily_tasks: 3
+    seed_comment:
+      enabled: true
+      pin: true
+      text: ""
+    enabled: false                   # 待账号资质 + 浏览器 profile 就绪
+
+

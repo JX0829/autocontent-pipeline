@@ -1,10 +1,26 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Literal, Optional
+
+# ---------------------------------------------------------------- 品类与分镜预算
+# F-2026-11-12-TEXTBOOK-STORY §6：分镜上限 8 → 25，但科技类必须保持 8 不变。
+# 上限放宽必须在**品类维度**上区分，否则科技速报会被 LLM 拖成 20 镜的注水片。
+CONTENT_TYPE_TECH = "tech_news"          # 缺省：现有科技速报物料不带 content_type
+CONTENT_TYPE_TEXTBOOK = "textbook_story" # 课文故事：90~150 秒叙事片
+MAX_SCENES_TECH = 8
+MAX_SCENES_TEXTBOOK = 25
+
+# 科技风视觉（GeekShortVideo）与古风视觉（TextbookStoryVideo，M2）并列新增、互不混用。
+TECH_VISUAL_TYPES = ("terminal_code", "ui_card", "stat_chart", "media_showcase")
+TEXTBOOK_VISUAL_TYPES = ("ink_title", "vertical_poem", "ancient_map", "archive_card", "scroll_transition")
+
 
 class SceneItemDraft(BaseModel):
     scene_index: int
     segment_narration: str = Field(..., max_length=100)
-    visual_type: Literal["terminal_code", "ui_card", "stat_chart", "media_showcase"]
+    visual_type: Literal[
+        "terminal_code", "ui_card", "stat_chart", "media_showcase",
+        "ink_title", "vertical_poem", "ancient_map", "archive_card", "scroll_transition",
+    ]
     code_snippet: Optional[str] = None
     media_asset_url: Optional[str] = None
     stat_items: Optional[List[dict]] = None
@@ -12,8 +28,12 @@ class SceneItemDraft(BaseModel):
     sfx_cue: Literal["whoosh", "typing", "ding", "glitch", "none"]
 
 class DraftScriptPayload(BaseModel):
-    theme: Literal["tech-github", "ai-product", "breaking-news"]
+    theme: Literal["tech-github", "ai-product", "breaking-news", "textbook-story"]
     entity_key: str
+    content_type: Literal["tech_news", "textbook_story"] = Field(
+        default=CONTENT_TYPE_TECH,
+        description="物料品类：tech_news（科技速报，缺省）| textbook_story（课文故事）"
+    )
     title: str = Field(..., max_length=20, description="抖音/视频号双列瀑布流极客标题，严格限制在20字以内")
     cover_main_text: str = Field(..., max_length=20)
     cover_sub_text: str = Field(..., max_length=30)
@@ -29,9 +49,39 @@ class DraftScriptPayload(BaseModel):
         default="auto",
         description="视觉模板 ID：auto | editorial_news | cupertino_glass | neo_brutalism | notion_craft | linear_obsidian 或自定义扩展模板 ID"
     )
-    scenes: List[SceneItemDraft] = Field(..., min_length=3, max_length=8)
+    scenes: List[SceneItemDraft] = Field(..., min_length=3, max_length=MAX_SCENES_TEXTBOOK)
     tags: List[str]
-    target_account_type: Literal["tech", "news"]
+    target_account_type: Literal["tech", "news", "edu"]
+
+    @model_validator(mode="after")
+    def check_scene_budget_by_content_type(self):
+        """分镜预算按品类分流（F-2026-11-12 §6 / spec §11.3 缺口 2）。
+
+        · textbook_story：9~25 镜（90s÷10s 为下限，150s÷6s 留余量到上限）
+        · 其它（含缺省 tech_news）：仍限 3~8 镜 —— 科技链路行为一字不变
+        """
+        n = len(self.scenes)
+        if self.content_type == CONTENT_TYPE_TEXTBOOK:
+            # M2 判据：课文片画面里不得再出现科技风视觉（终端/图表/UI 卡）
+            bad = sorted({s.visual_type for s in self.scenes if s.visual_type not in TEXTBOOK_VISUAL_TYPES})
+            if bad:
+                raise ValueError(
+                    f"课文故事分镜含科技风视觉 {bad}；课文片只允许 {list(TEXTBOOK_VISUAL_TYPES)}"
+                    f"（spec：古诗配代码终端/数据图表属于事故）")
+            # 镜数下限不在这里卡：它必须由「目标时长 ÷ 8~10 秒」推出来，
+            # 而 target_duration_sec 在物料里，schema 看不到 —— 由
+            # hotspot_extractor._generate_textbook_draft 的镜数预算断言负责（30s 样片 3 镜也合法）。
+            return self
+        bad_tech = sorted({s.visual_type for s in self.scenes if s.visual_type not in TECH_VISUAL_TYPES})
+        if bad_tech:
+            raise ValueError(
+                f"科技速报分镜含古风视觉 {bad_tech}；科技片只允许 {list(TECH_VISUAL_TYPES)}"
+                f"（若确为课文故事物料，请设 content_type={CONTENT_TYPE_TEXTBOOK}）")
+        if n > MAX_SCENES_TECH:
+            raise ValueError(
+                f"科技速报分镜 {n} 镜 > {MAX_SCENES_TECH} 镜上限"
+                f"（若确为课文故事物料，请设 content_type={CONTENT_TYPE_TEXTBOOK}）")
+        return self
 
     @field_validator("title", mode="before")
     @classmethod

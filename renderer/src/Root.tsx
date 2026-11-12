@@ -17,6 +17,12 @@ import { UiCardView } from './components/UiCardView';
 import { StatChartView } from './components/StatChartView';
 import { MediaShowcaseView } from './components/MediaShowcaseView';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
+import {
+  TextbookStoryVideo,
+  TextbookLandscapeVideo,
+  TextbookCoverStill,
+  TextbookLandscapeCover,
+} from './textbook/TextbookVideo';
 
 
 const calculateLandscapeMetadata: CalculateMetadataFunction<AlignedRenderPayload> = async ({
@@ -393,6 +399,44 @@ export const RemotionRoot: React.FC = () => {
           width: 1920,
           height: 1080,
         }}
+      />
+
+      {/* ---------------------------------------------------------------- 课文故事（古风，F-2026-11-12 M2）
+          与上面四个科技合成并列新增：科技链路仍渲染 GeekShortVideo / BilibiliLandscapeVideo，
+          本组合只有 content_type=textbook_story 的物料才会被 executors 选中。 */}
+      <Composition
+        id="TextbookStoryVideo"
+        component={TextbookStoryVideo}
+        durationInFrames={2700}
+        fps={30}
+        width={1080}
+        height={1920}
+        calculateMetadata={calculateVideoMetadata}
+        defaultProps={defaultMockProps}
+      />
+      <Composition
+        id="TextbookLandscapeVideo"
+        component={TextbookLandscapeVideo}
+        durationInFrames={2700}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={calculateLandscapeMetadata}
+        defaultProps={defaultMockProps}
+      />
+      <Still
+        id="TextbookCoverStill"
+        component={TextbookCoverStill}
+        width={1080}
+        height={1920}
+        defaultProps={defaultMockProps}
+      />
+      <Still
+        id="TextbookLandscapeCoverStill"
+        component={TextbookLandscapeCover}
+        width={1920}
+        height={1080}
+        defaultProps={defaultMockProps}
       />
     </>
   );

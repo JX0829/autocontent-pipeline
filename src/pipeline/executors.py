@@ -138,7 +138,8 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     if not news_text.strip():
         raise ExecutorError("物料没有可用于扩写的正文")
 
-    data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id)
+    # material 透传：content_type=textbook_story 时走课文分支（target_duration_sec 注入 + 镜数预算）
+    data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id, material=man)
     payload = DraftScriptPayload(**data)            # schema 校验（失败即抛，不兜底）
     out = _write_json(ctx.out("draft_script.json"), payload.model_dump())
     return {"draft_script": str(out)}
@@ -165,6 +166,8 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
 
     payload = DraftScriptPayload(**draft)
     # T4.5：音色/语速一律来自 pipeline.yaml 的 tts.* 槽位（缺配置即 MissingConfig）
+    # edu（课文故事）复用「讲述向」的 tts.news 槽位：M1 不新增 required_env 键，
+    # 否则缺 TTS_VOICE_EDU 会让整条链路 fail-fast；M2 若需要专属讲述音色再开 tts.edu。
     slot = "tts.tech" if str(draft.get("target_account_type") or "tech") == "tech" else "tts.news"
     aligner = TTSAligner.from_slot(slot)
 
@@ -188,6 +191,14 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     from src.pipeline.contracts import load_pipeline
     props_data["cover_card_source"] = (
         (load_pipeline().get("cover") or {}).get("card_source") or [0, 1, 3])
+
+    # F-2026-11-12 M2：课文物料把 textbook/compliance 透传给渲染层 ——
+    # 竖排原文取 full_text，片尾固定标注教材版本（spec F7）。科技物料不带这两块，行为不变。
+    man = ctx.material or {}
+    if str(man.get("content_type") or "") == "textbook_story":
+        props_data["content_type"] = "textbook_story"
+        props_data["textbook"] = man.get("textbook") or {}
+        props_data["compliance"] = man.get("compliance") or {}
     _write_json(props_path, props_data)
     return props_path
 
@@ -209,10 +220,14 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
 
     video = ctx.out("video.mp4")
     cover = ctx.out("cover.png")
-    _remotion("render", "src/index.ts", "GeekShortVideo", str(video),
+    # M2：课文故事走独立古风合成；科技物料仍走 GeekShortVideo（默认路径一字不改）
+    textbook = str((ctx.material or {}).get("content_type") or "") == "textbook_story"
+    composition = "TextbookStoryVideo" if textbook else "GeekShortVideo"
+    cover_composition = "TextbookCoverStill" if textbook else "CoverStill"
+    _remotion("render", "src/index.ts", composition, str(video),
               f"--props={Path(props).resolve()}", "--codec=h264", "--crf=18",
               "--pixel-format=yuv420p")
-    _remotion("still", "src/index.ts", "CoverStill", str(cover),
+    _remotion("still", "src/index.ts", cover_composition, str(cover),
               f"--props={Path(props).resolve()}", "--image-format=png")
     _assert_has_audio(video)   # 无声片零容忍
     return {"video": str(video), "cover": str(cover)}
@@ -229,8 +244,11 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     if not Path(props).exists():
         raise ExecutorError(f"横版 props 不存在: {props}（align_tts 未产出）")
 
+    textbook = str((ctx.material or {}).get("content_type") or "") == "textbook_story"
     info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
-                            expect_cover_text=str(draft.get("cover_main_text") or ""))
+                            expect_cover_text=str(draft.get("cover_main_text") or ""),
+                            video_composition="TextbookLandscapeVideo" if textbook else None,
+                            cover_composition="TextbookLandscapeCoverStill" if textbook else None)
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
     _assert_has_audio(video)   # 横版同样不许出无声片

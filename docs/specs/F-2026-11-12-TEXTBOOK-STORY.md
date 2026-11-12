@@ -8,7 +8,7 @@
 | 状态 | Draft → Demo 验证中 |
 | 分支 | `feature/textbook-story` |
 | 依赖 | autocontent-pipeline（渲染/TTS/发布链路） |
-| 关联文档 | `docs/requirements/20261112-textbook-story-video.md`（需求梳理） |
+| 关联文档 | `docs/requirements/20261112-textbook-story-video.md`（需求梳理）· `docs/design/20261112-textbook-visual-spec.md`（M2 古风视觉规格）· `docs/content/20261112-textbook-story-mvp-5.md`（MVP 5 篇考据卡） |
 
 ---
 

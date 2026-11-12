@@ -266,6 +266,28 @@ python3 scripts/send_run_artifacts.py --run-id <run_id> --videos-only
 for f in video.mp4 video_16_9.mp4; do cp "$f" "/tmp/video_$(md5 -q "$f").mp4"; done
 ```
 
+### 5.1.0 视频投递铁律：禁用 `MEDIA:`，一律走 `send_video_verified.py`（2026-11-11 定稿）
+
+**为什么**：Hermes 网关的 `MEDIA:` 走 `plugins/platforms/feishu/adapter.py::send_video`（`msg_type=media`）。
+该路径发出的视频消息在飞书侧**不可回读**（`msg_type=nonsupport`、`GET /im/v1/messages/{id}` 返回 `2200`），
+投递结果是黑盒；2026-11-09 ~ 11-11 因此**连续 4 次**出现「收到的是上一个视频 / 两条都是横屏」。
+本地文件 ffprobe / md5 / OCR 全部正确 —— 问题 100% 在投递层，不在产物。
+
+**唯一正确做法**：
+
+```bash
+python3 scripts/send_video_verified.py \
+  --video /tmp/video_<md5竖版>.mp4 --video /tmp/video_<md5横版>.mp4 \
+  --label <run_id>
+```
+
+- 直接 `im/v1/files`（`file_type=mp4`）+ `im/v1/messages`（`msg_type=media`）两次调用，绕开网关
+- 文件名强制 `{label}_{portrait|landscape}_{宽x高}_{md5前8}.mp4`，用户一眼能分辨哪条是竖/横
+- 返回 `upload_code / send_code / file_key / message_id`，作为可核对凭证（`code=0` 才算投递成功）
+- `--dry-run` 只打印将要使用的文件名与规格，不发送
+
+**验收**：用户确认「收到的画面与文件名一致」才算完成；脚本返回 code=0 但用户看不到，仍算失败。
+
 ### 5.1.1 三平台简介统一规范（2026-11-10 定稿）
 
 简介是**给人读的**，不是分镜台词的搬运。三平台（B站 / 抖音 / 视频号）**同源生成**，

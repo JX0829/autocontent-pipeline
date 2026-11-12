@@ -1,6 +1,7 @@
 import sys
 import json
 import logging
+import math
 import sqlite3
 import re
 from datetime import datetime
@@ -66,6 +67,266 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 11. target_account_type: "tech"
 
 你必须只输出纯 JSON 字符串，严禁包含任何 Markdown 格式标记（如 ```json ）。"""
+
+
+# ---------------------------------------------------------------- 课文故事（textbook_story）
+# F-2026-11-12-TEXTBOOK-STORY §11.3 的 4 个工程缺口在这里补前两项的第 2/3 条：
+#   · 缺口 1「时长不可控」→ 把 target_duration_sec 写进 prompt，并按旁白字数反推镜数
+#   · 缺口 2「分镜数远低于上限」→ 显式要求「镜数 = 目标时长 / 8~10 秒」
+# 科技链路的 SYSTEM_PROMPT 与 pick_and_convert_hotspot 主路径**一行不改**。
+
+TEXTBOOK_CONTENT_TYPE = "textbook_story"
+SEC_PER_SCENE_MIN = 8
+SEC_PER_SCENE_MAX = 10
+SEC_PER_SCENE_TARGET = 9          # 镜数取 8~10 的中点，留出上下浮动
+TTS_CHARS_PER_SEC = 4.5           # 与 scripts/hooks/expand_narration.py 同一口径
+# 古风五类（M2）：与科技风四类并列，课文片里禁止出现 terminal_code/stat_chart/ui_card
+TEXTBOOK_VISUAL_TYPES = ("ink_title", "vertical_poem", "ancient_map", "archive_card", "scroll_transition")
+
+TEXTBOOK_SYSTEM_PROMPT = """你是一名小学语文「课文背后的故事」短视频编剧，同时是史实校验员。
+你的任务：把用户给出的古诗课文物料，扩写为符合渲染标准的 DraftScriptPayload JSON —— 一条 90~150 秒的叙事短片分镜。
+
+【六段结构（必须完整，顺序不可换）】
+1 钩子：一句话把人钉住（反常、悬念或一个具体画面）
+2 原诗：报出诗题与作者，朗读原诗，再用一句白话点出它在说什么
+3 作者：作者是谁、写这首诗时处在什么处境
+4 时代：这首诗背后的时代与事件，以及它为什么对这个作者这么重
+5 回扣：把诗里的关键句子重新咬一遍，解释它凭什么这么重
+6 落点：一句干净的话收尾 —— 不喊口号、不总结知识点、不导流
+
+【铁律】
+A. 只能使用 <facts> 中给出的事实（年份/官职/事件/评价）。facts 之外的时代、人物、事件一律不得出现；
+   物料 <script>/<body> 里的表述可以直接沿用，但不得据此新增 facts 未覆盖的史实。
+B. 有争议处一律写「一般认为」「据记载」，不得写成定论。
+C. 分镜数 = 目标时长 ÷ 8~10 秒/镜：本次目标 {target} 秒 → {lo}~{hi} 镜，**必须落在该区间内**（建议 {mid} 镜）。
+   一镜一句旁白，单镜旁白 {chars_lo}~{chars_hi} 字。
+D. 全片旁白总字数必须在 {total_lo}~{total_hi} 字之间（TTS 4.5 字/秒 × 目标时长）。
+   少了撑不满时长，多了念不完——这是硬约束，不是建议。
+E. visual_type 只能取以下 5 类古风视觉，**禁止 terminal_code / ui_card / stat_chart 等科技风视觉**
+   （古诗配代码终端、数据图表属于事故，渲染层会直接拒绝）：
+   · ink_title          片头/章节标题（竖排书法大字，highlight_text 写标题本身）
+   · vertical_poem      原诗竖排全文（凡是出现诗句的镜头必须用这一类）
+   · ancient_map        时代、地理、行军/流亡路线（写意地图，不是数据图表）
+   · archive_card       作者生平、史料引用、可核查事实卡（highlight_text 写卡片标题）
+   · scroll_transition  段落之间的转场（结构切换处用，全片 1~2 镜足够）
+F. 严禁任何导流话术（暗号/私信/主页置顶/粉丝群/领取资料/求源码）与任何网址域名。
+G. 最后一镜必须是「落点」，禁止写成「欢迎在评论区交流讨论」这类科技号套话。
+
+【输出字段规范】
+theme: "textbook-story"
+content_type: "textbook_story"
+entity_key: "textbook:<英文短标识>"（同一篇课文永远同一个 key，严禁拼接时间戳）
+title: ≤20 字，家长/小学生视角的钩子标题
+cover_main_text: 8~12 字；cover_sub_text: 6~14 字
+hook_narration: ≤50 字，前 3 秒口播（与第 1 镜旁白一致）
+fact_summary_150: ≤150 字，客观事实摘要（供评论防护沙箱）
+video_desc: 100~170 字发布简介，自然口语，不带话题标签、链接与「本视频」话术
+resource_keyword: 英文短标识（≤10 字，如 shier）
+template_id: "auto"
+scenes: [{scene_index, segment_narration, visual_type, highlight_text(≤16字), sfx_cue("whoosh"|"ding"|"none"), code_snippet: null, media_asset_url: null, stat_items: null}]
+tags: 4~6 个标签
+target_account_type: "edu"
+
+只输出纯 JSON 字符串，严禁包含 Markdown 代码块标记（如 ```json ）。"""
+
+
+def is_textbook_story(material: dict | None) -> bool:
+    """物料是否课文故事品类（缺省 content_type 即科技速报）。"""
+    if not isinstance(material, dict):
+        return False
+    return str(material.get("content_type") or "").strip() == TEXTBOOK_CONTENT_TYPE
+
+
+def textbook_scene_budget(target_sec: int) -> tuple[int, int, int]:
+    """按「镜数 = 目标时长 / 8~10 秒」算分镜预算，返回 (下限, 建议值, 上限)。
+
+    90s → (9, 10, 11)；120s → (12, 13, 15)；150s → (15, 17, 18)
+    """
+    target_sec = max(1, int(target_sec))
+    lo = max(1, math.ceil(target_sec / SEC_PER_SCENE_MAX))
+    hi = max(lo, math.floor(target_sec / SEC_PER_SCENE_MIN))
+    mid = min(hi, max(lo, round(target_sec / SEC_PER_SCENE_TARGET)))
+    return lo, mid, hi
+
+
+def _material_textbook_block(material: dict) -> str:
+    """把课文物料（textbook / facts / script）打包成提示块。
+
+    `Manifest.to_prompt_block()` 只认 title/body/source_url，课文物料的关键
+    约束在 textbook/facts/script 里，必须原样喂给模型，否则它会自由发挥史实。
+    """
+    tb = material.get("textbook") if isinstance(material.get("textbook"), dict) else {}
+    lines = ["<material>", f"<title>{material.get('title') or ''}</title>"]
+    if tb:
+        lines.append("<textbook>")
+        for key in ("poem_title", "dynasty", "author", "grade", "volume", "edition", "full_text"):
+            if tb.get(key):
+                lines.append(f"  <{key}>{tb[key]}</{key}>")
+        lines.append("</textbook>")
+
+    facts = material.get("facts") if isinstance(material.get("facts"), list) else []
+    if facts:
+        lines.append("<facts>")
+        for i, fact in enumerate(facts, 1):
+            if not isinstance(fact, dict):
+                continue
+            lines.append(f"  {i}. {fact.get('claim') or ''}（出处：{fact.get('source') or ''}）")
+        lines.append("</facts>")
+
+    script = material.get("script")
+    if isinstance(script, dict) and script:
+        lines.append("<script_六段>")
+        for stage in ("hook", "poem", "author", "era", "echo", "landing"):
+            seg = script.get(stage)
+            if isinstance(seg, dict) and seg.get("narration"):
+                lines.append(f"  <{stage} sec=\"{seg.get('sec') or '?'}\">{seg['narration']}</{stage}>")
+        lines.append("</script_六段>")
+
+    if material.get("body"):
+        lines.append(f"<body>\n{material['body']}\n</body>")
+    if material.get("source_url"):
+        lines.append(f"<source_url>{material['source_url']}</source_url>")
+    lines.append("</material>")
+    return "\n".join(lines)
+
+
+def build_textbook_prompt(material: dict) -> tuple[str, str]:
+    """课文故事的 (system, user) 提示词。target_duration_sec 在这里注入。"""
+    from src.pipeline.manifest import target_duration_sec
+
+    target = target_duration_sec(material)
+    lo, mid, hi = textbook_scene_budget(target)
+    chars_lo = int(SEC_PER_SCENE_MIN * TTS_CHARS_PER_SEC)
+    chars_hi = int(SEC_PER_SCENE_MAX * TTS_CHARS_PER_SEC)
+    total_lo = lo * chars_lo
+    total_hi = hi * chars_hi
+
+    system = TEXTBOOK_SYSTEM_PROMPT
+    # 不用 str.format：提示词里含 JSON 字段示例的 `{...}`，会被当成占位符
+    for token, value in {
+        "target": target, "lo": lo, "mid": mid, "hi": hi,
+        "chars_lo": chars_lo, "chars_hi": chars_hi,
+        "total_lo": total_lo, "total_hi": total_hi,
+    }.items():
+        system = system.replace("{" + token + "}", str(value))
+
+    spaces = {k: material.get(k) for k in ("title", "textbook", "facts", "script", "body", "source_url")}
+    user = (
+        _material_textbook_block({k: v for k, v in spaces.items() if v is not None})
+        + f"\n\n【本次预算（硬约束）】target_duration_sec={target} 秒；"
+          f"分镜 {lo}~{hi} 镜（建议 {mid} 镜）；单镜旁白 {chars_lo}~{chars_hi} 字；"
+          f"全片旁白 {total_lo}~{total_hi} 字。\n"
+          f"请按六段结构把上述物料切成 {mid} 镜左右，逐镜写旁白，严格只输出 DraftScriptPayload JSON。"
+    )
+    return system, user
+
+
+def _generate_textbook_draft(material: dict, task_id: str | None = None) -> dict:
+    """课文故事分镜生成：prompt 注入目标时长 + 镜数预算，并对镜数/字数做硬校验。
+
+    与科技主路径分开实现（不动 pick_and_convert_hotspot 的既有逻辑），
+    失败一律上抛 —— 宁可 BLOCKED，也不产出 29 秒的注水片。
+    """
+    from pydantic import ValidationError
+
+    from src.pipeline.manifest import target_duration_sec
+
+    llm = LLMClient("llm.main")
+    target = target_duration_sec(material)
+    lo, mid, hi = textbook_scene_budget(target)
+    chars_lo = int(SEC_PER_SCENE_MIN * TTS_CHARS_PER_SEC)
+    chars_hi = int(SEC_PER_SCENE_MAX * TTS_CHARS_PER_SEC)
+    total_lo, total_hi = lo * chars_lo, hi * chars_hi
+
+    system_prompt, user_prompt = build_textbook_prompt(material)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    max_retries = 3
+    last_err = ""
+    for attempt in range(max_retries):
+        try:
+            data = llm.complete_json(
+                messages,
+                temperature=0.3 + (attempt * 0.15),
+                task=f"textbook_story_attempt{attempt + 1}",
+            )
+        except (LLMError, json.JSONDecodeError) as exc:
+            last_err = f"LLM 输出不可用: {exc}"
+            logger.error(f"[Textbook {attempt + 1}/{max_retries}] {last_err}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "user", "content": "上一次输出不合法，请重新输出完整合法的 JSON。"})
+                continue
+            raise ValueError(f"课文故事分镜连续 {max_retries} 次生成失败：{last_err}") from exc
+
+        if not isinstance(data, dict):
+            last_err = f"LLM 返回的不是 JSON object（{type(data).__name__}）"
+            logger.error(f"[Textbook {attempt + 1}/{max_retries}] {last_err}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "user", "content": "必须输出单个 JSON object，请重写。"})
+                continue
+            raise ValueError(f"课文故事分镜连续 {max_retries} 次生成失败：{last_err}")
+
+        # 品类字段由代码钉死：模型漏写/写错都会让下游分流失效
+        data["content_type"] = TEXTBOOK_CONTENT_TYPE
+        data["theme"] = "textbook-story"
+        data["target_account_type"] = str(material.get("target_account_type") or "edu")
+
+        scenes = data.get("scenes")
+        n = len(scenes) if isinstance(scenes, list) else 0
+        chars = sum(len(str(s.get("segment_narration") or "")) for s in scenes or [] if isinstance(s, dict))
+
+        problems: list[str] = []
+        payload: DraftScriptPayload | None = None
+        if not lo <= n <= hi:
+            problems.append(f"分镜 {n} 镜，不在 {lo}~{hi} 镜区间（目标 {target} 秒 ÷ 8~10 秒/镜）")
+        if not total_lo <= chars <= total_hi:
+            problems.append(f"旁白总字数 {chars}，不在 {total_lo}~{total_hi} 字区间（4.5 字/秒 × {target} 秒）")
+
+        if not problems:
+            try:
+                payload = DraftScriptPayload(**data)
+            except ValidationError as exc:
+                problems.append("字段不合 DraftScriptPayload 契约: " + "; ".join(
+                    f"{'.'.join(str(x) for x in e['loc'])} {e['msg']}" for e in exc.errors()[:5]))
+
+        if problems:
+            last_err = "；".join(problems)
+            logger.warning(f"[Textbook {attempt + 1}/{max_retries}] 分镜不达标：{last_err}")
+            if attempt < max_retries - 1:
+                messages.append({"role": "assistant", "content": json.dumps(data, ensure_ascii=False)})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"上一版不符合硬约束：{last_err}。请按预算重写完整 JSON："
+                        f"分镜必须 {lo}~{hi} 镜（建议 {mid} 镜），"
+                        f"单镜旁白 {chars_lo}~{chars_hi} 字，全片旁白 {total_lo}~{total_hi} 字，"
+                        f"结构保持六段（钩子→原诗→作者→时代→回扣→落点）。"
+                    ),
+                })
+                continue
+            raise ValueError(f"课文故事分镜连续 {max_retries} 次不达标：{last_err}")
+
+        assert payload is not None   # problems 为空 ⇒ 已通过 DraftScriptPayload 校验
+        result = payload.model_dump()
+        tb = material.get("textbook") if isinstance(material.get("textbook"), dict) else {}
+        if not str(result.get("entity_key") or "").strip():
+            result["entity_key"] = f"textbook:{tb.get('poem_title') or result.get('resource_keyword') or 'untitled'}"
+        result["entity_key"] = normalize_entity_key(result["entity_key"])
+
+        if task_id:
+            result["task_id"] = task_id
+        else:
+            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            slug = str(result.get("resource_keyword") or "textbook").lower()
+            result["task_id"] = f"textbook_{slug}_{date_str}"
+        logger.info(f"[Textbook] 生成 {len(result['scenes'])} 镜 / {chars} 字旁白（目标 {target} 秒）")
+        return result
+
+    raise ValueError(f"课文故事分镜连续 {max_retries} 次不达标：{last_err}")
+
 
 def get_recent_pipeline_topics(limit: int = 50, exclude_task_id: str | None = None) -> list:
     """从本地数据库获取最近已处理/已生成的短视频主题
@@ -136,7 +397,17 @@ def check_topic_duplicate(candidate: dict, recent_topics: list) -> tuple:
 
     return False, ""
 
-def pick_and_convert_hotspot(news_text: str, task_id: str = None) -> dict:
+def pick_and_convert_hotspot(news_text: str = "", task_id: str = None,
+                             material: dict | None = None) -> dict:
+    """科技热点 → 分镜；课文故事物料走 textbook 分支（F-2026-11-12）。
+
+    `material` 可选：带 `content_type=textbook_story` 时走课文分支，
+    其余（含缺省）完全走原有科技链路，行为不变。
+    """
+    if is_textbook_story(material):
+        assert isinstance(material, dict)   # is_textbook_story 已保证
+        return _generate_textbook_draft(material, task_id=task_id)
+
     # T1.5：模型/预算/JSON 模式/超时全部来自 pipeline.yaml 的 llm.main 槽位。
     # 原实现把 base_url/model 默认值写死（已是失效模型），缺 .env 键即静默打错目标。
     llm = LLMClient("llm.main")

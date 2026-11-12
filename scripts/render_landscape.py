@@ -31,7 +31,15 @@ class LandscapeGuardError(RuntimeError):
 
 def render_landscape(task_id: str, props_json: str | Path | None = None,
                      out_dir: str | Path | None = None,
-                     expect_cover_text: str = "") -> dict:
+                     expect_cover_text: str = "",
+                     video_composition: str | None = None,
+                     cover_composition: str | None = None) -> dict:
+    """横屏唯一入口。
+
+    2026-11-12（M2）：新增 video_composition / cover_composition 两个可选覆盖参数，
+    供课文故事走古风合成（TextbookLandscapeVideo / TextbookLandscapeCoverStill）。
+    缺省仍由本文件顶部常量决定 —— 科技链路的调用方一个字都不用改。
+    """
     props_json = Path(props_json) if props_json else PROJ / "renderer/public/tasks" / task_id / "aligned_render.json"
     out_dir = Path(out_dir) if out_dir else PROJ / "output" / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -64,13 +72,16 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
     video = out_dir / "video_16_9.mp4"
     cover = out_dir / "cover_16_9.png"
 
+    video_comp = video_composition or VIDEO_COMPOSITION
+    cover_comp = cover_composition or COVER_COMPOSITION
+
     subprocess.check_call([
-        "npx", "remotion", "render", "src/index.ts", VIDEO_COMPOSITION, str(video),
+        "npx", "remotion", "render", "src/index.ts", video_comp, str(video),
         f"--props={rel_props}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p",
     ], cwd=str(RENDERER))
 
     subprocess.check_call([
-        "npx", "remotion", "still", "src/index.ts", COVER_COMPOSITION, str(cover),
+        "npx", "remotion", "still", "src/index.ts", cover_comp, str(cover),
         f"--props={rel_props}", "--image-format=png",
     ], cwd=str(RENDERER))
 

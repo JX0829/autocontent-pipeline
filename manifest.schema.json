@@ -44,11 +44,40 @@
       "type": "string",
       "maxLength": 80,
       "description": "可选：外部指定任务 ID；缺省由 runner 生成"
+    },
+    "content_type": {
+      "type": "string",
+      "enum": ["tech_news", "textbook_story"],
+      "description": "物料品类：tech_news（科技速报，缺省）| textbook_story（课文故事，F-2026-11-12）"
+    },
+    "target_account_type": {
+      "type": "string",
+      "enum": ["tech", "news", "edu"],
+      "description": "目标账号类型；edu = 课文故事/教育号（2026-11-12 新增）"
+    },
+    "textbook": {
+      "type": "object",
+      "description": "课文信息（content_type=textbook_story 时必填）：poem_title/dynasty/author 非空，另含 grade/volume/edition/full_text"
+    },
+    "facts": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "可核查事实卡（content_type=textbook_story 时必填，≥3 条且每条 source 非空）：[{claim, source, confidence}]"
+    },
+    "storyboard_hint": {
+      "type": "object",
+      "description": "分镜意图：{target_duration_sec, scene_count}；target_duration_sec 决定 prompt 镜数预算与出片时长断言窗口"
+    },
+    "compliance": {
+      "type": "object",
+      "description": "合规标注：{ai_generated_label, textbook_attribution}，片尾 AI 标识 + 教材版本"
     }
   },
   "additionalProperties": true,
   "x-hard-rules": [
     "body 与 source_url 至少存在 1 个（anyOf），否则 check_material 步 block",
-    "任何新物料字段必须先改本 schema，再改代码"
+    "任何新物料字段必须先改本 schema，再改代码",
+    "content_type=textbook_story 时：textbook / facts 必填，facts≥3 且每条 source 非空，poem_title/dynasty/author 非空 —— 由 src/pipeline/manifest.py:validate_textbook_story 执行（JSON-schema 子集无法表达跨元素规则）",
+    "content_type 缺省视为 tech_news，科技类物料校验结果与行为保持不变"
   ]
 }

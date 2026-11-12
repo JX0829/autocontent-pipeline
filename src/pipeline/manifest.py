@@ -177,12 +177,105 @@ def _validate_node(data: dict[str, Any], spec: dict[str, Any], path: str = "") -
     return errors
 
 
+# ------------------------------------------------------------------ 课文故事（textbook_story）专属校验
+# F-2026-11-12-TEXTBOOK-STORY §5 数据契约 + §8.2 验收：facts 缺 source 必须报错。
+# JSON-schema 子集表达不了「每条 fact 的 source 非空」「facts 条数下限」这类跨元素规则，
+# 所以在这里用代码补位（schema 仍是结构 + 类型的事实来源）。
+
+CONTENT_TYPE_DEFAULT = "tech_news"
+CONTENT_TYPE_TEXTBOOK = "textbook_story"
+TEXTBOOK_MIN_FACTS = 3
+TEXTBOOK_REQUIRED_TEXTBOOK_FIELDS = (("poem_title", "诗题"), ("dynasty", "朝代"), ("author", "作者"))
+DEFAULT_TEXTBOOK_DURATION_SEC = 120
+TEXTBOOK_DURATION_RANGE = (30, 600)
+
+
+def content_type_of(data: dict[str, Any] | None) -> str:
+    """物料品类；缺省按科技速报处理（现有物料不带该字段，行为不变）。"""
+    if not isinstance(data, dict):
+        return CONTENT_TYPE_DEFAULT
+    ct = str(data.get("content_type") or "").strip()
+    return ct or CONTENT_TYPE_DEFAULT
+
+
+def validate_textbook_story(data: dict[str, Any]) -> list[str]:
+    """课文故事物料的语义校验。非 textbook_story → 返回空列表（科技链路零影响）。
+
+    规则（spec §5）：
+      · textbook / facts 必填
+      · facts ≥ 3 条，每条 claim 与 source 均非空（缺出处 = 不可核查，禁止进渲染）
+      · textbook.poem_title / dynasty / author 非空
+      · storyboard_hint.target_duration_sec 若给出，必须是合理整数秒
+    """
+    if content_type_of(data) != CONTENT_TYPE_TEXTBOOK:
+        return []
+
+    errors: list[str] = []
+
+    tb = data.get("textbook")
+    if not isinstance(tb, dict) or not tb:
+        errors.append("textbook: 缺失或不是 object（课文故事必须声明诗题/朝代/作者/册次）")
+    else:
+        for field_name, label in TEXTBOOK_REQUIRED_TEXTBOOK_FIELDS:
+            if not str(tb.get(field_name) or "").strip():
+                errors.append(f"textbook.{field_name}: {label}为空（课文故事必填）")
+
+    facts = data.get("facts")
+    if not isinstance(facts, list) or not facts:
+        errors.append("facts: 缺失或不是 array（课文故事必须提供可核查事实卡）")
+    else:
+        if len(facts) < TEXTBOOK_MIN_FACTS:
+            errors.append(f"facts: 只有 {len(facts)} 条，至少需要 {TEXTBOOK_MIN_FACTS} 条带出处的事实")
+        for i, fact in enumerate(facts):
+            if not isinstance(fact, dict):
+                errors.append(f"facts[{i}]: 不是 object")
+                continue
+            if not str(fact.get("claim") or "").strip():
+                errors.append(f"facts[{i}].claim: 为空（事实必须有明确表述）")
+            if not str(fact.get("source") or "").strip():
+                errors.append(
+                    f"facts[{i}].source: 为空 —— 史实缺出处不可核查，"
+                    f"物料校验失败，不允许进入渲染（spec §5）")
+
+    hint = data.get("storyboard_hint")
+    if hint is not None:
+        if not isinstance(hint, dict):
+            errors.append("storyboard_hint: 必须是 object")
+        else:
+            target = hint.get("target_duration_sec")
+            if target is not None:
+                lo, hi = TEXTBOOK_DURATION_RANGE
+                try:
+                    sec = int(target)
+                except (TypeError, ValueError):
+                    errors.append(f"storyboard_hint.target_duration_sec: 不是整数（{target!r}）")
+                else:
+                    if not lo <= sec <= hi:
+                        errors.append(
+                            f"storyboard_hint.target_duration_sec: {sec} 秒超出合理区间 {lo}~{hi}")
+    return errors
+
+
+def target_duration_sec(data: dict[str, Any] | None) -> int:
+    """课文故事目标时长；物料没写就用缺省值（prompt 与出片断言共用同一口径）。"""
+    if isinstance(data, dict):
+        hint = data.get("storyboard_hint")
+        if isinstance(hint, dict):
+            try:
+                sec = int(hint.get("target_duration_sec") or 0)
+            except (TypeError, ValueError):
+                sec = 0
+            if sec > 0:
+                return sec
+    return DEFAULT_TEXTBOOK_DURATION_SEC
+
+
 def validate(manifest: Manifest | dict[str, Any]) -> list[str]:
-    """按 manifest.schema.json 校验，返回错误列表（空 = 通过）。"""
+    """按 manifest.schema.json 校验 + 品类专属语义规则，返回错误列表（空 = 通过）。"""
     data = manifest.raw if isinstance(manifest, Manifest) else manifest
     if not isinstance(data, dict):
         return [f"物料必须是 JSON object，实际 {type(data).__name__}"]
-    return _validate_node(data, schema())
+    return _validate_node(data, schema()) + validate_textbook_story(data)
 
 
 def require_valid(manifest: Manifest | dict[str, Any]) -> Manifest:
@@ -193,4 +286,9 @@ def require_valid(manifest: Manifest | dict[str, Any]) -> Manifest:
     return manifest if isinstance(manifest, Manifest) else load_manifest(manifest)
 
 
-__all__ = ["Manifest", "schema", "load_manifest", "validate", "require_valid", "SCHEMA_PATH"]
+__all__ = [
+    "Manifest", "schema", "load_manifest", "validate", "require_valid", "SCHEMA_PATH",
+    "CONTENT_TYPE_DEFAULT", "CONTENT_TYPE_TEXTBOOK", "TEXTBOOK_MIN_FACTS",
+    "content_type_of", "validate_textbook_story", "target_duration_sec",
+    "DEFAULT_TEXTBOOK_DURATION_SEC",
+]

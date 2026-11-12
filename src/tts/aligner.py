@@ -131,7 +131,10 @@ class TTSAligner:
 
             # 严格经过最高风控门禁清洗
             is_tail_scene = (idx == total_scene_count - 1)
-            clean_narration = sanitize_narration_guardrail(scene.segment_narration, is_tail=is_tail_scene)
+            # 课文故事最后一镜是「落点」，不能被科技号的「欢迎在评论区交流讨论」套话覆盖
+            # （导流词清洗仍然照常执行，只跳过结尾替换那一步）
+            replace_tail = is_tail_scene and getattr(draft, "content_type", "tech_news") != "textbook_story"
+            clean_narration = sanitize_narration_guardrail(scene.segment_narration, is_tail=replace_tail)
 
             # 调用 edge-tts 生成音频文件，增加重试机制应对微软服务偶发 503 握手失败
             saved = False
