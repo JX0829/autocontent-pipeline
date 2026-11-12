@@ -370,7 +370,10 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     del content_key  # 去重口径已下沉到 publish_ledger（平台|账号|内容哈希），此处不再自算
 
     for plat in platforms:
-        account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
+        # 账号按「平台 + 账号类型」双重解析：edu 课文故事与 tech 速报各走各的号，
+        # 杜绝「加了教育号，科技内容被发到教育号」的串号（F-2026-11-12 §11.3 缺口4）。
+        # 该平台没有对应类型的启用账号 → AccountConfigError（fail-closed，不静默降级）。
+        account = for_platform(plat, str(draft.get("target_account_type") or "tech"))
         acct_id = str(account.get("id") or "")
 
         # ---- 门禁3：平台发布台账（与飞书 send_ledger 分开，fail-closed）----

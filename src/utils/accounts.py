@@ -45,10 +45,26 @@ def by_id(account_id: str, path: str | Path | None = None) -> dict[str, Any] | N
     return next((a for a in load_accounts(path) if a["id"] == account_id), None)
 
 
-def for_platform(platform: str, path: str | Path | None = None) -> dict[str, Any]:
-    """取该平台第一个启用账号；没有则抛错（不静默返回空 dict）。"""
+def for_platform(platform: str, account_type: str | None = None,
+                 path: str | Path | None = None) -> dict[str, Any]:
+    """取该平台第一个启用账号；没有则抛错（不静默返回空 dict）。
+
+    account_type 缺省（None）= 旧行为：只按平台取首个启用账号。
+    给出 account_type 时**严格按账号类型匹配**，宁可报错也不串号：
+    课文故事（edu）绝不能落到科技号，科技速报也绝不能落到教育号
+    （F-2026-11-12 §11.3 缺口4 / 2026-11-12 教育号落地方案）。
+    """
     cands = [a for a in load_accounts(path)
              if str(a.get("platform") or "") == platform and a.get("enabled", True)]
+    if account_type:
+        typed = [a for a in cands
+                 if str(a.get("account_type") or "") == str(account_type)]
+        if not typed:
+            enabled_types = sorted({str(a.get("account_type") or "") for a in cands}) or ["(无)"]
+            raise AccountConfigError(
+                f"平台 {platform} 下没有启用的 {account_type} 账号（config/accounts.yaml）；"
+                f"该平台现有启用类型: {', '.join(enabled_types)}")
+        return typed[0]
     if not cands:
         raise AccountConfigError(f"平台 {platform} 下没有启用的账号（config/accounts.yaml）")
     return cands[0]

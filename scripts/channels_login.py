@@ -17,9 +17,31 @@ import sys
 from pathlib import Path
 
 PROJ = Path(__file__).resolve().parent.parent
-PROFILE = PROJ / "data" / "browser_profiles" / "channels-tech"
-STATE = PROFILE / "storage_state.json"
+sys.path.insert(0, str(PROJ))
 LOGIN_URL = "https://channels.weixin.qq.com/platform/post/create"
+
+
+def resolve_profile(account_id: str | None = None) -> tuple[Path, dict]:
+    """按账号 ID / 首个启用视频号账号解析浏览器 profile 目录（禁止硬编码账号）。
+
+    2026-11-12：新增教育号（edu）后，本脚本写死 channels-tech 会让教育号无法扫码登录，
+    故改为从 config/accounts.yaml 的 profile_path 取。
+    """
+    from src.utils.accounts import AccountConfigError, by_id, for_platform
+    try:
+        acc = by_id(account_id) if account_id else for_platform("channels")
+    except AccountConfigError as exc:
+        raise SystemExit(f"❌ {exc}") from exc
+    if not acc:
+        raise SystemExit(f"❌ config/accounts.yaml 里没有账号 {account_id}")
+    raw = str(acc.get("profile_path") or "").strip()
+    if not raw:
+        raise SystemExit(f"❌ 账号 {acc.get('id')} 未配置 profile_path")
+    profile = Path(raw)
+    if not profile.is_absolute():
+        profile = (PROJ / raw).resolve()
+    return profile, acc
+
 
 
 def _find_qr_box(png_bytes: bytes) -> tuple[int, int, int, int] | None:
@@ -63,16 +85,18 @@ def _find_qr_box(png_bytes: bytes) -> tuple[int, int, int, int] | None:
     return (max(x - pad, 0), max(y - pad, 0), min(s + pad * 2, w), min(s + pad * 2, h))
 
 
-async def run(check_only: bool, qr_out: str = "") -> int:
+async def run(check_only: bool, qr_out: str = "", profile: Path | None = None) -> int:
     from playwright.async_api import async_playwright
 
-    PROFILE.mkdir(parents=True, exist_ok=True)
+    profile = profile or (PROJ / "data" / "browser_profiles" / "channels-tech")
+    state = profile / "storage_state.json"
+    profile.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=check_only, channel="chrome",
                                           args=["--no-sandbox",
                                                 "--disable-blink-features=AutomationControlled"])
         ctx = await browser.new_context(
-            storage_state=str(STATE) if STATE.exists() else None,
+            storage_state=str(state) if state.exists() else None,
             viewport={"width": 1100, "height": 820})
         page = await ctx.new_page()
         await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
@@ -105,8 +129,8 @@ async def run(check_only: bool, qr_out: str = "") -> int:
             await asyncio.sleep(2)
             if "login" not in page.url.lower() and "platform" in page.url:
                 await asyncio.sleep(3)
-                await ctx.storage_state(path=str(STATE))
-                print(f"✅ 登录态已保存: {STATE}")
+                await ctx.storage_state(path=str(state))
+                print(f"✅ 登录态已保存: {state}")
                 await browser.close()
                 return 0
         print("❌ 等待登录超时")
@@ -117,10 +141,17 @@ async def run(check_only: bool, qr_out: str = "") -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="只检查现有登录态")
-    ap.add_argument("--qr-out", default=str(PROFILE / "qr.png"),
-                    help="二维码图片保存路径（发给操作人扫码）")
+    ap.add_argument("--account", default=None,
+                    help="账号 ID（缺省取首个启用的视频号账号；教育号填 channels-edu-textbook）")
+    ap.add_argument("--qr-out", default=None,
+                    help="二维码图片保存路径（默认存到该账号 profile 目录下 qr.png）")
     args = ap.parse_args()
-    return asyncio.run(run(args.check, args.qr_out))
+
+    profile, acc = resolve_profile(args.account)
+    qr_out = args.qr_out or str(profile / "qr.png")
+    print(f"账号: {acc.get('id')}（type={acc.get('account_type') or '未标注'}）")
+    print(f"profile: {profile}")
+    return asyncio.run(run(args.check, qr_out, profile))
 
 
 if __name__ == "__main__":

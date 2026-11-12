@@ -38,7 +38,7 @@ from pathlib import Path
 PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ))
 
-from src.utils.accounts import for_platform  # noqa: E402
+from src.utils.accounts import by_id, for_platform  # noqa: E402
 
 LOG = logging.getLogger("publish_douyin_cdp")
 
@@ -203,10 +203,21 @@ def main() -> int:
     ap.add_argument("--tags", nargs="*", default=[], help="话题标签（可带或不带 #）")
     ap.add_argument("--cdp-url", default=os.getenv("DOUYIN_CDP_URL", CDP_URL_DEFAULT))
     ap.add_argument("--dry-run", action="store_true", help="只校验输入与 CDP 连通，不上传不发布")
+    ap.add_argument("--account", default=None,
+                    help="账号 ID（缺省取首个启用的抖音账号；教育号填 douyin-edu-textbook）")
+    ap.add_argument("--account-type", default=None, choices=["tech", "news", "edu"],
+                    help="按账号类型解析（不填则按旧行为取首个启用账号）")
     args = ap.parse_args()
 
     try:
-        account = for_platform("douyin")
+        if args.account:
+            account = by_id(args.account)
+            if account is None:
+                _log(f"config/accounts.yaml 里没有账号 {args.account}")
+                return 2
+        else:
+            account = for_platform("douyin", args.account_type)
+        _log(f"账号: {account.get('id')}（type={account.get('account_type') or '未标注'}）")
     except Exception as exc:  # noqa: BLE001 - 配置缺失需明确告知
         _log(f"读取抖音账号配置失败: {exc}")
         return 2
