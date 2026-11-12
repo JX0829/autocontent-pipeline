@@ -1,0 +1,56 @@
+{
+  "content_type": "textbook_story",
+  "title": "陆游临终前写的28个字",
+  "body": "《示儿》是陆游临终前写给儿子的最后几句话。他生于1125年，北宋灭亡那年他才两岁，从小看着家国破碎长大，一辈子主张北伐收复中原，却因坚持主战屡遭排挤，几度被贬、闲居山阴。嘉定二年冬天，八十五岁的陆游病重，把儿子叫到床前，写下二十八个字：死去元知万事空，但悲不见九州同。王师北定中原日，家祭无忘告乃翁。他清楚地知道自己什么都带不走，唯一放不下的是没能看到国家统一。他甚至叮嘱儿子：等到朝廷军队收复中原那天，祭祖时别忘了告诉他。这首诗不是口号，是一个人用一辈子等一个结果。",
+  "source_url": "https://www.gushiwen.cn/shiwenv_966c8a76211f.aspx",
+  "source": "《宋史·陆游传》/ 钱仲联《剑南诗稿校注》/ 部编版小学语文五年级上册",
+  "published_at": "2026-11-12T10:00:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "示儿",
+    "陆游",
+    "古诗",
+    "课文背后",
+    "南宋"
+  ],
+  "textbook": {
+    "poem_title": "示儿",
+    "dynasty": "宋",
+    "author": "陆游",
+    "grade": "五年级",
+    "volume": "上册",
+    "edition": "部编版",
+    "full_text": "死去元知万事空，但悲不见九州同。王师北定中原日，家祭无忘告乃翁。"
+  },
+  "facts": [
+    {
+      "claim": "陆游生于1125年，卒于1210年，越州山阴（今浙江绍兴）人",
+      "source": "《宋史·陆游传》",
+      "confidence": "high"
+    },
+    {
+      "claim": "《示儿》作于嘉定二年（1209年）冬，陆游八十五岁临终前",
+      "source": "钱仲联《剑南诗稿校注》",
+      "confidence": "high"
+    },
+    {
+      "claim": "靖康之变发生于1127年，北宋灭亡，陆游时年两岁",
+      "source": "《宋史·钦宗本纪》",
+      "confidence": "high"
+    },
+    {
+      "claim": "陆游一生主张抗金北伐，因坚持主战屡遭主和派排挤，多次被罢官闲居",
+      "source": "《宋史·陆游传》",
+      "confidence": "high"
+    }
+  ],
+  "storyboard_hint": {
+    "target_duration_sec": 90,
+    "scene_count": 8
+  },
+  "compliance": {
+    "ai_generated_label": true,
+    "textbook_attribution": "部编版小学语文五年级上册《古诗三首》"
+  },
+  "_demo_note": "demo: 现有 schemas.py 仅支持 tech/news，edu 需扩展；scene 上限 8"
+}
