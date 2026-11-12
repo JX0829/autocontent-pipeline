@@ -197,4 +197,47 @@
 
 ---
 
+## 11. Demo 验证结果（2026-11-12，分支 `feature/textbook-story`）
+
+### 11.1 验证方式
+用**现有流水线**跑通一篇课文，不做任何代码改动，目的是量化「现有能力能做到什么程度、差在哪」。
+
+```bash
+# 物料
+materials/20261112_textbook_shier.json   # 《示儿》陆游，body 234 字，4 条带出处 facts
+# 出片
+bash scripts/verify_all.sh --fast        # VERIFY PASS
+DISPATCH_MODE=output_only APPROVAL_MODE=cli APPROVAL_NONINTERACTIVE=approve \
+  python3.14 -m src.pipeline.runner --material materials/20261112_textbook_shier.json --run-id shier-demo
+# 结果：EXIT=0
+# 产物：output/20261112/shier-demo/{video.mp4, video_16_9.mp4, cover*.png}
+```
+
+### 11.2 实测结果
+
+| 指标 | 目标 | 实际 | 结论 |
+|---|---|---|---|
+| 成片时长 | 90~150s | **29.13s** | ❌ 差 3 倍 |
+| 分镜数 | 12~25 | **4**（上限 8，实际只用 4） | ❌ 结构撑不住故事 |
+| 旁白字数 | 400+ | **136** | ❌ LLM 自动压缩 |
+| 双模态 | 1080×1920 / 1920×1080 | ✅ 均 29.13s、音轨齐备 | ✅ 复用成功 |
+| 事实准确性 | facts 全部有出处 | ✅ 年份、人物、事件均对 | ✅ 内容路线可行 |
+| 物料校验 | `ok: true` | ✅ `has_source_url: true` | ✅ 新增字段不破坏校验 |
+
+### 11.3 关键发现（4 个必须解决的缺口）
+
+1. **时长不可控**：`storyboard_hint.target_duration_sec=90` 被 LLM 完全忽略，产出 29s。
+   → 需要：目标时长写进 prompt + 按旁白字数反推镜数 + 出片后时长断言（低于目标 N% 直接失败重做）。
+2. **分镜数远低于上限**：schema 允许 8 镜，但 LLM 只生成 4 镜。
+   → 需要：课文类 prompt 显式要求「镜数 = 目标时长 / 单镜 8~10 秒」。
+3. **视觉完全不适配**：本片自动选择了 `terminal_code`（代码终端）、`stat_chart`（数据图表）、`ui_card` 三种科技风视觉——**古诗用了代码终端**。
+   → 需要：课文类专属 `visual_type` 集合（水墨标题、竖排原文、古地图、卷轴转场、史料卡）。
+4. **无 edu 账号类型**：`src/schemas.py:34` `target_account_type` 仅 `Literal["tech","news"]`，demo 只能借用 `tech`。
+   → 需要：新增 `edu`，并在 `config/accounts.yaml` 配对应发布账号。
+
+### 11.4 结论
+**内容路线成立，工程缺口明确。** 现有链路能产出「事实准确、语气合适、双模态合规」的课文短片，但**时长、分镜、视觉三件套必须改造**才能达到 90~150 秒故事片标准。改造范围即 M1~M3，无需推翻重来。
+
+---
+
 _本 Spec 由小品（PM）维护；技术实现细节由小开补充，小何评审后冻结。_
