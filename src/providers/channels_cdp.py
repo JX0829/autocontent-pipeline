@@ -26,9 +26,29 @@ class ChannelsCDPProvider(BaseSocialProvider):
         self.publish_mode = account_config.get("publish_mode", "public") # public (公开分发) | draft (草稿箱)
 
     def check_login_status(self) -> bool:
-        """检查视频号助手会话是否已持久化"""
-        state_file = Path(self.profile_path) / "storage_state.json"
-        return state_file.exists()
+        """检查视频号会话**是否真的已登录**。
+
+        2026-11-12 起不再用 `storage_state.json` 存在与否做判据（快照会与持久化
+        profile 脱节，出现「检查说有登录、发布跳登录页」）。现在：
+          1) 常驻 Chrome 的 CDP 9334 没起来就无头自愈拉起（cookie 在 profile 里，
+             不关窗就不需要重扫）；
+          2) 真打开后台首页看是否被踢到 login.html —— 只探端口不算「登录可用」。
+        """
+        import asyncio
+
+        from .channels_session import ChannelsSessionError, ensure, verify_login
+        try:
+            cdp = ensure(headless=True)
+            ok, url = asyncio.run(verify_login(cdp))
+        except ChannelsSessionError as exc:
+            logger.warning("[CHANNELS] 会话不可用: %s", exc)
+            return False
+        except Exception as exc:  # noqa: BLE001 — 探活失败按未登录处理（fail-closed）
+            logger.warning("[CHANNELS] 登录态校验失败: %s", exc)
+            return False
+        if not ok:
+            logger.warning("[CHANNELS] 登录态已失效（%s），需扫码：scripts/channels_login.py", url)
+        return ok
 
     # ────────────────────────── 真实发布（CDP / Playwright）──────────────────────────
     # 实测（2026-11-10）：直接访问 /platform/post/create 会被重定向回 /platform 首页，
@@ -37,6 +57,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
     POST_URL = "https://channels.weixin.qq.com/platform/post/create"
 
     def _state_path(self) -> Path:
+        """排障备份路径（评论轮询脚本仍在用），**不再**作为发布登录态来源。"""
         return Path(self.profile_path) / "storage_state.json"
 
     def publish_live(
@@ -67,31 +88,29 @@ class ChannelsCDPProvider(BaseSocialProvider):
         """
         import asyncio
 
-        state = self._state_path()
-        if not state.exists():
-            # 常驻 Chrome（CDP 9334）用的是持久 profile，登录态在 profile 里而不是 storage_state.json
-            cdp_url = os.getenv("CHANNELS_CDP_URL", "http://127.0.0.1:9334")
-            try:
-                import urllib.request
-                urllib.request.urlopen(f"{cdp_url.rstrip('/')}/json/version", timeout=3).read()
-                logger.info(f"[CHANNELS] 无 storage_state，但常驻 Chrome 在线（{cdp_url}），走 CDP 登录态")
-            except Exception:  # noqa: BLE001
-                return {"success": False, "published": False, "status": "NO_STORAGE_STATE",
-                        "message": f"缺少登录态 {state}，且常驻 Chrome({cdp_url}) 不可达；"
-                                   f"先跑 scripts/channels_login.py 扫码登录"}
+        from .channels_session import CDP_URL, ChannelsSessionError, ensure
+
+        # 登录态来源统一为「常驻 Chrome + 持久化 profile」：没起来就自愈拉起，
+        # 被别的进程占用时 ensure() 会给可执行提示（关窗 / kill pid / --stop）
+        try:
+            cdp_url = ensure(headless=headless)
+        except ChannelsSessionError as exc:
+            return {"success": False, "published": False, "status": "CDP_UNAVAILABLE",
+                    "message": str(exc)}
 
         return asyncio.run(self._publish_live_async(
             video_path=video_path, cover_path=cover_path, title=title,
             content_text=content_text, topics=topics,
             declare_original=declare_original, declare_aigc=declare_aigc,
             dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=headless,
-            stop_before_publish=stop_before_publish))
+            stop_before_publish=stop_before_publish, cdp_url=cdp_url))
 
     async def _publish_live_async(self, video_path: str, cover_path: str, title: str,
                                   content_text: str, topics: list[str],
                                   declare_original: bool, declare_aigc: bool,
                                   dry_run: bool, allow_missing_flags: bool,
-                                  headless: bool, stop_before_publish: bool) -> Dict[str, Any]:
+                                  headless: bool, stop_before_publish: bool,
+                                  cdp_url: str = "") -> Dict[str, Any]:
         """真实发布到视频号。2026-11-10 真机实测得出的三条硬约束：
 
         1. 直接访问 /platform/post/create 会跳回首页，必须先点首页「发表视频」；
@@ -111,27 +130,11 @@ class ChannelsCDPProvider(BaseSocialProvider):
         shot_dir = Path(self.profile_path)
 
         async with async_playwright() as p:
-            # 优先复用**常驻有头 Chrome**（CDP 9334，持久 profile 里是已登录态）。
-            # 用户明确要求：视频号不许用无头浏览器（页面全黑），也不许每次新开 profile
-            # —— 新 profile 没有登录态，一进首页就被重定向到登录页。
-            cdp_url = os.getenv("CHANNELS_CDP_URL", "http://127.0.0.1:9334")
-            used_cdp = False
-            browser = None
-            ctx = None
-            try:
-                browser = await p.chromium.connect_over_cdp(cdp_url, timeout=8000)
-                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-                used_cdp = True
-                logger.info(f"[CHANNELS] 复用常驻 Chrome（{cdp_url}），沿用已登录 profile")
-            except Exception as e:  # noqa: BLE001 — 常驻 Chrome 没开就走有头回退
-                logger.warning(f"[CHANNELS] 连不上常驻 Chrome({cdp_url}): {e} —— 回退有头启动")
-                browser = await p.chromium.launch(headless=False, channel="chrome",
-                                                  args=["--no-sandbox",
-                                                        "--disable-blink-features=AutomationControlled"])
-                ctx = await browser.new_context(storage_state=str(self._state_path()),
-                                                viewport={"width": 1440, "height": 900})
-            if headless:
-                logger.warning("[CHANNELS] 视频号不支持无头（页面全黑），本次按有头执行")
+            # 复用常驻 Chrome（CDP 9334）：不新建浏览器、不读 storage_state 快照，
+            # 与 scripts/channels_login.py 共用同一个持久化 profile（cookie 一处在管）。
+            browser = await p.chromium.connect_over_cdp(cdp_url)
+            ctx = browser.contexts[0] if browser.contexts else await browser.new_context(
+                viewport={"width": 1440, "height": 900})
             page = await ctx.new_page()
             try:
                 await page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=60000)
@@ -445,14 +448,11 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                 else "已点击发表但未取得平台侧证据，请人工确认（不虚报成功）"),
                 }
             finally:
-                if used_cdp:
-                    # 常驻 Chrome 是用户自己的浏览器，只关掉我们开的 page，绝不 close 浏览器
-                    try:
-                        await page.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                else:
-                    await browser.close()
+                # 只关本页，**不关浏览器**：9334 上的常驻 Chrome 要留给下一次发布复用
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001 — 页面已被手动关闭/跳转中
+                    pass
 
     def save_draft(
         self,
