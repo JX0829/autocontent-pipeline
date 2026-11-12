@@ -148,8 +148,16 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
         while waited < deadline:
             await asyncio.sleep(2)
             waited += 2
-            if "login" not in (page.url or "").lower() and await _logged_in(page):
-                await asyncio.sleep(3)
+            # 扫码后 SPA 可能不在当前 page 上跳转（新开 tab / 原地 replace），
+            # 所以每 15 秒回主页复验一次，而不是只盯着当前 page.url。
+            if waited % 15 == 0:
+                try:
+                    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2)
+                except Exception as e:  # noqa: BLE001 — 跳转抖动不该中断等待
+                    print(f"  [login] 复验跳转失败（继续等）: {e}")
+            if await _logged_in(page):
+                await asyncio.sleep(2)
                 await ctx.storage_state(path=str(STATE))
                 print(f"✅ 登录成功，登录态已保存: {STATE}")
                 await ctx.close()
