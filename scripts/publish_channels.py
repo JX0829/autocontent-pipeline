@@ -35,9 +35,26 @@ load_dotenv(PROJ / ".env")
 
 from src.providers.channels_cdp import ChannelsCDPProvider  # noqa: E402
 
-ACCOUNT = {"id": "channels-tech-main", "platform": "channels",
-           "publish_mode": "public", "enabled": True,
-           "profile_path": "./data/browser_profiles/channels-tech"}
+# 账号一律从 config/accounts.yaml 解析（禁止硬编码账号字面量）。
+# 2026-11-12：新增教育号（edu）后本脚本写死 channels-tech-main 会让教育号永远发不出去，
+# 故改为 --account / --account-type 解析，缺省仍取该平台首个启用账号（= 现有科技号行为）。
+DEFAULT_ACCOUNT_TYPE = None
+
+
+def resolve_account(account_id: str | None = None, account_type: str | None = None) -> dict:
+    from src.utils.accounts import AccountConfigError, by_id, for_platform
+    if account_id:
+        acc = by_id(account_id)
+        if not acc:
+            raise SystemExit(f"❌ config/accounts.yaml 里没有账号 {account_id}")
+        if acc.get("enabled") is False:
+            print(f"⚠️ 账号 {account_id} 在 accounts.yaml 里是 enabled=false（仍按显式指定使用）")
+        return acc
+    try:
+        return for_platform("channels", account_type)
+    except AccountConfigError as exc:
+        raise SystemExit(f"❌ {exc}") from exc
+
 
 
 def compose_caption_body(draft: dict) -> str:
@@ -128,12 +145,18 @@ def main() -> int:
                     help="原创控件找不到时仍继续（默认中止，fail-closed）")
     ap.add_argument("--no-original", action="store_true", help="不勾原创")
     ap.add_argument("--no-aigc", action="store_true", help="不勾 AI 声明")
+    ap.add_argument("--account", default=None,
+                    help="账号 ID（缺省取该平台首个启用账号；教育号填 channels-edu-textbook）")
+    ap.add_argument("--account-type", default=None, choices=["tech", "news", "edu"],
+                    help="按账号类型解析（与 --account 二选一；不填则按旧行为取首个启用账号）")
     ap.add_argument("--headful", action="store_true", help="有头模式（排障用）")
     ap.add_argument("--stop-before-publish", action="store_true",
                     help="上传+填文案+声明原创后停在发表前（测试选择器用，不产生公开内容）")
     args = ap.parse_args()
 
-    p = ChannelsCDPProvider(ACCOUNT)
+    account = resolve_account(args.account, args.account_type)
+    print(f"账号: {account.get('id')}（type={account.get('account_type') or '未标注'}）")
+    p = ChannelsCDPProvider(account)
 
     if args.probe:
         res = p.publish_live(video_path="", cover_path="", title="", content_text="",
@@ -164,7 +187,7 @@ def main() -> int:
     if not (args.dry_run or args.stop_before_publish):
         from src.publish_ledger import PublishBlocked, check_and_claim, mark_failed, mark_published
         try:
-            led_key, _info = check_and_claim("channels", ACCOUNT["id"], video, title)
+            led_key, _info = check_and_claim("channels", account["id"], video, title)
         except PublishBlocked as exc:
             print(f"⛔ 发布前查重拦截：{exc}")
             return 3

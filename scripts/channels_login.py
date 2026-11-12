@@ -12,6 +12,7 @@
   python3 scripts/channels_login.py --check       # 只检查（无头，不开窗）
   python3 scripts/channels_login.py --qr-out /tmp/qr.png   # 顺便导出二维码
   python3 scripts/channels_login.py --timeout 300 # 自定义等待秒数
+  python3 scripts/channels_login.py --account channels-edu-textbook   # 指定账号（教育号）
 
 产物:
   data/browser_profiles/channels-tech/chrome_profile/   持久化 Chrome profile（长期）
@@ -25,9 +26,30 @@ import sys
 from pathlib import Path
 
 PROJ = Path(__file__).resolve().parent.parent
-PROFILE = PROJ / "data" / "browser_profiles" / "channels-tech"
-USER_DATA_DIR = PROFILE / "chrome_profile"
-STATE = PROFILE / "storage_state.json"
+sys.path.insert(0, str(PROJ))
+
+
+def resolve_profile(account_id: str | None = None) -> tuple[Path, dict]:
+    """按账号 ID / 首个启用视频号账号解析浏览器 profile（禁止硬编码账号）。
+
+    2026-11-12 教育号落地：写死 channels-tech 会让教育号无法扫码登录，
+    故改为从 config/accounts.yaml 的 profile_path 取；不传 --account 时行为与旧版一致。
+    """
+    from src.utils.accounts import AccountConfigError, by_id, for_platform
+
+    try:
+        acc = by_id(account_id) if account_id else for_platform("channels")
+    except AccountConfigError as exc:
+        raise SystemExit(f"❌ {exc}") from exc
+    if not acc:
+        raise SystemExit(f"❌ config/accounts.yaml 里没有账号 {account_id}")
+    raw = str(acc.get("profile_path") or "").strip()
+    if not raw:
+        raise SystemExit(f"❌ 账号 {acc.get('id')} 未配置 profile_path")
+    profile = Path(raw)
+    if not profile.is_absolute():
+        profile = (PROJ / raw).resolve()
+    return profile, acc
 HOME_URL = "https://channels.weixin.qq.com/platform"
 LOGIN_URL = "https://channels.weixin.qq.com/platform/post/create"
 
@@ -85,13 +107,18 @@ async def _logged_in(page) -> bool:
     return any(m in body for m in markers)
 
 
-async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int:
+async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360,
+              profile: Path | None = None) -> int:
     from playwright.async_api import async_playwright
 
-    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if profile is None:
+        profile, _acc = resolve_profile()
+    user_data_dir = profile / "chrome_profile"
+    state = profile / "storage_state.json"
+    user_data_dir.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
-            user_data_dir=str(USER_DATA_DIR),
+            user_data_dir=str(user_data_dir),
             headless=check_only,                      # 检查走无头，登录必须有头
             channel="chrome",
             viewport={"width": 1100, "height": 820},
@@ -108,18 +135,18 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
         if check_only:
             ok = await _logged_in(page)
             if ok:
-                await ctx.storage_state(path=str(STATE))
+                await ctx.storage_state(path=str(state))
                 print(f"✅ 登录态有效（持久化 profile）: {page.url}")
-                print(f"   已刷新快照: {STATE}")
+                print(f"   已刷新快照: {state}")
             else:
                 print(f"❌ 登录态已过期: {page.url}")
-            print(f"   profile: {USER_DATA_DIR}")
+            print(f"   profile: {user_data_dir}")
             await ctx.close()
             return 0 if ok else 2
 
         if await _logged_in(page):
-            await ctx.storage_state(path=str(STATE))
-            print(f"✅ 登录态仍然有效，无需扫码（已刷新快照 {STATE}）")
+            await ctx.storage_state(path=str(state))
+            print(f"✅ 登录态仍然有效，无需扫码（已刷新快照 {state}）")
             await ctx.close()
             return 0
 
@@ -141,7 +168,7 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
                 Path(qr_out).write_bytes(shot)
                 print(f"⚠️ 未定位到二维码，已存整页截图 → {qr_out}")
 
-        print(f"浏览器窗口已打开（持久化 profile: {USER_DATA_DIR}）")
+        print(f"浏览器窗口已打开（持久化 profile: {user_data_dir}）")
         print("请用微信扫码登录；扫完会自动回写 storage_state。")
         deadline = timeout_sec
         waited = 0
@@ -158,8 +185,8 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
                     print(f"  [login] 复验跳转失败（继续等）: {e}")
             if await _logged_in(page):
                 await asyncio.sleep(2)
-                await ctx.storage_state(path=str(STATE))
-                print(f"✅ 登录成功，登录态已保存: {STATE}")
+                await ctx.storage_state(path=str(state))
+                print(f"✅ 登录成功，登录态已保存: {state}")
                 await ctx.close()
                 return 0
         print(f"❌ 等待登录超时（{deadline}s）")
@@ -170,11 +197,18 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="只检查现有登录态（无头，不开窗）")
-    ap.add_argument("--qr-out", default=str(PROFILE / "qr.png"),
-                    help="二维码图片保存路径（发给操作人扫码）")
+    ap.add_argument("--account", default=None,
+                    help="账号 ID（缺省取首个启用的视频号账号；教育号填 channels-edu-textbook）")
+    ap.add_argument("--qr-out", default=None,
+                    help="二维码图片保存路径（默认存到该账号 profile 目录下 qr.png）")
     ap.add_argument("--timeout", type=int, default=360, help="等待扫码秒数，默认 360")
     args = ap.parse_args()
-    return asyncio.run(run(args.check, args.qr_out, args.timeout))
+
+    profile, acc = resolve_profile(args.account)
+    qr_out = args.qr_out or str(profile / "qr.png")
+    print(f"账号: {acc.get('id')}（type={acc.get('account_type') or '未标注'}）")
+    print(f"profile: {profile}")
+    return asyncio.run(run(args.check, qr_out, args.timeout, profile))
 
 
 if __name__ == "__main__":

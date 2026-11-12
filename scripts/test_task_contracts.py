@@ -197,6 +197,62 @@ def test_t42() -> None:
     else:
         skip("for_platform(空平台) 报错", "三个平台都有启用账号")
 
+    # ---------------------------------------------------------------- 账号类型分流（edu）
+    # 2026-11-12 教育号落地契约：给定 account_type 必须严格命中同类型账号，
+    # 或明确报错；绝不允许「科技内容发到教育号 / 教育内容发到科技号」的串号。
+    typed = [a for a in enabled if a.get("account_type")]
+    for atype in ("tech", "edu"):
+        cands = [a for a in typed if str(a.get("account_type")) == atype]
+        if not cands:
+            skip(f"for_platform(平台, {atype}) 同类型账号", f"当前没有启用的 {atype} 账号（教育号未开号时属正常）")
+            continue
+        plat = str(cands[0].get("platform"))
+        got = str(for_platform(plat, atype).get("id") or "")
+        if got == cands[0]["id"]:
+            ok(f"for_platform({plat}, {atype}) 命中同类型账号", got)
+        else:
+            bad(f"for_platform({plat}, {atype}) 命中同类型账号", f"{got} != {cands[0]['id']}")
+
+    # 类型不匹配必须报错，不允许回落到首个启用账号
+    edu_plats = {str(a.get("platform")) for a in typed if a.get("account_type") == "edu"}
+    for plat in sorted({str(a.get("platform")) for a in typed}):
+        if plat in edu_plats:
+            continue
+        try:
+            for_platform(plat, "edu")
+        except AccountConfigError:
+            ok(f"for_platform({plat}, edu) 无教育号即 fail-closed")
+        else:
+            bad(f"for_platform({plat}, edu) 无教育号即 fail-closed", "静默回落到其它账号")
+
+    # 离线契约：tech + edu 同时启用时，无论谁排在前面都必须各回各家（不依赖真实开号）
+    import tempfile
+    from pathlib import Path as _Path
+
+    import yaml as _yaml
+    probe = {"accounts": [
+        {"id": "douyin-edu-probe", "platform": "douyin", "account_type": "edu", "enabled": True},
+        {"id": "douyin-tech-probe", "platform": "douyin", "account_type": "tech", "enabled": True},
+    ]}
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _Path(td) / "accounts.yaml"
+        cfg.write_text(_yaml.safe_dump(probe, allow_unicode=True), encoding="utf-8")
+        edu_hit = str(for_platform("douyin", "edu", cfg).get("id") or "")
+        tech_hit = str(for_platform("douyin", "tech", cfg).get("id") or "")
+        legacy_hit = str(for_platform("douyin", None, cfg).get("id") or "")
+    if edu_hit == "douyin-edu-probe":
+        ok("离线契约：edu 排首位仍命中 edu 号", edu_hit)
+    else:
+        bad("离线契约：edu 排首位仍命中 edu 号", edu_hit)
+    if tech_hit == "douyin-tech-probe":
+        ok("离线契约：tech 不被教育号抢走", tech_hit)
+    else:
+        bad("离线契约：tech 不被教育号抢走", tech_hit)
+    if legacy_hit == "douyin-edu-probe":
+        ok("离线契约：不传类型=旧行为（首个启用）", legacy_hit)
+    else:
+        bad("离线契约：不传类型=旧行为（首个启用）", legacy_hit)
+
     # source_url 三态（契约现由 src/pipeline/manifest.py 承担）
     from src.pipeline.manifest import load_manifest, validate
     m = load_manifest({"title": "测试物料标题", "source_url": "https://example.com/a"})
