@@ -91,15 +91,26 @@ class FeishuCardBuilder:
         决策仍以「回复 approve / reject」为权威路径；按钮 value 里带 decision，
         后台若已订阅卡片回调可直接接住，两边不冲突。
         """
-        lines = [f"**标题**：{title or '（无标题）'}", f"**任务**：`{run_id}`"]
         _desc = " ".join(str(desc or "").split())
+        if len(_desc) > 200:
+            _desc = _desc[:199] + "…"
+
+        def _code_block(text: str) -> Dict[str, Any]:
+            """围栏代码块：手机上等宽字体、可长按复制（标题/正文都要能直接复制走）。"""
+            return {"tag": "markdown", "content": f"```\n{text}\n```"}
+
+        elements: list[Dict[str, Any]] = [
+            _code_block(title or "（无标题）"),          # 代码块 1：标题
+        ]
         if _desc:
-            lines.append(f"**正文**：{_desc if len(_desc) <= 200 else _desc[:199] + '…'}")
+            elements.append(_code_block(_desc))          # 代码块 2：详情（发布文案）
+
+        meta = [f"**任务**：`{run_id}`"]
         if delivered:
-            lines.append("成片与封面已在上一条消息交付，请先看片再确认。")
+            meta.append("成片与封面已在上一条消息交付，请先看片再确认。")
         if targets:
-            lines.append("")
-            lines.append("**确认后将公开发布到**：")
+            meta.append("")
+            meta.append("**确认后将公开发布到**：")
             for t in targets:
                 flags = ["竖版" if str(t.get("aspect")) == "vertical" else "横版"]
                 if t.get("with_title"):
@@ -110,13 +121,13 @@ class FeishuCardBuilder:
                     flags.append("AI声明")
                 if t.get("declare_original"):
                     flags.append("原创")
-                lines.append(f"- **{t.get('provider')}** · " + " · ".join(flags))
+                meta.append(f"- **{t.get('provider')}** · " + " · ".join(flags))
         if note:
-            lines.append("")
-            lines.append(note)
+            meta.append("")
+            meta.append(note)
 
-        elements: list[Dict[str, Any]] = [
-            {"tag": "markdown", "content": "\n".join(lines)},
+        elements.extend([
+            {"tag": "markdown", "content": "\n".join(meta)},
             {"tag": "hr"},
             {"tag": "markdown", "content": "回复 **approve** 确认发布 / **reject** 放弃"},
             {
@@ -144,7 +155,7 @@ class FeishuCardBuilder:
                     },
                 ],
             },
-        ]
+        ])
         return {
             "schema": CARD2_SCHEMA,
             "config": {"update_multi": True},
