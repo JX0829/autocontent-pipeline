@@ -153,6 +153,7 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
 
     title = ""
     desc = ""
+    draft_obj: dict = {}
     run_dir = _run_dir()
     try:
         cands = [artifacts.get("draft_script") if isinstance(artifacts, dict) else None]
@@ -162,17 +163,28 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
             if not cand or not Path(cand).exists():
                 continue
             _d = json.loads(Path(cand).read_text(encoding="utf-8"))
+            draft_obj = _d if isinstance(_d, dict) else {}
             title = str(_d.get("title") or _d.get("short_title") or "")
-            # 正文：发布用的那段文案，优先 video_desc（真发出去的那份）
-            desc = str(_d.get("video_desc") or _d.get("fact_summary_150")
-                       or _d.get("hook_narration") or "")
             if title:
                 break
     except Exception as e:  # noqa: BLE001 — 取标题失败不影响审批
         logger.debug(f"读取 draft_script 标题失败，卡片标题留空: {e}")
+
+    # 卡片正文 = **真正发给平台的那份文案**（与 publish 同源：src/utils/video_desc.build_desc），
+    # 因此带 #话题，审卡时看到什么、发出去就是什么。
+    if draft_obj:
+        try:
+            from src.utils.video_desc import build_desc
+
+            desc = build_desc(draft_obj, platform="channels")
+        except Exception as e:  # noqa: BLE001 — 拼文案失败退原始字段，别让审批发不出去
+            logger.warning(f"拼装审批卡正文失败，退 video_desc: {e}")
+            desc = str(draft_obj.get("video_desc") or draft_obj.get("fact_summary_150") or "")
     if not title:
         logger.warning(f"审批卡标题为空（run={run_id}）：draft_script 里没有 title/short_title")
         print(f"  ! 审批卡标题为空：run={run_id} 的 draft_script.json 里没有 title/short_title")
+    if not desc:
+        logger.warning(f"审批卡正文为空（run={run_id}）：draft_script 里没有可发布文案")
 
     since_ms = int(time.time() * 1000) - 5000      # 容忍 5s 时钟偏差
     msg_id = None
