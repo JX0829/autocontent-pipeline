@@ -58,7 +58,6 @@ contract:
       - APPROVAL_TIMEOUT_SEC             # 等待裁决超时秒数（默认 600）
       - APPROVAL_ALLOWED_USERS           # 逗号分隔 open_id，限定谁能批（缺省不限）
       - APPROVAL_PUBLISH_TARGETS         # off 则不展示"将发布到哪些平台"；缺省展示默认矩阵
-      - FEISHU_CARD_WS                   # 1=审批等待期挂飞书长连接收卡片按钮回调（默认 1）
       # T4.7 出片/发片解耦：publish（默认）| output_only（只出片不发片）
       - DISPATCH_MODE
       - DOUYIN_CDP_URL                    # 抖音 CDP 调试端口地址（默认 http://127.0.0.1:9222）
@@ -379,6 +378,7 @@ publish:
   platforms: []         # 空 = 不发；取值 douyin | bilibili | channels
   dry_run: true         # 默认只预检，不真发
   aspect: vertical      # 发布用哪版成片
+  receipt: true         # 发完发一张「发布回执」卡（≤100 字，摘要见 card_builder.publish_receipt_text）
 
 # ---------------------------------------------------------------- 通知配置
 # 出片一完成就发飞书（不等审批/投递），让人早知道片子出来了。
