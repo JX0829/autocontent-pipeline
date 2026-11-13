@@ -63,8 +63,8 @@ def style_approval_minimal(
 ) -> dict[str, Any]:
     """极简版：标题 + 详情两个代码块，适合群里消息很多、不想刷屏的场景。"""
     _desc = " ".join(str(desc or "").split())
-    if len(_desc) > 200:
-        _desc = _desc[:199] + "…"
+    if len(_desc) > 400:
+        _desc = _desc[:399] + "…"
     lines = [f"```\n{title or run_id}\n```"]
     if _desc:
         lines.append(f"```\n{_desc}\n```")
