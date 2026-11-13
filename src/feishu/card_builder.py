@@ -92,8 +92,9 @@ class FeishuCardBuilder:
         后台若已订阅卡片回调可直接接住，两边不冲突。
         """
         _desc = " ".join(str(desc or "").split())
-        if len(_desc) > 200:
-            _desc = _desc[:199] + "…"
+        # 正文就是平台文案（含 #话题），别在话题中间截断 —— 上限放到 400 字
+        if len(_desc) > 400:
+            _desc = _desc[:399] + "…"
 
         def _code_block(text: str) -> Dict[str, Any]:
             """围栏代码块：手机上等宽字体、可长按复制（标题/正文都要能直接复制走）。"""

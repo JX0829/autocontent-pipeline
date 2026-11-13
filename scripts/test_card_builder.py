@@ -117,8 +117,8 @@ def test_v2() -> None:
 
 
 def test_title_and_desc() -> None:
-    """两个代码块：块1 = 标题，块2 = 详情（≤200 字，超长截断）。"""
-    desc = "谷歌在11月12日发布Gemini 4 Hydrogen，当天向所有用户开放。" * 6
+    """两个代码块：块1 = 标题，块2 = 平台发布文案（含 #话题，≤400 字）。"""
+    desc = "谷歌在11月12日发布Gemini 4 Hydrogen，当天向所有用户开放。" * 20   # 600+ 字
     card = get_style("approval_v2")(run_id="run-9", title="Gemini4 Hydrogen发布",
                                     targets=TARGETS, desc=desc)
     head = (card.get("header") or {}).get("title", {}).get("content", "")
@@ -129,8 +129,20 @@ def test_title_and_desc() -> None:
               if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("```")]
     check("v2: 恰好两个代码块（标题 + 详情）", len(blocks) == 2)
     check("v2: 代码块1 是标题", bool(blocks) and "Gemini4 Hydrogen发布" in blocks[0])
-    check("v2: 代码块2 是详情", len(blocks) > 1 and "当天向所有用户开放" in blocks[1])
-    check("v2: 详情超 200 字被截断", len(blocks) > 1 and "…" in blocks[1] and desc not in blocks[1])
+    check("v2: 详情超 400 字被截断", len(blocks) > 1 and "…" in blocks[1] and desc not in blocks[1])
+
+    # 正文必须与平台文案同源：带 #话题
+    from src.utils.video_desc import build_desc
+
+    draft = {"title": "Gemini4 Hydrogen发布", "video_desc": "正文一句话",
+             "tags": ["Gemini4", "谷歌DeepMind"]}
+    platform_desc = build_desc(draft, platform="channels")
+    check("平台文案带 #话题", "#Gemini4" in platform_desc and "#谷歌DeepMind" in platform_desc)
+    tagged = get_style("approval_v2")(run_id="run-9", title=draft["title"],
+                                      targets=TARGETS, desc=platform_desc)
+    tblocks = [e.get("content", "") for e in (tagged.get("body") or {}).get("elements", [])
+               if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("```")]
+    check("v2: 详情块保留 #话题", len(tblocks) > 1 and "#Gemini4" in tblocks[1])
 
     no_desc = get_style("approval_v2")(run_id="run-9", title="T", targets=TARGETS)
     nb = [e for e in (no_desc.get("body") or {}).get("elements", [])
@@ -138,11 +150,11 @@ def test_title_and_desc() -> None:
     check("v2: 无详情时只有一个代码块", len(nb) == 1)
 
     mini = get_style("approval_minimal")(run_id="run-9", title="Gemini4 Hydrogen发布",
-                                        desc="一句话文案")
+                                        desc="一句话文案 #话题A")
     mblob = json.dumps(mini, ensure_ascii=False)
-    check("minimal: 卡头用视频标题 + 两个代码块",
+    check("minimal: 卡头用视频标题 + 两个代码块 + 话题在位",
           (mini.get("header") or {}).get("title", {}).get("content")
-          == "【待审批】Gemini4 Hydrogen发布" and mblob.count("```") == 4)
+          == "【待审批】Gemini4 Hydrogen发布" and mblob.count("```") == 4 and "#话题A" in mblob)
 
 
 def test_minimal() -> None:
