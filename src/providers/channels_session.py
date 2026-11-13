@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import time
@@ -30,6 +31,8 @@ import urllib.request
 from pathlib import Path
 
 PROJ = Path(__file__).resolve().parent.parent.parent
+
+logger = logging.getLogger(__name__)
 
 #: 视频号固定调试端口（与抖音 9333、Agent-Reach 9222 并列）
 CDP_PORT = int(os.getenv("CHANNELS_CDP_PORT") or 9334)
@@ -102,7 +105,9 @@ def probe(timeout: float = 1.5) -> dict | None:
     try:
         with urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        # 探测失败是常态（浏览器没起来），但要看得出为什么，否则会误判成「死了」
+        logger.debug(f"CDP 探测失败（{CDP_URL}）：{type(exc).__name__}: {exc}")
         return None
 
 
@@ -110,7 +115,8 @@ def _process_cmdline(pid: int) -> str:
     try:
         out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
                              capture_output=True, text=True, timeout=5).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug(f"ps 取 cmdline 失败（pid={pid}）：{type(exc).__name__}: {exc}")
         return ""
     return out.strip()
 
@@ -127,7 +133,8 @@ def lock_holder() -> tuple[int, bool, bool] | None:
     lock = USER_DATA_DIR / "SingletonLock"
     try:
         target = os.readlink(lock)
-    except OSError:
+    except OSError as exc:
+        logger.debug(f"读不到 SingletonLock（{lock}）：{type(exc).__name__}: {exc}")
         return None
     pid_txt = target.rsplit("-", 1)[-1]
     if not pid_txt.isdigit():
@@ -135,7 +142,8 @@ def lock_holder() -> tuple[int, bool, bool] | None:
     pid = int(pid_txt)
     try:
         os.kill(pid, 0)
-    except OSError:
+    except OSError as exc:
+        logger.debug(f"锁里的 pid={pid} 已不在（{type(exc).__name__}），判定悬空锁")
         return (pid, False, False)
     cmdline = _process_cmdline(pid)
     owns = f"user-data-dir={USER_DATA_DIR}" in cmdline
@@ -146,8 +154,8 @@ def _clear_stale_lock() -> None:
     for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
         try:
             (USER_DATA_DIR / name).unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug(f"清理锁文件 {name} 失败（无所谓）：{type(exc).__name__}: {exc}")
 
 
 def _cmdline_holders() -> list[int]:
@@ -155,7 +163,8 @@ def _cmdline_holders() -> list[int]:
     try:
         out = subprocess.run(["pgrep", "-f", f"user-data-dir={USER_DATA_DIR}"],
                              capture_output=True, text=True, timeout=5).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug(f"pgrep 兜底查进程失败：{type(exc).__name__}: {exc}")
         return []
     return [int(x) for x in out.split() if x.strip().isdigit()]
 
@@ -258,7 +267,8 @@ def stop() -> tuple[bool, str]:
     for pid in sorted(pids):
         try:
             os.kill(pid, 15)
-        except OSError:
+        except OSError as exc:
+            logger.debug(f"kill -15 pid={pid} 失败（可能已退出）：{type(exc).__name__}")
             continue
     for _ in range(20):
         if probe() is None:
@@ -267,6 +277,6 @@ def stop() -> tuple[bool, str]:
     _clear_stale_lock()
     try:
         PID_FILE.unlink()
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug(f"删 pid 文件失败（无所谓）：{type(exc).__name__}: {exc}")
     return (True, f"已结束进程 {', '.join(str(p) for p in sorted(pids))}")
