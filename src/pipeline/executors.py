@@ -457,6 +457,20 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     # ---- 回执：发布结果只发这一张卡（≤100 字），全部被门禁拦下时不发 ----
     _title = str(draft.get("title") or "")
     report["receipt"] = publish_receipt_text(report, _title)
+    # 明细落文件（聊天里只发那一行摘要）：小品/用户要查 BVID、外部 id、失败原因看这里
+    detail = [f"# 发布明细 · {_title or ctx.run_id}", "",
+              f"- run_id: `{ctx.run_id}`", f"- 摘要: {report['receipt']}", "",
+              "| 平台 | 结果 | 外部 ID | 说明 |", "|---|---|---|---|"]
+    for it in report["published"]:
+        detail.append(f"| {it['platform']} | ✅ 已发布 | `{it.get('msg_id') or ''}` | {it.get('status') or ''} |")
+    for it in report["failed"]:
+        detail.append(f"| {it['platform']} | ❌ 失败 | — | {it.get('error') or ''} |")
+    for it in report["skipped"]:
+        detail.append(f"| {it.get('platform') or '—'} | ⏭ 跳过 | — | {it.get('reason') or ''} |")
+    try:
+        (ctx.run_root / "publish_detail.md").write_text("\n".join(detail) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"  ! 发布明细写入失败：{exc}")
     if (report["published"] or report["failed"]) and bool(
             (_pub_cfg.get("receipt", True))):
         try:
