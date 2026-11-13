@@ -324,7 +324,11 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
     if platform == "douyin":
         from src.providers.douyin import DouyinProvider
         body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=True)
-        return DouyinProvider(account).save_draft(
+        prov = DouyinProvider(account)
+        # 抖音识别无头（扫码/短信验证必失败）→ 默认有头；账号配置或步骤参数可覆盖
+        if "headless" in opts:
+            prov.headless_publish = bool(opts.get("headless"))
+        return prov.save_draft(
             video_path=str(video), cover_path=str(cover), title=title,
             topics=topics, content_text=body)
     if platform == "bilibili":
@@ -445,7 +449,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
         try:
             res = _invoke_provider(plat, account, video, cover, draft, dry_run=False,
                                    run_root=ctx.run_root,
-                                   opts={"headless": bool(params.get("headless", True)),
+                                   opts={"headless": bool(params.get("headless", False)),
                                          "stop_before_publish": bool(
                                              params.get("stop_before_publish", False))})
         except Exception as exc:  # noqa: BLE001 — 结果未知，禁止自动重发
