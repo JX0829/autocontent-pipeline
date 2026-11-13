@@ -155,7 +155,8 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 - 无人值守（cron/批处理）→ 用 `DISPATCH_MODE=output_only`，
   或 `APPROVAL_MODE=cli` + `APPROVAL_NONINTERACTIVE=approve`
 - 想限定谁能批 → `APPROVAL_ALLOWED_USERS=ou_xxx,ou_yyy`
-- 改超时 → `APPROVAL_TIMEOUT_SEC=1800`（pipeline.yaml 的 profile.timeout_sec 优先）
+- 改超时 → `APPROVAL_TIMEOUT_SEC=1800`（**env 优先**，覆盖 `pipeline.yaml` 的 `profile.timeout_sec`；
+  2026-11-13 之前是反的，env 被默认值吞掉，传 1800 实际仍是 600s → cyber77-1 静默 reject）
 
 ### 4.3 新增一个审批 provider（照着做，流程代码不用动）
 
