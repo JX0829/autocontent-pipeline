@@ -61,11 +61,17 @@ class DouyinProvider(BaseSocialProvider):
         self.declare_aigc = account_config.get("declare_aigc", True)
         self.proxy_server = account_config.get("proxy_server", "")
         self.publish_mode = account_config.get("publish_mode", "draft_only")
-        
+        # 发布用有头浏览器：抖音会识别无头（扫码/短信验证必失败，页面也不稳）。
+        # 账号配置可覆盖（accounts.yaml: headless: true），默认 false = 有头。
+        self.headless_publish = bool(account_config.get("headless", False))
+
         # 确保 profile 目录存在
         os.makedirs(os.path.abspath(self.profile_path), exist_ok=True)
 
-    def _get_browser_context(self, p, headless: bool = True):
+    def _get_browser_context(self, p, headless: bool | None = None):
+        """headless=None 时按账号配置（默认有头）；显式传值可覆盖。"""
+        if headless is None:
+            headless = self.headless_publish
         launch_args = [
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -98,9 +104,9 @@ class DouyinProvider(BaseSocialProvider):
         """
         try:
             with sync_playwright() as p:
-                context, browser = self._get_browser_context(p, headless=True)
+                context, browser = self._get_browser_context(p, headless=None)
                 page = context.new_page()
-                page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="networkidle", timeout=30000)
+                page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=30000)
                 time.sleep(2)
                 
                 current_url = page.url
@@ -130,7 +136,7 @@ class DouyinProvider(BaseSocialProvider):
 
         try:
             with sync_playwright() as p:
-                context, browser = self._get_browser_context(p, headless=True)
+                context, browser = self._get_browser_context(p, headless=None)
                 page = context.new_page()
                 
                 # 先访问创作者主页建立会话上下文，再进入上传页
@@ -344,7 +350,7 @@ class DouyinProvider(BaseSocialProvider):
         while time.time() < deadline:
             try:
                 with sync_playwright() as p:
-                    context, browser = self._get_browser_context(p, headless=True)
+                    context, browser = self._get_browser_context(p, headless=None)
                     page = context.new_page()
                     page.goto(f"{self.CREATOR_URL}creator-micro/content/manage",
                               wait_until="domcontentloaded", timeout=60000)
