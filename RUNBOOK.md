@@ -611,6 +611,23 @@ ls -la data/approvals/
 > 渠道自己的配置文件（`config/accounts.yaml`、`config/platform_policies.yaml`）**不动**，
 > 收敛只发生在代码侧。
 
+### 7.6 一条命令出片+发布（`--publish`，2026-11-13）
+
+```bash
+python3 -m src.pipeline.runner --material materials/<物料>.json \
+        --publish douyin,bilibili,channels
+```
+
+- `--publish` 只覆盖**本次运行**的 `publish.enabled` 门禁（内存参数，不写回 `pipeline.yaml`）；
+  **门禁2 审批 approve 与门禁3 台账照旧生效**，省略则只出片
+- 每个平台按自己的方向选片：抖音/视频号 `video.mp4`，B站 `video_16_9.mp4`
+  （映射唯一来源 `src/utils/accounts.py::PLATFORM_ASPECT`）
+- 发布结束：发一张「发布回执」卡（≤100 字）+ 写 `output/<日期>/<run_id>/publish_detail.md`
+  （每平台结果 / 外部 ID / 失败原因），**聊天里只有那一行摘要**
+
+> 使用方（小品）只跑这一条命令，不直接调 provider、不改配置；问题写复现交开发。
+
+
 ---
 
 ## 8. 验收 / 自检
