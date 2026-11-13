@@ -69,7 +69,7 @@ def _capture(provider, fn_name: str) -> list[dict]:
 def main() -> int:
     from src.providers.douyin import DouyinProvider
 
-    base = {"id": "douyin-tech-main", "platform": "douyin",
+    base = {"id": "test-account", "platform": "douyin",
             "profile_path": "/tmp/dy_test_profile", "publish_mode": "public_publish"}
 
     p_default = DouyinProvider(base)
