@@ -66,6 +66,56 @@ APPROVE_WORDS = {"approve", "a", "y", "yes", "通过", "同意", "批准", "ok",
 REJECT_WORDS = {"reject", "r", "n", "no", "拒绝", "驳回", "不通过", "取消"}
 
 
+def update_card_status(run_id: str, header_text: str, header_template: str = "blue",
+                       lines: list[str] | None = None) -> bool:
+    """把已发出的审批卡**原地更新**成状态卡（发布中 / 已完成）。
+
+    为什么要原地更新：点了按钮之后到发布结束有 1~3 分钟空窗，界面上只有一句
+    「已记录 approve」，看起来像什么都没发生。用 message.patch 改同一个 msg_id，
+    审批人不用翻消息就能看到进展。
+
+    失败只告警，绝不影响发布结论。
+    """
+    try:
+        from src.feishu.approval_service import FeishuApprovalService
+        from src.feishu.card_builder import FeishuCardBuilder
+        from src.utils.video_desc import build_desc
+
+        hits = sorted((PROJ / "output").glob(f"*/{run_id}"), key=lambda p: p.stat().st_mtime,
+                      reverse=True)
+        if not hits:
+            logger.debug(f"卡片状态更新跳过：找不到 run 目录 {run_id}")
+            return False
+        run_root = hits[0]
+        rec = run_root / "approval_card.json"
+        if not rec.exists():
+            logger.debug(f"卡片状态更新跳过：{run_id} 没有 approval_card.json（未发过卡）")
+            return False
+        msg_id = str((json.loads(rec.read_text(encoding="utf-8")) or {}).get("msg_id") or "")
+        if not msg_id:
+            return False
+
+        title, desc = "", ""
+        draft_path = run_root / "draft_script.json"
+        if draft_path.exists():
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            title = str(draft.get("title") or draft.get("short_title") or "")
+            try:
+                desc = build_desc(draft, platform="channels")
+            except Exception:  # noqa: BLE001
+                desc = str(draft.get("video_desc") or "")
+
+        card = FeishuCardBuilder.build_status_card(
+            run_id=run_id, title=title, desc=desc,
+            header_text=header_text, header_template=header_template, lines=lines or [])
+        ok = FeishuApprovalService().update_card(msg_id, card)
+        print(f"  {'✓' if ok else '!'} 审批卡状态更新：{header_text}（msg_id={msg_id}）")
+        return bool(ok)
+    except Exception as exc:  # noqa: BLE001 — 状态更新失败不影响发布
+        print(f"  ! 审批卡状态更新失败（不影响发布）：{type(exc).__name__}: {exc}")
+        return False
+
+
 def _decision_path(run_id: str) -> Path:
     return DECISION_DIR / f"{run_id}.json"
 
