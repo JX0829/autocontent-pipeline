@@ -203,7 +203,17 @@ def main() -> int:
     ap.add_argument("--tags", nargs="*", default=[], help="话题标签（可带或不带 #）")
     ap.add_argument("--cdp-url", default=os.getenv("DOUYIN_CDP_URL", CDP_URL_DEFAULT))
     ap.add_argument("--dry-run", action="store_true", help="只校验输入与 CDP 连通，不上传不发布")
+    ap.add_argument("--force", action="store_true",
+                    help="确认要走单平台入口（默认拒绝，统一用 runner --publish）")
     args = ap.parse_args()
+
+    # 单平台入口已收口到流水线：默认拒绝，避免绕过审批/台账/回执卡三条链路
+    if not (args.force or args.dry_run):
+        _log("⚠️  单平台发布入口已废弃，统一走流水线一条命令：")
+        print("   python3 -m src.pipeline.runner --material materials/<物料>.json \\")
+        print("           --publish douyin,bilibili,channels")
+        print("   排障确实需要单平台时加 --force 重跑（--dry-run 不受影响）。")
+        return 2
 
     try:
         account = for_platform("douyin")
