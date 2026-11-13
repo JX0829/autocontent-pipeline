@@ -157,6 +157,26 @@ def test_title_and_desc() -> None:
           == "【待审批】Gemini4 Hydrogen发布" and mblob.count("```") == 4 and "#话题A" in mblob)
 
 
+def test_status_card() -> None:
+    """状态卡：保留标题/详情两个代码块、去掉按钮、带状态卡头与结果行。"""
+    from src.feishu.card_builder import FeishuCardBuilder
+
+    card = FeishuCardBuilder.build_status_card(
+        run_id="run-9", title="Gemini4 Hydrogen发布", desc="正文一句话 #话题A",
+        header_text="⚠️ 2/3 成功 · Gemini4 Hydrogen发布", header_template="orange",
+        lines=["⚠️ 2/3 成功｜视频号失败：登录过期", "- ✅ douyin · `x`", "- ❌ channels：登录过期"])
+    blob = json.dumps(card, ensure_ascii=False)
+    check("状态卡: 卡头是状态不是待审批",
+          (card.get("header") or {}).get("title", {}).get("content", "").startswith("⚠️"))
+    check("状态卡: 表头模板色跟随状态",
+          (card.get("header") or {}).get("template") == "orange")
+    check("状态卡: 没有按钮（不能重复点）", "button" not in blob)
+    blocks = [e for e in (card.get("body") or {}).get("elements", [])
+              if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("```")]
+    check("状态卡: 仍是两个代码块（标题+详情）", len(blocks) == 2)
+    check("状态卡: 逐平台结果在位", "douyin" in blob and "channels" in blob)
+
+
 def test_minimal() -> None:
     card = get_style("approval_minimal")(run_id="run-1", title="标题A", targets=TARGETS)
     test_common(card, "approval_minimal")
@@ -259,6 +279,7 @@ def main() -> int:
     print("=== 审批卡片 Card 2.0 回归（权威来源 src/approval/styles.py）===")
     test_v2()
     test_title_and_desc()
+    test_status_card()
     test_minimal()
     test_style_registry()
     test_publish_receipt()
