@@ -33,7 +33,18 @@ async def main():
                         help="从 output/*/<run_id>/ 自动取横版视频、标题、人话简介与标签（推荐）")
     parser.add_argument("--tid", type=int, default=231)
     parser.add_argument("--only-self", action="store_true", default=False)
+    parser.add_argument("--force", action="store_true", default=False,
+                        help="确认要走单平台入口（默认拒绝，统一用 runner --publish）")
     args = parser.parse_args()
+
+    # 单平台入口已收口到流水线：默认拒绝，避免绕过审批/台账/回执卡三条链路
+    # （本脚本没有 --dry-run 实现，所以只认 --force，避免"以为在试跑、其实真发"）
+    if not args.force:
+        print("⚠️  单平台发布入口已废弃，统一走流水线一条命令：")
+        print("   python3 -m src.pipeline.runner --material materials/<物料>.json \\")
+        print("           --publish douyin,bilibili,channels")
+        print("   排障确实需要单平台时加 --force 重跑。")
+        sys.exit(2)
 
     run_root = None
     # --run-id 模式：文案统一走 src/utils/video_desc，避免各平台各写一套

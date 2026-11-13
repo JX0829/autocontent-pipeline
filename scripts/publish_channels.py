@@ -66,6 +66,8 @@ def main() -> int:
     ap.add_argument("--stop-before-publish", action="store_true",
                     help="上传+填文案+声明原创后停在发表前（测试选择器用，不产生公开内容）")
     ap.add_argument("--no-receipt", action="store_true", help="不发发布回执卡")
+    ap.add_argument("--force", action="store_true",
+                    help="确认要走单平台入口（默认拒绝，统一用 runner --publish）")
     args = ap.parse_args()
 
     if args.probe:
@@ -74,6 +76,14 @@ def main() -> int:
             dry_run=True, headless=not args.headful)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0 if res.get("status") == "DRY_RUN_OK" else 2
+
+    # 单平台入口已收口到流水线：默认拒绝，避免绕过审批/台账/回执卡三条链路
+    if not (args.force or args.dry_run or args.stop_before_publish):
+        print("⚠️  单平台发布入口已废弃，统一走流水线一条命令：")
+        print("   python3 -m src.pipeline.runner --material materials/<物料>.json \\")
+        print("           --publish douyin,bilibili,channels")
+        print("   排障确实需要单平台时加 --force 重跑（--probe / --dry-run / --stop-before-publish 不受影响）。")
+        return 2
 
     # ---- 输入 ----
     if args.video:
