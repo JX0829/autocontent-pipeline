@@ -21,20 +21,11 @@ def sanitize_narration_guardrail(text: str, is_tail: bool = False) -> str:
     cleaned = text
     # 违规导流模式拦截与清洗
     # 2. 彻底清洗与置换推特/X/外网等国内敏感词汇
-    replacements = [
-        (r"(?i)twitter", "前沿开源社区"),
-        (r"推特", "全网技术圈"),
-        (r"推上", "技术圈"),
-        (r"推友", "全球开发者"),
-        (r"X平台", "海外开源社区"),
-        (r"x\.com", "开源主页"),
-        (r"外网", "全球技术社区"),
-        (r"外媒报道", "最新技术资讯"),
-        (r"无审查", "性能极限优化"),
-        (r"uncensored", "开源完全可控")
-    ]
-    for pattern, target in replacements:
-        cleaned = re.sub(pattern, target, cleaned)
+    #    2026-11-12：这张表已上收到 src/safety/rewrites.py —— 敏感词门禁
+    #    （scripts/hooks/sensitive_scan.py）必须用同一份，否则「流水线会改写的东西
+    #    先被门禁毙掉」（缺陷①）。
+    from ..safety.rewrites import apply_rewrites
+    cleaned, _ = apply_rewrites(cleaned)
 
     patterns = [
         r"回复暗号[^\s，。！!？?]*",
