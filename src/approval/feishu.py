@@ -229,11 +229,87 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
     if not chat_id:
         chat_id = receive_id if rec_type == "chat_id" else ""
 
-    timeout = int(prof.get("timeout_sec") or os.getenv("APPROVAL_TIMEOUT_SEC") or "600")
+    # 2026-11-13：**环境变量优先**。旧写法 prof 在前，pipeline.yaml 里写死的
+    # timeout_sec=600 永远盖掉 APPROVAL_TIMEOUT_SEC，导致「按文档传 1800 仍是 600s」，
+    # 人在场外时 10 分钟就静默 reject（cyber77-1 实测）。
+    timeout = _resolve_timeout(prof)
     deadline = time.time() + timeout
     print(f"  [approval] 已发飞书审批（msg_id={msg_id}, chat={chat_id}），"
           f"等待回复，超时 {timeout}s")
-    return _wait_decision(svc, dp, msg_id, chat_id, since_ms, deadline, timeout)
+    res = _wait_decision(svc, dp, msg_id, chat_id, since_ms, deadline, timeout)
+    _finalize_card(svc, msg_id, res, run_id=run_id, title=title)
+    return res
+
+
+def _resolve_timeout(prof: dict[str, Any]) -> int:
+    """审批等待秒数：**环境变量 > pipeline.yaml > 600**。
+
+    优先级理由：`APPROVAL_TIMEOUT_SEC` 是「这一次我想等多久」的临时覆盖（人在路上、
+    要开会），pipeline.yaml 是团队默认值。旧实现把默认值放前面，env 形同虚设。
+    非法值（非数字/<=0）不静默吞掉，退回下一档并打日志。
+    """
+    raw_env = os.getenv("APPROVAL_TIMEOUT_SEC")
+    for src, raw in (("APPROVAL_TIMEOUT_SEC", raw_env),
+                     ("pipeline.yaml profile.timeout_sec", prof.get("timeout_sec")),
+                     ("default", "600")):
+        if raw in (None, ""):
+            continue
+        try:
+            val = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(f"[approval] {src}={raw!r} 不是整数，忽略")
+            continue
+        if val <= 0:
+            logger.warning(f"[approval] {src}={val} 必须为正数，忽略")
+            continue
+        if src == "APPROVAL_TIMEOUT_SEC":
+            logger.info(f"[approval] 超时取环境变量 APPROVAL_TIMEOUT_SEC={val}s"
+                        f"（覆盖 pipeline.yaml 的 {prof.get('timeout_sec')}）")
+        return val
+    return 600
+
+
+def _finalize_card(svc, msg_id: str, res: dict[str, Any], *, run_id: str,
+                   title: str = "") -> None:
+    """裁决结束后**回写卡片状态**（2026-11-13 缺陷：点完/超时后卡片毫无变化）。
+
+    cyber77-1 现场：15:40 发卡 → 15:50 超时静默 reject → 16:01 才有人点按钮，
+    卡片一直停在「待审批」样子，点完也没有任何反馈，使用者只能翻日志才知道被拒。
+    这里在裁决结束（approve / reject / timeout / 发送失败之外的任何终态）后把同一张
+    卡片 patch 成结果卡：颜色 + 结果 + 裁决人 + 原因。失败只告警，不影响流程结论。
+    """
+    if not msg_id or not res:
+        return
+    decision = str(res.get("decision") or "").lower()
+    by = str(res.get("decided_by") or res.get("reason") or "")
+    timed_out = "timeout" in by.lower()
+    head = title.strip() if title and title.strip() else run_id
+    if decision == "approve":
+        template, verdict = "green", "✅ 已通过，进入发布"
+    elif timed_out:
+        template, verdict = "grey", "⏰ 已超时，按「不发布」处理（本次未发布）"
+    else:
+        template, verdict = "red", "❌ 已否决，本次不发布"
+
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"**任务**：`{run_id}`", f"**结果**：{verdict}", f"**裁决**：{by or '—'}",
+             f"**时间**：{stamp}"]
+    if timed_out:
+        lines.append("")
+        lines.append(f"超时窗口 {res.get('reason', '')}。要补发请重跑：")
+        lines.append(f"`--run-id {run_id}`（成片已就绪，可加 `APPROVAL_TIMEOUT_SEC` 放宽等待）")
+    card = {
+        "schema": "2.0",
+        "config": {"update_multi": True},
+        "header": {"title": {"tag": "plain_text", "content": f"【已裁决】{head}"},
+                   "template": template},
+        "body": {"elements": [{"tag": "markdown", "content": "\n".join(lines)}]},
+    }
+    try:
+        ok = svc.update_card(msg_id, card)
+        print(f"  [approval] 卡片状态回写{'成功' if ok else '失败（不影响结论）'}: {verdict}")
+    except Exception as exc:  # noqa: BLE001 — 回写失败不能改变裁决结果
+        logger.warning(f"[approval] 卡片状态回写异常: {exc}")
 
 
 def _wait_decision(svc, dp: Path, msg_id, chat_id: str, since_ms: int,
