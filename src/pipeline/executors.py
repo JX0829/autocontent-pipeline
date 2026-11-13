@@ -283,33 +283,74 @@ def _release_slot(db, dedupe_key: str) -> None:
 
 
 def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover: Path,
-                     draft: dict[str, Any], dry_run: bool) -> dict[str, Any]:
-    """按平台调 provider。三家的方法名不一致，这里收口，不散落到调用方。"""
+                     draft: dict[str, Any], dry_run: bool, *,
+                     run_root: Path | None = None,
+                     opts: dict[str, Any] | None = None) -> dict[str, Any]:
+    """按平台调 provider。三家的方法名不一致，这里收口，不散落到调用方。
+
+    文案：统一走 `src/utils/video_desc`（三个平台 CLI 早就在用，唯一权威）。
+    之前这里用 narration[:180]，与 CLI 拼出来的简介不是一回事，同一条视频
+    走 pipeline 和走 CLI 发出去的文案不一样（2026-11-11 实测 158 / 213 字）。
+    声明参数：从 accounts.yaml 的账号配置读，不再硬编码（否则卡片说的和
+    实际勾选的不一致）。
+    """
+    from src.utils.video_desc import build_desc
+
+    opts = opts or {}
     title = str(draft.get("title") or "")
-    scenes = draft.get("scenes") or []
-    narration = "".join(str(s.get("segment_narration") or "") for s in scenes)
-    body = narration[:180].strip() or str(draft.get("theme") or "")
-    kw = str(draft.get("resource_keyword") or "").strip()
-    topics = [kw] if kw else ["科技"]
+    tags = [str(t).strip() for t in (draft.get("tags") or []) if str(t).strip()]
+    topics = tags or (["科技"] if not draft.get("resource_keyword")
+                      else [str(draft.get("resource_keyword")).strip()])
+
+    declare_original = (bool(opts["declare_original"]) if "declare_original" in opts
+                        else bool(account.get("declare_original", False)))
+    declare_aigc = (bool(opts["declare_aigc"]) if "declare_aigc" in opts
+                    else bool(account.get("declare_aigc", False)))
 
     if platform == "channels":
         from src.providers.channels_cdp import ChannelsCDPProvider
+        # 视频号 provider 自己拼 #标签，正文里不要重复
+        body = build_desc(draft, platform="channels", run_root=run_root, include_tags=False)
+        extra: dict[str, Any] = {}
+        if opts.get("stop_before_publish"):
+            extra["stop_before_publish"] = True
+        if opts.get("allow_missing_flags"):
+            extra["allow_missing_flags"] = True
         return ChannelsCDPProvider(account).publish_live(
             video_path=str(video), cover_path=str(cover), title=title,
             content_text=body, topics=topics,
-            declare_original=True, declare_aigc=True,
-            dry_run=dry_run, headless=True)
+            declare_original=declare_original, declare_aigc=declare_aigc,
+            dry_run=dry_run, headless=bool(opts.get("headless", True)), **extra)
     if platform == "douyin":
         from src.providers.douyin import DouyinProvider
+        body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=True)
         return DouyinProvider(account).save_draft(
             video_path=str(video), cover_path=str(cover), title=title,
             topics=topics, content_text=body)
     if platform == "bilibili":
         from src.providers.bilibili import BilibiliProvider
+        body = build_desc(draft, platform="bilibili", run_root=run_root, include_tags=True)
         return BilibiliProvider(account).save_draft(
             video_path=str(video), cover_path=str(cover), title=title,
             topics=topics, content_text=body)
     raise ExecutorError(f"未知平台: {platform}（支持 douyin | bilibili | channels）")
+
+
+def send_publish_receipt(report: dict[str, Any], title: str = "") -> str:
+    """发发布回执卡（唯一实现，pipeline 与各 CLI 共用）。失败只告警，不影响发布结论。"""
+    from src.feishu.approval_service import FeishuApprovalService
+    from src.feishu.card_builder import FeishuCardBuilder, publish_receipt_text
+
+    chat = os.getenv("FEISHU_APPROVAL_CHAT_ID") or ""
+    if not chat:
+        print("  ! 发布回执跳过：未配置 FEISHU_APPROVAL_CHAT_ID")
+        return ""
+    id_type = "chat_id" if chat.startswith("oc_") else "open_id"
+    card = FeishuCardBuilder.build_publish_receipt(report, title)
+    msg_id = FeishuApprovalService().send_approval_card(
+        receive_id=chat, receive_id_type=id_type, card_content=card)
+    print(f"  ✓ 发布回执已发（msg_id={msg_id}）：{publish_receipt_text(report, title)}")
+    return str(msg_id or "")
 
 
 def exec_publish(ctx: StepContext) -> dict[str, str]:
@@ -322,6 +363,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     import hashlib
 
     from src.db import PipelineDB
+    from src.feishu.card_builder import publish_receipt_text
     from src.utils.accounts import for_platform
 
     # 配置项后置：顶层 `publish:` 段 + 步骤 params（params 优先），都不写死默认值
@@ -387,7 +429,11 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
             continue
 
         try:
-            res = _invoke_provider(plat, account, video, cover, draft, dry_run=False)
+            res = _invoke_provider(plat, account, video, cover, draft, dry_run=False,
+                                   run_root=ctx.run_root,
+                                   opts={"headless": bool(params.get("headless", True)),
+                                         "stop_before_publish": bool(
+                                             params.get("stop_before_publish", False))})
         except Exception as exc:  # noqa: BLE001 — 结果未知，禁止自动重发
             state = record_outcome(key, False, status="SUBMIT_UNKNOWN",
                                    reason=f"{type(exc).__name__}: {exc}")
@@ -406,6 +452,16 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                                    reason=str(res.get("message") or res.get("error") or "unknown"))
             report["failed"].append({"platform": plat, "ledger": state,
                                      "error": res.get("message") or res.get("error") or "unknown"})
+
+    # ---- 回执：发布结果只发这一张卡（≤100 字），全部被门禁拦下时不发 ----
+    _title = str(draft.get("title") or "")
+    report["receipt"] = publish_receipt_text(report, _title)
+    if (report["published"] or report["failed"]) and bool(
+            (_pub_cfg.get("receipt", True))):
+        try:
+            send_publish_receipt(report, _title)
+        except Exception as exc:  # noqa: BLE001 — 回执失败不能改变发布结论
+            print(f"  ! 发布回执发送失败（不影响发布结论）：{type(exc).__name__}: {exc}")
 
     _out()
     if report["failed"]:

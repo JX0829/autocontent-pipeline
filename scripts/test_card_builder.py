@@ -157,11 +157,69 @@ def _raises_keyerror(name: str) -> bool:
     return False
 
 
+def test_publish_receipt() -> None:
+    """发布回执卡：≤100 字、单一实现、错误码中文化（2026-11-11 收敛）。"""
+    print("\n[发布回执卡]")
+    from src.feishu.card_builder import FeishuCardBuilder, publish_receipt_text
+
+    cases = [
+        ("三平台全成功",
+         {"published": [{"platform": "douyin"}, {"platform": "bilibili"},
+                        {"platform": "channels"}], "failed": [], "skipped": []},
+         "Anthropic冲刺纳斯达克", "✅ 已发布 3/3：抖音·B站·视频号"),
+        ("单平台失败",
+         {"published": [{"platform": "douyin"}, {"platform": "channels"}],
+          "failed": [{"platform": "bilibili", "error": "LOGIN_EXPIRED: 登录态过期"}], "skipped": []},
+         "Claude双版本炸场", "B站失败：登录过期"),
+        ("全挂", {"published": [], "failed": [
+            {"platform": "douyin", "error": "PUBLISH_SIGNAL_MISSING"},
+            {"platform": "bilibili", "error": "CDP_UNAVAILABLE"},
+            {"platform": "channels", "error": "LOGIN_EXPIRED"}], "skipped": []},
+         "", "0/3 成功"),
+        ("门禁拦下", {"published": [], "failed": [], "skipped": [{"gate": "enabled"}]},
+         "Qwen4开源", "⏭ 未发布"),
+        ("空结果", {"published": [], "failed": [], "skipped": []}, "", "无平台结果"),
+        ("超长标题", {"published": [{"platform": "douyin"}], "failed": [], "skipped": []},
+         "OpenAI发布GPT-5.5turbo并宣布全面免费开放给所有开发者", "…"),
+    ]
+    for name, report, title, expect in cases:
+        text = publish_receipt_text(report, title)
+        check(f"{name}: 摘要 ≤100 字（{len(text)}）", len(text) <= 100, text)
+        check(f"{name}: 含预期关键词", expect in text, text)
+
+    # 英文错误码不许被截半（历史坑：PUBLISH_SIGNAL_MISSI）
+    t = publish_receipt_text({"published": [], "failed": [
+        {"platform": "bilibili", "error": "PUBLISH_SIGNAL_MISSING"}], "skipped": []})
+    check("错误码中文化，不留半截英文", "PUBLISH_SIGNAL" not in t and "未确认发布" in t, t)
+
+    card = FeishuCardBuilder.build_publish_receipt(
+        {"published": [{"platform": "douyin"}], "failed": []}, "标题A")
+    check("回执卡是 Card 2.0", card.get("schema") == CARD2_SCHEMA, str(card.get("schema")))
+    check("回执卡表头固定「发布回执」",
+          (card.get("header") or {}).get("title", {}).get("content") == "发布回执")
+    check("成功用绿色、失败用橙色",
+          card.get("header", {}).get("template") == "green"
+          and FeishuCardBuilder.build_publish_receipt(
+              {"published": [], "failed": [{"platform": "douyin", "error": "x"}]},
+              "").get("header", {}).get("template") == "orange")
+    tags: list[str] = []
+    walk_tags(card, tags)
+    check("回执卡无 Card 1.0 遗留标签", not tags, str(tags))
+
+    # 唯一实现：CLI 不许再自己拼回执/文案
+    src = (PROJ / "scripts/publish_channels.py").read_text(encoding="utf-8")
+    check("publish_channels 不再自带 compose_caption_body",
+          "def compose_caption_body" not in src)
+    check("publish_channels 走 pipeline 的发布实现", "_invoke_provider" in src)
+    check("publish_channels 复用同一张回执卡", "send_publish_receipt" in src)
+
+
 def main() -> int:
     print("=== 审批卡片 Card 2.0 回归（权威来源 src/approval/styles.py）===")
     test_v2()
     test_minimal()
     test_style_registry()
+    test_publish_receipt()
     print(f"\n✅ PASS {PASS}   ❌ FAIL {FAIL}")
     if FAIL:
         print("CARD2 CONTRACT FAIL")

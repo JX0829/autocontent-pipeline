@@ -13,6 +13,58 @@ class MissingChatIdError(RuntimeError):
 # Card 2.0 的 schema 版本号只在这里出现一次（T3.2-R3：结构转换必须待在 card_builder 内）
 CARD2_SCHEMA = "2.0"
 
+# ---------------------------------------------------------------- 发布回执文案
+# 2026-11-11：发布结果只发这一张卡，摘要 ≤100 字。
+# 之前没有回执模板，每次由 agent 现写长文（实测最长 8701 字），渠道多了没法看。
+PLATFORM_CN = {"douyin": "抖音", "bilibili": "B站", "channels": "视频号"}
+REASON_CN = {
+    "LOGIN_EXPIRED": "登录过期",
+    "PUBLISH_SIGNAL_MISSING": "未确认发布",
+    "READBACK_NOT_FOUND": "回读不到作品",
+    "ORIGINAL_CHECKBOX_NOT_FOUND": "原创勾选失败",
+    "PUBLISHED_UNVERIFIED": "发布未证实",
+    "CDP_UNAVAILABLE": "浏览器未起",
+    "SUBMIT_UNKNOWN": "提交结果未知",
+    "TIMEOUT": "超时",
+}
+
+
+def _short_reason(raw: Any) -> str:
+    """错误码 → 8 字内中文；不截半个英文单词。"""
+    raw = str(raw or "").strip().split("\n")[0]
+    code = raw.split(":")[0].split("（")[0].strip()
+    if code in REASON_CN:
+        return REASON_CN[code]
+    zh = "".join(ch for ch in raw if "\u4e00" <= ch <= "\u9fff")
+    return zh[:8] or code[:8] or "失败"
+
+
+def publish_receipt_text(report: Dict[str, Any], title: str = "", limit: int = 100) -> str:
+    """把发布结果压成一行摘要（≤limit 字），不含卡片标题。"""
+    ok = [PLATFORM_CN.get(str(p.get("platform")), str(p.get("platform")))
+          for p in report.get("published") or []]
+    bad = report.get("failed") or []
+    skipped = report.get("skipped") or []
+
+    if bad:
+        names = [PLATFORM_CN.get(str(b.get("platform")), str(b.get("platform"))) for b in bad]
+        head = "、".join(names[:2]) + (f" 等{len(names)}个" if len(names) > 2 else "")
+        first = bad[0]
+        line = (f"⚠️ {len(ok)}/{len(ok) + len(bad)} 成功｜{head}失败："
+                f"{_short_reason(first.get('error') or first.get('message'))}")
+    elif ok:
+        line = f"✅ 已发布 {len(ok)}/{len(ok)}：{'·'.join(ok)}"
+    elif skipped:
+        line = f"⏭ 未发布（{len(skipped)} 项被门禁拦下）"
+    else:
+        line = "— 无平台结果"
+
+    if title:
+        head_t = title if len(title) <= 12 else title[:11] + "…"
+        line = f"《{head_t}》{line}"
+    return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
 
 class FeishuCardBuilder:
     """
@@ -100,6 +152,24 @@ class FeishuCardBuilder:
     # ================================================================
     # T3.2-R3：Card 2.0 构建（原 run_publish_worker._post_to_card2 下沉至此）
     # ================================================================
+
+    # ================================================================
+    # 发布回执卡（2026-11-11）：发布结果只发这一张，摘要 ≤100 字
+    # ================================================================
+
+    @staticmethod
+    def build_publish_receipt(report: Dict[str, Any], title: str = "") -> Dict[str, Any]:
+        """发布回执 Card 2.0：header 固定「发布回执」，正文一行摘要。"""
+        return {
+            "schema": CARD2_SCHEMA,
+            "config": {"update_multi": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "发布回执"},
+                "template": "orange" if report.get("failed") else "green",
+            },
+            "body": {"elements": [{"tag": "markdown",
+                                   "content": publish_receipt_text(report, title)}]},
+        }
 
     @staticmethod
     def build_card2_from_post(post_payload: Dict[str, Any]) -> Dict[str, Any]:
