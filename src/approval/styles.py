@@ -37,13 +37,16 @@ def style_approval_v2(
     header_template: str = "blue",
     show_publish_matrix: bool = True,
     note: str = "",
+    desc: str = "",
 ) -> dict[str, Any]:
-    """完整版：标题 + 任务 + 发布矩阵 + 两个按钮（默认样式）。"""
+    """完整版：标题 + 正文 + 任务 + 发布矩阵 + 两个按钮（默认样式）。"""
     card = FeishuCardBuilder.build_approval_card2(
         run_id=run_id, title=title,
         targets=(targets or []) if show_publish_matrix else [],
-        delivered=delivered, note=note)
-    card["header"] = _header(f"【待审批】{run_id}", header_template)
+        delivered=delivered, note=note, desc=desc)
+    # 卡头用**视频标题**，run_id 留在正文里 —— 一眼能看出是哪条片要审
+    head = title.strip() if title and title.strip() else run_id
+    card["header"] = _header(f"【待审批】{head}", header_template)
     return card
 
 
@@ -56,16 +59,21 @@ def style_approval_minimal(
     header_template: str = "grey",
     show_publish_matrix: bool = False,
     note: str = "",
+    desc: str = "",
 ) -> dict[str, Any]:
-    """极简版：只放标题和时间戳，适合群里消息很多、不想刷屏的场景。"""
+    """极简版：标题 + 正文 + 时间戳，适合群里消息很多、不想刷屏的场景。"""
     lines = [f"**{title or run_id}**", f"`{run_id}`"]
+    _desc = " ".join(str(desc or "").split())
+    if _desc:
+        lines.append(f"**正文**：{_desc if len(_desc) <= 200 else _desc[:199] + '…'}")
     if note:
         lines.append(note)
     lines.append("回复 **approve** 发布 / **reject** 放弃")
     return {
         "schema": "2.0",
         "config": {"update_multi": True},
-        "header": _header(f"【待审批】{run_id}", header_template),
+        "header": _header(f"【待审批】{title.strip() if title and title.strip() else run_id}",
+                          header_template),
         "body": {
             "elements": [
                 {"tag": "markdown", "content": "\n".join(lines)},

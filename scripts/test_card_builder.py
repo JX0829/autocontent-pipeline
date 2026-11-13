@@ -116,6 +116,31 @@ def test_v2() -> None:
           "douyin" not in json.dumps(no_matrix, ensure_ascii=False))
 
 
+def test_title_and_desc() -> None:
+    """卡头 = 视频标题（不是 run_id），正文 = 发布文案（≤200 字，超长截断）。"""
+    desc = "谷歌在11月12日发布Gemini 4 Hydrogen，当天向所有用户开放。" * 6
+    card = get_style("approval_v2")(run_id="run-9", title="Gemini4 Hydrogen发布",
+                                    targets=TARGETS, desc=desc)
+    head = (card.get("header") or {}).get("title", {}).get("content", "")
+    check("v2: 卡头用视频标题", head == "【待审批】Gemini4 Hydrogen发布")
+    check("v2: 卡头不再只有 run_id", "run-9" not in head)
+    body = json.dumps(card.get("body") or {}, ensure_ascii=False)
+    check("v2: 正文区出现「正文」", "**正文**：" in body)
+    check("v2: 正文超 200 字被截断", "…" in body and desc not in body)
+    check("v2: 正文短文本完整展示", "当天向所有用户开放" in body)
+
+    no_desc = get_style("approval_v2")(run_id="run-9", title="T", targets=TARGETS)
+    check("v2: 无正文时不出现空「正文」行",
+          "**正文**" not in json.dumps(no_desc.get("body") or {}, ensure_ascii=False))
+
+    mini = get_style("approval_minimal")(run_id="run-9", title="Gemini4 Hydrogen发布",
+                                        desc="一句话文案")
+    mblob = json.dumps(mini, ensure_ascii=False)
+    check("minimal: 卡头用视频标题 + 正文在位",
+          (mini.get("header") or {}).get("title", {}).get("content")
+          == "【待审批】Gemini4 Hydrogen发布" and "一句话文案" in mblob)
+
+
 def test_minimal() -> None:
     card = get_style("approval_minimal")(run_id="run-1", title="标题A", targets=TARGETS)
     test_common(card, "approval_minimal")
@@ -217,6 +242,7 @@ def test_publish_receipt() -> None:
 def main() -> int:
     print("=== 审批卡片 Card 2.0 回归（权威来源 src/approval/styles.py）===")
     test_v2()
+    test_title_and_desc()
     test_minimal()
     test_style_registry()
     test_publish_receipt()
