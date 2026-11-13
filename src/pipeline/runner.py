@@ -515,7 +515,8 @@ def _execute_step(cfg: dict[str, Any], step: dict[str, Any], *,
 def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
               task_id: str, start_index: int = 0, db_path: Path = DEFAULT_DB,
               rerun_done: bool = False, material: dict[str, Any] | None = None,
-              account: str = "") -> int:
+              account: str = "",
+              publish_platforms: list[str] | None = None) -> int:
     """真实执行（T2.2 状态流转 + P5 执行体接线 + hook 执行）。
 
     每一步：before_hooks → 执行体 → after_hooks，产物写进 run_root。
@@ -541,6 +542,17 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
 
     # v2 发布方案门禁1：publish.enabled 默认 false → 整步 SKIP（不进入执行体）
     _pub_step = next((s for s in steps if s.get("id") == "publish"), {})
+    # 显式 `--publish douyin,bilibili,channels`：只改本次运行的内存参数，不写回 pipeline.yaml。
+    # 门禁1 的默认值仍是 false（防误发）；门禁2（审批 approve）与门禁3（台账）照旧生效。
+    if publish_platforms:
+        if not _pub_step:
+            raise ContractError("--publish 指定了平台，但 pipeline.yaml 里没有 publish 步")
+        _pub_step["params"] = {**(_pub_step.get("params") or {}),
+                               "enabled": True,
+                               "platforms": [p.lower() for p in publish_platforms],
+                               "dry_run": False}
+        print(f"  发布覆盖: --publish {','.join(publish_platforms)}"
+              f"（仍需审批 approve；台账照旧拦截）")
     pparams = {**((cfg.get("publish") or {})), **(_pub_step.get("params") or {})}
     if not bool(pparams.get("enabled", False)) or not (pparams.get("platforms") or []):
         skip["publish"] = "publish.enabled=false 或 platforms 为空（默认关闭）"
@@ -675,6 +687,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="只校验与打印计划，不调用任何模型、不写库")
     ap.add_argument("--run-id", default=None, help="指定 run_id（默认按时间生成）")
     ap.add_argument("--resume", action="store_true", help="按 pipeline_runs 从断点继续")
+    ap.add_argument("--publish", default=None, metavar="PLATFORMS",
+                    help="显式发布到指定平台（逗号分隔，如 douyin,bilibili,channels）。"
+                         "只覆盖本次运行的 publish.enabled 门禁，仍需审批 approve；"
+                         "不改写 pipeline.yaml")
     ap.add_argument("--db", default=str(DEFAULT_DB), help="状态库路径")
     args = ap.parse_args(argv)
 
@@ -820,7 +836,9 @@ def main(argv: list[str] | None = None) -> int:
 
     return run_steps(cfg, run_root, run_id, task_id, start_index,
                      db_path=Path(args.db), rerun_done=False, material=material,
-                     account=account)
+                     account=account,
+                     publish_platforms=([p.strip() for p in args.publish.split(",") if p.strip()]
+                                        if args.publish else None))
 
 
 if __name__ == "__main__":

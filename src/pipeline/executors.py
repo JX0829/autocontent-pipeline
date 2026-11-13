@@ -360,11 +360,9 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     门禁2 审批：approval.json 的 decision 必须为 approve，否则拦
     门禁3 台账：send_ledger 的 claim_send_slot 抢到才发（同内容同账号不重发）
     """
-    import hashlib
-
     from src.db import PipelineDB
     from src.feishu.card_builder import publish_receipt_text
-    from src.utils.accounts import for_platform
+    from src.utils.accounts import aspect_for_platform, for_platform
 
     # 配置项后置：顶层 `publish:` 段 + 步骤 params（params 优先），都不写死默认值
     from src.pipeline.contracts import load_pipeline
@@ -398,22 +396,25 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
 
     draft = _load_draft(ctx)
     dry_run = bool(params.get("dry_run", True))
-    aspect = str(params.get("aspect") or "vertical")
-    video, cover = _pick_media(ctx, aspect)
-    if not video.exists():
-        raise ExecutorError(f"待发布视频不存在: {video}")
+    # 方向按平台取（抖音竖版 / B站横版 / 视频号竖版）。params.aspect 只作为显式覆盖，
+    # 用于「只发单平台」的手工场景；三平台一起发时各平台用各自的方向。
+    forced_aspect = str(params.get("aspect") or "").strip()
 
     db = PipelineDB(str(ctx.db_path))
     from src.publish_ledger import (PublishBlocked, check_and_claim, record_outcome,
                                     release as ledger_release)
-    video_sha = hashlib.sha256(video.read_bytes()).hexdigest()
-    content_key = hashlib.sha256(
-        json.dumps(draft, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    del content_key  # 去重口径已下沉到 publish_ledger（平台|账号|内容哈希），此处不再自算
 
     for plat in platforms:
         account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
         acct_id = str(account.get("id") or "")
+
+        # 每个平台用自己的成片方向：竖版平台发 video.mp4，B站发 video_16_9.mp4
+        aspect = forced_aspect or aspect_for_platform(plat)
+        video, cover = _pick_media(ctx, aspect)
+        if not video.exists():
+            report["failed"].append({"platform": plat,
+                                     "error": f"缺 {aspect} 成片: {video.name}"})
+            continue
 
         # ---- 门禁3：平台发布台账（与飞书 send_ledger 分开，fail-closed）----
         try:
@@ -456,6 +457,20 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     # ---- 回执：发布结果只发这一张卡（≤100 字），全部被门禁拦下时不发 ----
     _title = str(draft.get("title") or "")
     report["receipt"] = publish_receipt_text(report, _title)
+    # 明细落文件（聊天里只发那一行摘要）：小品/用户要查 BVID、外部 id、失败原因看这里
+    detail = [f"# 发布明细 · {_title or ctx.run_id}", "",
+              f"- run_id: `{ctx.run_id}`", f"- 摘要: {report['receipt']}", "",
+              "| 平台 | 结果 | 外部 ID | 说明 |", "|---|---|---|---|"]
+    for it in report["published"]:
+        detail.append(f"| {it['platform']} | ✅ 已发布 | `{it.get('msg_id') or ''}` | {it.get('status') or ''} |")
+    for it in report["failed"]:
+        detail.append(f"| {it['platform']} | ❌ 失败 | — | {it.get('error') or ''} |")
+    for it in report["skipped"]:
+        detail.append(f"| {it.get('platform') or '—'} | ⏭ 跳过 | — | {it.get('reason') or ''} |")
+    try:
+        (ctx.run_root / "publish_detail.md").write_text("\n".join(detail) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"  ! 发布明细写入失败：{exc}")
     if (report["published"] or report["failed"]) and bool(
             (_pub_cfg.get("receipt", True))):
         try:
