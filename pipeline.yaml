@@ -62,6 +62,12 @@ contract:
       - DISPATCH_MODE
       - DOUYIN_CDP_URL                    # 抖音 CDP 调试端口地址（默认 http://127.0.0.1:9222）
       - CHANNELS_CDP_URL                  # 视频号常驻 Chrome CDP 地址（默认 http://127.0.0.1:9334，复用持久 profile 登录态）
+      - CHANNELS_CDP_PORT                 # 视频号 CDP 端口（默认 9334；与抖音 9333、Agent-Reach 9222 并列）
+      - CHANNELS_PROFILE_DIR              # 视频号持久化 profile 根目录（默认 data/browser_profiles/channels-tech；仅测试用）
+      - CHROME_PATH                       # Chrome/Chromium 可执行文件路径（缺省按候选列表探测）
+      # 2026-11-11 P0：B站上传解释器（需 bilibili_api）。缺省时 src/utils/py_interp.py
+      # 会对候选解释器逐个真 import 探测；设了就用它（不再硬编码 ~/.agent-reach 路径）
+      - BILI_PYTHON
       # 2026-11-11：僵尸 RUNNING 收尸（scripts/reap_stale_runs.py + runner 启动自检）
       - STALE_RUN_MINUTES                 # 多久没更新算进程已死（默认 15；最长单步渲染约 2.5 分钟）
       - PIPELINE_DB                       # 收尸 CLI 用的状态库路径（默认 data/pipeline_state.db）

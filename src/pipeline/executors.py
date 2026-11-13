@@ -237,8 +237,30 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     return {"video_16_9": str(video), "cover_16_9": str(cover)}
 
 
+def _prune_dangling_public_links() -> list[str]:
+    """删掉 `renderer/public/runs/` 下指向已删 run 的失效软链。
+
+    实测（2026-11-11 17:10）：Remotion bundler 会把整个 `public/` 递归
+    `copyDir → realpath`，任何一条悬空软链都让它 `ENOENT` 退出 —— 竖版横版同时失败
+    （`EXIT=64`），而报错指向 realpath，根本看不出是软链。清理必须发生在渲染之前，
+    且要覆盖**所有** run_id 的残留，不只是本次的。
+    """
+    runs_dir = RENDERER / "public" / "runs"
+    if not runs_dir.is_dir():
+        return []
+    pruned: list[str] = []
+    for child in sorted(runs_dir.iterdir()):
+        if child.is_symlink() and not child.exists():
+            child.unlink()
+            pruned.append(child.name)
+    if pruned:
+        print(f"  [render] 清理失效软链 {len(pruned)} 条: {', '.join(pruned)}")
+    return pruned
+
+
 def exec_render(ctx: StepContext) -> dict[str, str]:
     """builtin.render：按 params.aspect 分派竖版 / 横版（两者都只读 props）。"""
+    _prune_dangling_public_links()
     draft = _load_draft(ctx)
     aspect = str((ctx.params or {}).get("aspect") or "vertical")
     if aspect == "landscape":
@@ -324,7 +346,11 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
     if platform == "douyin":
         from src.providers.douyin import DouyinProvider
         body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=True)
-        return DouyinProvider(account).save_draft(
+        prov = DouyinProvider(account)
+        # 抖音识别无头（扫码/短信验证必失败）→ 默认有头；账号配置或步骤参数可覆盖
+        if "headless" in opts:
+            prov.headless_publish = bool(opts.get("headless"))
+        return prov.save_draft(
             video_path=str(video), cover_path=str(cover), title=title,
             topics=topics, content_text=body)
     if platform == "bilibili":
@@ -445,7 +471,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
         try:
             res = _invoke_provider(plat, account, video, cover, draft, dry_run=False,
                                    run_root=ctx.run_root,
-                                   opts={"headless": bool(params.get("headless", True)),
+                                   opts={"headless": bool(params.get("headless", False)),
                                          "stop_before_publish": bool(
                                              params.get("stop_before_publish", False))})
         except Exception as exc:  # noqa: BLE001 — 结果未知，禁止自动重发

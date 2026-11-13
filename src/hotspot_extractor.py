@@ -68,11 +68,18 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
 你必须只输出纯 JSON 字符串，严禁包含任何 Markdown 格式标记（如 ```json ）。"""
 
 def get_recent_pipeline_topics(limit: int = 50, exclude_task_id: str | None = None) -> list:
-    """从本地数据库获取最近已处理/已生成的短视频主题
+    """从本地数据库获取最近**真正出过片**的主题（排他黑名单）。
 
     exclude_task_id: 排除当前正在处理的 task_id。
     intake 会先把物料标题写入 content_tasks(entity_key)，若不排除，
     当前选题会被自己拉进「排他黑名单」，模型据此判重复而拒答。
+
+    缺陷③（2026-11-12）：「黄仁勋辞任」连续失败重试时，失败 run 的 intake 占位行
+    留在 `content_tasks` 里（status='intake'、无 draft），而它的 run 早已被清理，
+    于是黑名单把**当前要重做的选题**判成重复 —— dedupe 自锁，换 run-id 也没用。
+    现在只把「有 DONE run 的」或「已经进入发布流程的」行算作已制作过：
+      · status 属于占位/失败态，且同 task_id 没有 status='DONE' 的 run → 不算
+      · 其余（DISPATCHED/DONE/历史老数据）一律保留，宁可多排他，不可放过重复
     """
     db_path = PROJECT_ROOT / "data" / "pipeline_state.db"
     if not db_path.exists():
@@ -80,18 +87,26 @@ def get_recent_pipeline_topics(limit: int = 50, exclude_task_id: str | None = No
     try:
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
-        c.execute("SELECT task_id, entity_key, draft_script_json, created_at FROM content_tasks "
-                  "WHERE (? IS NULL OR task_id != ?) ORDER BY created_at DESC LIMIT ?",
-                  (exclude_task_id, exclude_task_id, limit))
+        c.execute(
+            "SELECT ct.task_id, ct.entity_key, ct.theme, ct.draft_script_json, ct.created_at "
+            "FROM content_tasks ct "
+            "WHERE (? IS NULL OR ct.task_id != ?) "
+            "  AND NOT ("
+            "      lower(coalesce(ct.status,'')) IN ('intake','blocked','failed','aborted','abandoned') "
+            "      AND NOT EXISTS (SELECT 1 FROM pipeline_runs r "
+            "                      WHERE r.task_id = ct.task_id AND r.status = 'DONE')"
+            "  ) "
+            "ORDER BY ct.created_at DESC LIMIT ?",
+            (exclude_task_id, exclude_task_id, limit))
         rows = c.fetchall()
         topics = []
-        for tid, ek, dj, cat in rows:
-            title = ""
+        for tid, ek, theme, dj, cat in rows:
+            title = str(theme or "")       # theme 列存的就是标题（persist_task 写入）
             slug = ""
             if dj:
                 try:
                     d = json.loads(dj)
-                    title = d.get("title", "")
+                    title = d.get("title") or title
                     slug = d.get("resource_keyword", "")
                 except Exception:
                     pass

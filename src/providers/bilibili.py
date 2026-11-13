@@ -71,10 +71,23 @@ class BilibiliProvider(BaseSocialProvider):
         if cookie_file.exists():
             try:
                 import subprocess
-                upload_script = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/scripts/bilibili_live_uploader.py")
+                from ..utils.py_interp import INSTALL_HINT, find_interpreter
+                upload_script = Path(__file__).resolve().parent.parent.parent / "scripts" / "bilibili_live_uploader.py"
+                bili_py, probes = find_interpreter()
+                if not bili_py:
+                    # 解释器不可用是**环境缺陷**，不是上传失败：必须报出每个候选的真因，
+                    # 否则只会看到笼统的 BILI_UPLOAD_FAILED（踩过一次）
+                    logger.error(f"没有可 import bilibili_api 的解释器: {probes}")
+                    return {
+                        "success": False,
+                        "error": "BILI_PYTHON_MISSING",
+                        "probes": probes,
+                        "message": f"没有可用的 B 站上传解释器（需 bilibili_api）："
+                                   f"设 BILI_PYTHON 指向它，或 {INSTALL_HINT}",
+                    }
                 if upload_script.exists():
                     cmd = [
-                        "/Users/a1/.agent-reach/tools/bili-cli/venv/bin/python3",
+                        bili_py,
                         str(upload_script),
                         "--video", video_path,
                         "--cover", cover_path,
@@ -88,10 +101,15 @@ class BilibiliProvider(BaseSocialProvider):
                     p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
                     if p.returncode != 0:
                         logger.error(f"Bilibili real upload failed: rc={p.returncode} stderr={p.stderr[-600:]}")
+                        # rc=2 是上传器的入参/依赖校验失败（确定没提交）；3 是被台账查重拦住
+                        tail = (p.stdout or "").strip().splitlines()
                         return {
                             "success": False,
                             "error": "BILI_UPLOAD_FAILED",
+                            "rc": p.returncode,
+                            "detail": tail[-1] if tail else "",
                             "stderr": p.stderr[-800:],
+                            "stdout": p.stdout[-800:],
                             "message": "B站真实上传失败，未产生稿件（拒绝虚报成功）"
                         }
                     real_data = json.loads(p.stdout.strip().splitlines()[-1])

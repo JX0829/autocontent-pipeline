@@ -155,7 +155,8 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 - 无人值守（cron/批处理）→ 用 `DISPATCH_MODE=output_only`，
   或 `APPROVAL_MODE=cli` + `APPROVAL_NONINTERACTIVE=approve`
 - 想限定谁能批 → `APPROVAL_ALLOWED_USERS=ou_xxx,ou_yyy`
-- 改超时 → `APPROVAL_TIMEOUT_SEC=1800`（pipeline.yaml 的 profile.timeout_sec 优先）
+- 改超时 → `APPROVAL_TIMEOUT_SEC=1800`（**env 优先**，覆盖 `pipeline.yaml` 的 `profile.timeout_sec`；
+  2026-11-13 之前是反的，env 被默认值吞掉，传 1800 实际仍是 600s → cyber77-1 静默 reject）
 
 ### 4.3 新增一个审批 provider（照着做，流程代码不用动）
 
@@ -318,6 +319,13 @@ seed_comment:
 
 > 首评失败绝不影响发布结果，但必须打出 `SEED_COMMENT_FAILED` / `SEED_COMMENT_UNSUPPORTED`，禁止静默。
 
+**B站上传器依赖的解释器**：`bilibili_live_uploader.py` 需要 `bilibili_api`，而项目解释器
+里没有（PEP 668 锁定装不进去）。`src/utils/py_interp.py` 按 `BILI_PYTHON` → 当前解释器 →
+常见候选**逐个真跑 `import bilibili_api`** 探测；一个都不可用时 provider 直接返回
+`BILI_PYTHON_MISSING` 并列出每个候选的失败原因（不再笼统报 `BILI_UPLOAD_FAILED`）。
+原来的硬编码路径 `~/.agent-reach/tools/bili-cli/venv/bin/python3` 已删除 —— 那条路径一被清理，
+B站发布就 100% 失败。
+
 ### 5.2 抖音发布：必须走 CDP 真机（**headless 必失败**）
 
 抖音对 headless 自动化有指纹识别（`navigator.webdriver`、`--remote-debugging-pipe`），
@@ -345,9 +353,14 @@ python3 scripts/publish_douyin_cdp.py --run-id <run_id>
 | 退出码 | 含义 |
 |---|---|
 | `0` | 已入库，且作品列表回读命中标题 |
-| `2` | 入参/环境错误（找不到产物、缺 title、账号配置缺失） |
+| `2` | 入参/环境错误（找不到产物、缺 title、账号配置缺失、**CDP 掉线**） |
 | `6` | 点发布后回读未命中（风控静默拦截），截图存 `output/douyin_diag/` |
 | `7` | 需要人工二次验证（短信/扫码），截图存 `output/douyin_diag/` |
+
+**掉线不留脏台账**：发布前先 `GET /json/version` 探活（3 秒超时），连不上直接 `rc=2`
+并打印 Chrome 启动命令（台账此时还没占位）；上传页准备阶段（**未点「发布」**）的异常
+同样只记 `failed`，下次可直接重试。点过「发布」之后的异常一律记 `unverified`，
+必须先回平台核对再动台账（`python3 -m src.publish_ledger --release <key>`）。
 
 **成功判据（只认这两个）**：作品数 `作品 (N)` → `作品 (N+1)`，且列表正文命中标题。
 脚本已内置幂等：标题已在列表中则直接跳过，不会重复发。
