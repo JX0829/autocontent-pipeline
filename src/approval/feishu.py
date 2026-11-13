@@ -152,6 +152,7 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
         return hits[0] if hits else None
 
     title = ""
+    desc = ""
     run_dir = _run_dir()
     try:
         cands = [artifacts.get("draft_script") if isinstance(artifacts, dict) else None]
@@ -162,6 +163,9 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
                 continue
             _d = json.loads(Path(cand).read_text(encoding="utf-8"))
             title = str(_d.get("title") or _d.get("short_title") or "")
+            # 正文：发布用的那段文案，优先 video_desc（真发出去的那份）
+            desc = str(_d.get("video_desc") or _d.get("fact_summary_150")
+                       or _d.get("hook_narration") or "")
             if title:
                 break
     except Exception as e:  # noqa: BLE001 — 取标题失败不影响审批
@@ -202,6 +206,7 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
                 delivered=True,
                 header_template=str(prof.get("header_template") or "blue"),
                 show_publish_matrix=bool(prof.get("show_publish_matrix", True)),
+                desc=desc,
             )
             msg_id = svc.send_approval_card(receive_id=receive_id,
                                             receive_id_type=rec_type, card_content=card)
