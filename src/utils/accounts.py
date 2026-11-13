@@ -22,6 +22,20 @@ import yaml
 PROJ = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PATH = PROJ / "config" / "accounts.yaml"
 
+# 平台 → 默认视频方向（平台规则，不是账号字面量；账号一律从 accounts.yaml 读）。
+# 唯一来源：审批卡片展示、publish 步选片都读这里，避免两边各写一份再漂移。
+PLATFORM_ASPECT: dict[str, str] = {
+    "douyin": "vertical",
+    "bilibili": "landscape",
+    "channels": "vertical",
+    "weixin": "vertical",
+}
+
+
+def aspect_for_platform(platform: str) -> str:
+    """平台默认成片方向；未知平台按竖版处理（发布前会先按平台校验账号）。"""
+    return PLATFORM_ASPECT.get(str(platform).lower(), "vertical")
+
 
 class AccountConfigError(RuntimeError):
     """账号配置不可用（缺失 / 为空 / 平台下无启用账号）。"""

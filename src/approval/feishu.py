@@ -20,13 +20,8 @@ from typing import Any
 
 logger = logging.getLogger("approval.feishu")
 
-# 平台 → 默认视频方向（这是平台规则，不是账号字面量；账号一律从 accounts.yaml 读）
-PLATFORM_ASPECT: dict[str, str] = {
-    "douyin": "vertical",
-    "bilibili": "landscape",
-    "channels": "vertical",
-    "weixin": "vertical",
-}
+# 平台 → 默认视频方向：唯一来源在 src/utils/accounts.py（publish 步选片也读它）
+from src.utils.accounts import PLATFORM_ASPECT  # noqa: E402
 
 
 def _publish_targets() -> list[dict[str, Any]]:
