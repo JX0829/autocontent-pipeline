@@ -52,6 +52,7 @@ def main() -> None:
                        (task_id, source_url, entity_key, theme, target_account_id, status, fact_summary_150)
                    values (?,?,?,?,?,?,?)
                    on conflict(entity_key) do update set
+                       task_id=excluded.task_id,
                        theme=excluded.theme,
                        target_account_id=excluded.target_account_id,
                        updated_at=CURRENT_TIMESTAMP""",

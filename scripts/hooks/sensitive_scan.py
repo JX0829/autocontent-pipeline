@@ -36,6 +36,25 @@ def _words() -> list[str]:
     return out
 
 
+def _split_draft(draft) -> tuple[str, str]:
+    """把 draft 拆成 (会原样发布的文本, 流水线会自动改写的文本)。
+
+    缺陷①的根因就是这两类没分开：标题/正文/封面文案会原样进物料与发布，
+    而旁白在 `align_tts` 那步会被 `src/safety/rewrites.py` 统一改写。
+    前者命中敏感词必须 block，后者命中属于「门禁预览」，改写后不算违规。
+    """
+    if not isinstance(draft, dict):
+        return C.text_of(draft), ""
+    persisted = [str(draft.get("title") or ""), str(draft.get("cover_sub_text") or "")]
+    rewritable = [str(draft.get("hook_narration") or "")]
+    for sc in draft.get("scenes") or []:
+        if isinstance(sc, dict):
+            for k in ("segment_narration", "narration", "subtitle"):
+                if sc.get(k):
+                    rewritable.append(str(sc[k]))
+    return "\n".join(p for p in persisted if p), "\n".join(p for p in rewritable if p)
+
+
 def main() -> None:
     p = C.load_payload()
     c = C.ctx(p)
@@ -43,31 +62,43 @@ def main() -> None:
     draft = c.get("draft") or C.read_json(C.artifact(p, "draft_script"))
     narration = c.get("narration") or ""
 
-    targets = {
-        "title": str(man.get("title") or ""),
-        "body": str(man.get("body") or ""),
-        "draft": C.text_of(draft),
-        "narration": C.text_of(narration),
-        "cover_text": str(c.get("cover_text") or ""),
-    }
-    blob = "\n".join(v for v in targets.values() if v)
-    if not blob.strip():
+    from src.safety.rewrites import apply_rewrites
+
+    draft_persisted, draft_rewritable = _split_draft(draft)
+    # 原样发布的部分：命中即 block
+    persisted = "\n".join(v for v in (
+        str(man.get("title") or ""),
+        str(man.get("body") or ""),
+        draft_persisted,
+        str(c.get("cover_text") or ""),
+    ) if v)
+    # 会被 aligner 改写的部分：先按改写表预览，改完仍命中才算违规
+    rewritable_raw = "\n".join(v for v in (draft_rewritable, C.text_of(narration)) if v)
+    rewritable, rewritten = apply_rewrites(rewritable_raw)
+
+    if not (persisted.strip() or rewritable.strip()):
         C.fail("sensitive_scan: 无可扫描文本（manifest/draft 全空）")
 
     hits: list[str] = []
-    lowered = blob.lower()
     for w in _words():
-        if w.lower() in lowered:
-            hits.append(f"sensitive_word:{w}")
+        low = w.lower()
+        if low in persisted.lower():
+            hits.append(f"sensitive_word:{w}@title/body（原样发布，请改物料）")
+        elif low in rewritable.lower():
+            hits.append(f"sensitive_word:{w}@旁白（改写表未覆盖）")
     for pat in INJECTION_PATTERNS:
-        m = re.search(pat, blob)
+        m = re.search(pat, persisted + "\n" + rewritable_raw)
         if m:
             hits.append(f"injection_pattern:{m.group(0)[:24]}")
 
     if hits:
         C.fail("sensitive_scan: 命中 " + ", ".join(sorted(set(hits))[:6]), hits=sorted(set(hits))[:20])
 
-    C.emit(True, patch={"sensitive_scan": "clean", "scanned_chars": len(blob)})
+    C.emit(True, patch={
+        "sensitive_scan": "clean",
+        "scanned_chars": len(persisted) + len(rewritable),
+        "rewritten": rewritten,
+    })
 
 
 if __name__ == "__main__":

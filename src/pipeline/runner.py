@@ -177,6 +177,23 @@ def print_plan(cfg: dict[str, Any], start_index: int = 0) -> None:
         print(f"  （按 --resume 从第 {start_index + 1} 步继续）")
 
 
+def rewind_to_missing(cfg: dict[str, Any], run_root: Path, start_index: int) -> tuple[int, str]:
+    """把断点回退到最早一个「标了 DONE 但产物已不在」的步骤。
+
+    缺陷④（2026-11-12）：「黄仁勋辞任」第 4/5 次重试时，断点把 render_vertical 之前的
+    步骤全当已完成 SKIP 掉，可那边 video.mp4 根本没落盘（渲染失败 / 软链失效 / 目录被清），
+    于是既不重渲、又在对账阶段报「缺产物 video.mp4」→ 永远修不好。
+    现在按产物反查：最早缺失的那一步就是真正的断点。
+    """
+    if start_index <= 0:
+        return start_index, ""
+    for i, step in enumerate(cfg["steps"][:start_index]):
+        miss = verify_produces(step, run_root)
+        if miss:
+            return i, f"{step['id']} 标记已完成但产物缺失（{miss[0]}）"
+    return start_index, ""
+
+
 def reconcile(cfg: dict[str, Any], run_root: Path, upto: int | None = None) -> list[str]:
     """产物对账：run_root 不存在则视为尚未产出（dry-run 正常情况）。
 
@@ -875,10 +892,18 @@ def main(argv: list[str] | None = None) -> int:
         start_index, why = resume_point(run_id, step_ids, Path(args.db))
         label = "断点续跑" if args.resume else "同内容重试续跑"
         print(f"\n=== {label} ===\n  {why}")
+        # ④ 断点里标 DONE 但产物不在 → 回退到那一步重做（否则跳渲染、只报对账失败）
+        pulled, pulled_why = rewind_to_missing(cfg, run_root, start_index)
+        if pulled < start_index:
+            print(f"\n=== 断点回退 ===\n  {pulled_why}\n"
+                  f"  从第 {start_index + 1} 步回退到第 {pulled + 1} 步（{step_ids[pulled]}）重做")
+            start_index = pulled
 
     # 5. 计划 + 对账
+    # ④ 旧实现对 auto_resume 传 upto=None，会把「马上要重做的 render」也算进必须已有产物，
+    #    于是必定「拒绝执行：产物对账不通过」—— 无法自愈的死锁。统一只对账已完成的部分。
     print_plan(cfg, start_index)
-    missing = reconcile(cfg, run_root, upto=start_index if args.resume else None)
+    missing = reconcile(cfg, run_root, upto=start_index)
     if missing and not args.dry_run:
         print("\n拒绝执行：产物对账不通过 → " + "; ".join(missing[:3]))
         return EXIT_CONTRACT
