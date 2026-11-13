@@ -368,8 +368,10 @@ ls -d output/2026*/ | awk -F/ '$2 < "'$(date -v-2d +%Y%m%d)'"' | xargs trash
 
 ## 6. 三平台发布（现状必须分清）
 
-**这三条都是独立 CLI，不挂在 runner 上**（`grep -rn "publish_channels\|publish_douyin_cdp" src/pipeline/` 为空）。
-runner 跑完只代表「片子出来了 + 飞书收到了」，要发布得手动执行下面的命令。
+**发布入口现在收口在 pipeline 内**：`deliver → approval → publish`（`publish.enabled` 默认 false）。
+下面的 CLI 是**薄壳**——发布与文案都走 `src/pipeline/executors._invoke_provider`，只保留
+`--probe` / `--dry-run` / `--stop-before-publish` / 台账运维这些手工动作（2026-11-11 收敛，见 §7.5）。
+runner 跑完只代表「片子出来了 + 飞书收到了」，要公开发布仍需审批 + 打开门禁。
 
 | 平台 | 实现 | 公开发布 | AI 合成声明 | 原创 |
 |---|---|---|---|---|
@@ -572,6 +574,42 @@ ls -la data/approvals/
 
 > 兜底：文字回复 `approve` / `reject` 仍然有效（`ask()` 同时扫会话回复与裁决文件），
 > 按钮挂了不至于卡死审批。
+
+---
+
+### 7.5 发布回执卡（≤100 字，2026-11-11）
+
+发布结果**只发这一张卡**：`src/feishu/card_builder.build_publish_receipt()`，
+摘要由 `publish_receipt_text(report, title, limit=100)` 生成，`pipeline.yaml` 的
+`publish.receipt: true` 控制开关（默认开）。
+
+```
+《Edge0开源145B…》✅ 已发布 3/3：抖音·B站·视频号
+《Claude双版本炸场》⚠️ 2/3 成功｜B站失败：登录过期
+⚠️ 0/3 成功｜抖音、B站 等3个失败：未确认发布
+《Qwen4开源》⏭ 未发布（1 项被门禁拦下）
+```
+
+- 错误码做中文化映射（`LOGIN_EXPIRED`→登录过期、`PUBLISH_SIGNAL_MISSING`→未确认发布…），
+  **不会把英文截半**；未知码取中文部分前 8 字
+- 全部被门禁拦下时不发卡（避免噪音）；发送失败只打印，**不改变发布结论**
+- 回执卡唯一实现在 `card_builder`，pipeline（`exec_publish`）和
+  `scripts/publish_channels.py` 都调 `executors.send_publish_receipt()`
+
+**为什么之前回执很长**：仓库里根本没有回执模板，每次由 agent 现写（网关日志实测
+最长 8701 字）。现在结果落成确定性卡片，agent 不需要再复述。
+
+**发布入口收敛**：`scripts/publish_channels.py` 从 197 行降到 ~150 行，只保留
+`--probe` / `--dry-run` / `--stop-before-publish` / 台账查重，发布与文案都走
+`src/pipeline/executors._invoke_provider`。同时修掉两处历史分叉：
+
+| 历史分叉 | 现状 |
+|---|---|
+| `compose_caption_body()` 写死收尾语「它不接管整个项目，只把流程拆成可复用的几步」，且 `load_run()` 算完即弃 | 已删除，文案统一走 `src/utils/video_desc` |
+| `_invoke_provider` 硬编码 `declare_original=True, declare_aigc=True`，与 `accounts.yaml` 的 `channels-tech-main: declare_aigc: false` 矛盾 | 改为从账号配置读；CLI 可用 `--no-original` / `--no-aigc` 覆盖 |
+
+> 渠道自己的配置文件（`config/accounts.yaml`、`config/platform_policies.yaml`）**不动**，
+> 收敛只发生在代码侧。
 
 ---
 
