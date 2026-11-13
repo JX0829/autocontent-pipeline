@@ -61,11 +61,14 @@ def style_approval_minimal(
     note: str = "",
     desc: str = "",
 ) -> dict[str, Any]:
-    """极简版：标题 + 正文 + 时间戳，适合群里消息很多、不想刷屏的场景。"""
-    lines = [f"**{title or run_id}**", f"`{run_id}`"]
+    """极简版：标题 + 详情两个代码块，适合群里消息很多、不想刷屏的场景。"""
     _desc = " ".join(str(desc or "").split())
+    if len(_desc) > 200:
+        _desc = _desc[:199] + "…"
+    lines = [f"```\n{title or run_id}\n```"]
     if _desc:
-        lines.append(f"**正文**：{_desc if len(_desc) <= 200 else _desc[:199] + '…'}")
+        lines.append(f"```\n{_desc}\n```")
+    lines.append(f"`{run_id}`")
     if note:
         lines.append(note)
     lines.append("回复 **approve** 发布 / **reject** 放弃")

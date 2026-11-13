@@ -117,28 +117,32 @@ def test_v2() -> None:
 
 
 def test_title_and_desc() -> None:
-    """卡头 = 视频标题（不是 run_id），正文 = 发布文案（≤200 字，超长截断）。"""
+    """两个代码块：块1 = 标题，块2 = 详情（≤200 字，超长截断）。"""
     desc = "谷歌在11月12日发布Gemini 4 Hydrogen，当天向所有用户开放。" * 6
     card = get_style("approval_v2")(run_id="run-9", title="Gemini4 Hydrogen发布",
                                     targets=TARGETS, desc=desc)
     head = (card.get("header") or {}).get("title", {}).get("content", "")
     check("v2: 卡头用视频标题", head == "【待审批】Gemini4 Hydrogen发布")
     check("v2: 卡头不再只有 run_id", "run-9" not in head)
-    body = json.dumps(card.get("body") or {}, ensure_ascii=False)
-    check("v2: 正文区出现「正文」", "**正文**：" in body)
-    check("v2: 正文超 200 字被截断", "…" in body and desc not in body)
-    check("v2: 正文短文本完整展示", "当天向所有用户开放" in body)
+
+    blocks = [e.get("content", "") for e in (card.get("body") or {}).get("elements", [])
+              if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("```")]
+    check("v2: 恰好两个代码块（标题 + 详情）", len(blocks) == 2)
+    check("v2: 代码块1 是标题", bool(blocks) and "Gemini4 Hydrogen发布" in blocks[0])
+    check("v2: 代码块2 是详情", len(blocks) > 1 and "当天向所有用户开放" in blocks[1])
+    check("v2: 详情超 200 字被截断", len(blocks) > 1 and "…" in blocks[1] and desc not in blocks[1])
 
     no_desc = get_style("approval_v2")(run_id="run-9", title="T", targets=TARGETS)
-    check("v2: 无正文时不出现空「正文」行",
-          "**正文**" not in json.dumps(no_desc.get("body") or {}, ensure_ascii=False))
+    nb = [e for e in (no_desc.get("body") or {}).get("elements", [])
+          if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("```")]
+    check("v2: 无详情时只有一个代码块", len(nb) == 1)
 
     mini = get_style("approval_minimal")(run_id="run-9", title="Gemini4 Hydrogen发布",
                                         desc="一句话文案")
     mblob = json.dumps(mini, ensure_ascii=False)
-    check("minimal: 卡头用视频标题 + 正文在位",
+    check("minimal: 卡头用视频标题 + 两个代码块",
           (mini.get("header") or {}).get("title", {}).get("content")
-          == "【待审批】Gemini4 Hydrogen发布" and "一句话文案" in mblob)
+          == "【待审批】Gemini4 Hydrogen发布" and mblob.count("```") == 4)
 
 
 def test_minimal() -> None:
