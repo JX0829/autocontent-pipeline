@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# hook 是**子进程**跑（引擎 spawn），拿不到父进程的 sys.path，
+# 所以凡是 import src.* 的 hook 都必须自己把项目根塞进来（否则 ModuleNotFoundError: src）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import _common as C  # noqa: E402
 
 INJECTION_PATTERNS = [
@@ -45,7 +48,11 @@ def _split_draft(draft) -> tuple[str, str]:
     """
     if not isinstance(draft, dict):
         return C.text_of(draft), ""
-    persisted = [str(draft.get("title") or ""), str(draft.get("cover_sub_text") or "")]
+    REWRITABLE_KEYS = {"hook_narration", "scenes", "segment_narration", "narration", "subtitle"}
+    # fail-closed：凡是不在「会被 aligner 改写」白名单里的字符串字段，一律当作会原样发布
+    # （曾经漏了 draft.body —— 敏感词写进 body 就完全扫不到，负向用例直接变绿）
+    persisted = [str(v) for k, v in draft.items()
+                 if k not in REWRITABLE_KEYS and isinstance(v, str) and v.strip()]
     rewritable = [str(draft.get("hook_narration") or "")]
     for sc in draft.get("scenes") or []:
         if isinstance(sc, dict):
