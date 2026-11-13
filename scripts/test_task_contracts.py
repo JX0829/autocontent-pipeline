@@ -495,7 +495,7 @@ def test_p0_blockers() -> None:
                                           f"{[p['reason'] for p in probes][-1:]}")
     else:
         bad_video = subprocess.run(
-            [bili_py, "scripts/bilibili_live_uploader.py", "--video", "/tmp/__p0_none__.mp4",
+            [bili_py, "scripts/bilibili_live_uploader.py", "--force", "--video", "/tmp/__p0_none__.mp4",
              "--title", "P0", "--desc", "x", "--tags", "科技"],
             cwd=str(PROJ), capture_output=True, text=True, timeout=120)
         if bad_video.returncode == 2 and "视频不存在" in bad_video.stdout \
@@ -506,7 +506,7 @@ def test_p0_blockers() -> None:
                 f"rc={bad_video.returncode} err={bad_video.stderr.strip()[-120:]}")
 
         blank = subprocess.run(
-            [bili_py, "scripts/bilibili_live_uploader.py", "--video", "/tmp/__p0_none__.mp4",
+            [bili_py, "scripts/bilibili_live_uploader.py", "--force", "--video", "/tmp/__p0_none__.mp4",
              "--title", "   ", "--desc", "x", "--tags", "科技"],
             cwd=str(PROJ), capture_output=True, text=True, timeout=120)
         if blank.returncode == 2 and "title" in blank.stdout:
@@ -525,7 +525,7 @@ def test_p0_blockers() -> None:
             check_and_claim("bilibili", "bilibili-tech-main", video, "P0",
                             path=Path(tmpdir) / "ledger.sqlite")
             blocked = subprocess.run(
-                [bili_py, "scripts/bilibili_live_uploader.py", "--video", str(video),
+                [bili_py, "scripts/bilibili_live_uploader.py", "--force", "--video", str(video),
                  "--title", "P0", "--desc", "x", "--tags", "科技"],
                 cwd=str(PROJ), capture_output=True, text=True, timeout=120, env=env)
             if blocked.returncode == 3 and "blocked" in blocked.stdout:
