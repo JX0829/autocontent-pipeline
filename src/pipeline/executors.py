@@ -404,6 +404,19 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     from src.publish_ledger import (PublishBlocked, check_and_claim, record_outcome,
                                     release as ledger_release)
 
+    # 点完按钮到发布结束有 1~3 分钟空窗 —— 立刻把审批卡原地改成「发布中」，
+    # 审批人不用盯着聊天等消息。
+    from src.approval.feishu import update_card_status
+
+    _card_title = str(draft.get("title") or "")
+    try:
+        _by = str(json.loads(ap_path.read_text(encoding="utf-8")).get("decided_by") or "approval")
+    except Exception:  # noqa: BLE001
+        _by = "approval"
+    update_card_status(ctx.run_id, f"⏳ 发布中 · {_card_title}", "blue",
+                       [f"已批准（{_by}），正在发布到 {'、'.join(platforms)} …",
+                        "完成后本卡会更新为结果，无需再发消息"])
+
     for plat in platforms:
         account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
         acct_id = str(account.get("id") or "")
@@ -479,6 +492,24 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
             print(f"  ! 发布回执发送失败（不影响发布结论）：{type(exc).__name__}: {exc}")
 
     _out()
+    # 发布结论回写同一张审批卡（✅ 2/2 / ⚠️ 2/3），卡片和回执卡各司其职
+    _ok, _bad = len(report["published"]), len(report["failed"])
+    _total = _ok + _bad
+    if _bad:
+        _head, _tpl = f"⚠️ {_ok}/{_total} 成功 · {_card_title}", "orange"
+    elif _ok:
+        _head, _tpl = f"✅ 已发布 {_ok}/{_total} · {_card_title}", "green"
+    else:
+        _head, _tpl = f"⏭ 未发布 · {_card_title}", "grey"
+    _lines = [publish_receipt_text(report, "")]
+    for _r in report["published"]:
+        _lines.append(f"- ✅ {_r.get('platform')} · `{_r.get('msg_id') or ''}`")
+    for _r in report["failed"]:
+        _lines.append(f"- ❌ {_r.get('platform')}：{str(_r.get('error') or '')[:80]}")
+    for _r in report["skipped"]:
+        _lines.append(f"- ⏭ {_r.get('platform')}：{str(_r.get('reason') or '')[:60]}")
+    update_card_status(ctx.run_id, _head, _tpl, _lines)
+
     if report["failed"]:
         raise ExecutorError("发布失败: " + ", ".join(str(f.get("platform")) for f in report["failed"]))
     return _out()
