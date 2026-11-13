@@ -114,21 +114,46 @@ class DouyinProvider(BaseSocialProvider):
         )
         return context, browser
 
+    #: 登录页的正文特征（2026-11-13 实测：登录页 URL 也在 creator-micro 下，
+    #: 只看 URL 会把未登录判成已登录，正是 llamacpp-v1-1 那天「检查说有登录、
+    #: 真发时 LOGIN_REQUIRED」的来源）。
+    LOGIN_PAGE_MARKERS = ("扫码登录", "验证码登录", "密码登录", "登录即代表同意")
+
+    def _is_login_page(self, page) -> bool:
+        """页面是否落在登录墙：URL 命中 passport，或正文出现登录页特征。"""
+        url = (page.url or "").lower()
+        if "passport.douyin.com" in url or "/login" in url:
+            return True
+        try:
+            body = page.inner_text("body")[:2000]
+        except Exception:  # noqa: BLE001 — 取不到正文按未登录处理（fail-closed）
+            return True
+        return sum(1 for m in self.LOGIN_PAGE_MARKERS if m in body) >= 2
+
     def check_login_status(self) -> bool:
-        """
-        检查当前 profile 是否已在抖音创作者中心登录
+        """检查当前 profile 是否**真的**已登录创作者中心（fail-closed）。
+
+        CDP 模式下走 `_get_browser_context` 的接管分支，判据与发布流程一致：
+        不看 URL 猜，看登录页特征。
         """
         try:
             with sync_playwright() as p:
                 context, browser = self._get_browser_context(p, headless=None)
                 page = context.new_page()
-                page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=30000)
+                page.goto(self.UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
                 time.sleep(2)
-                
-                current_url = page.url
-                is_logged_in = "creator-micro" in current_url and ("passport.douyin.com" not in current_url)
+
+                logged_in = not self._is_login_page(page)
+                if not logged_in:
+                    logger.warning(
+                        f"[douyin] 未登录：profile={self.profile_name}"
+                        f"{'，cdp=' + self.cdp_url if getattr(self, 'cdp_url', '') else ''}"
+                        f"，URL={page.url[:80]}")
                 browser.close()
-                return is_logged_in
+                return logged_in
+        except cdp_session.CdpError as e:
+            logger.error(f"[douyin] 登录检查失败（CDP）：{e}")
+            return False
         except Exception as e:
             logger.warning(f"Error checking Douyin login status: {e}")
             return False

@@ -107,8 +107,38 @@ def test_unavailable_surface() -> None:
     tmp.unlink(missing_ok=True)
 
 
+class _FakePage:
+    """只实现 _is_login_page 用到的两个口子。"""
+
+    def __init__(self, url: str, body: str):
+        self.url = url
+        self._body = body
+
+    def inner_text(self, sel: str) -> str:
+        return self._body
+
+
+def test_login_page_detector() -> None:
+    """llamacpp-v1-1 那天 check_login_status 返回 True 却 LOGIN_REQUIRED：
+    登录页 URL 也在 creator-micro 下，旧判据只看 URL 就误判成已登录。"""
+    from src.providers.douyin import DouyinProvider
+    prov = DouyinProvider({"id": "douyin-test", "cdp_url": "",
+                           "profile_path": "./data/browser_profiles/douyin-test"})
+    login_body = "抖音创作者的一站式创作与服务平台 扫码登录 验证码登录 密码登录 登录即代表同意"
+    check("R4 登录页（URL 含 creator-micro）必须判定未登录",
+          prov._is_login_page(_FakePage(
+              "https://creator.douyin.com/creator-micro/content/upload", login_body)) is True)
+    check("R4 已登录工作台不误判",
+          prov._is_login_page(_FakePage(
+              "https://creator.douyin.com/creator-micro/content/upload",
+              "发布视频 作品管理 数据中心 互动管理")) is False)
+    check("R4 passport 跳转判定未登录",
+          prov._is_login_page(_FakePage("https://passport.douyin.com/login", "")) is True)
+
+
 def main() -> int:
     test_resolve()
+    test_login_page_detector()
     test_probe()
     test_exclusive()
     test_connect_keeps_chrome_alive()
