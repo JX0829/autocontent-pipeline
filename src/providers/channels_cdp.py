@@ -69,8 +69,16 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
         state = self._state_path()
         if not state.exists():
-            return {"success": False, "published": False, "status": "NO_STORAGE_STATE",
-                    "message": f"缺少登录态 {state}，先跑 scripts/channels_login.py 扫码登录"}
+            # 常驻 Chrome（CDP 9334）用的是持久 profile，登录态在 profile 里而不是 storage_state.json
+            cdp_url = os.getenv("CHANNELS_CDP_URL", "http://127.0.0.1:9334")
+            try:
+                import urllib.request
+                urllib.request.urlopen(f"{cdp_url.rstrip('/')}/json/version", timeout=3).read()
+                logger.info(f"[CHANNELS] 无 storage_state，但常驻 Chrome 在线（{cdp_url}），走 CDP 登录态")
+            except Exception:  # noqa: BLE001
+                return {"success": False, "published": False, "status": "NO_STORAGE_STATE",
+                        "message": f"缺少登录态 {state}，且常驻 Chrome({cdp_url}) 不可达；"
+                                   f"先跑 scripts/channels_login.py 扫码登录"}
 
         return asyncio.run(self._publish_live_async(
             video_path=video_path, cover_path=cover_path, title=title,
@@ -103,12 +111,27 @@ class ChannelsCDPProvider(BaseSocialProvider):
         shot_dir = Path(self.profile_path)
 
         async with async_playwright() as p:
-            # 本机 playwright 未下载自带 chromium，复用系统 Chrome（channel="chrome"）
-            browser = await p.chromium.launch(headless=headless, channel="chrome",
-                                              args=["--no-sandbox",
-                                                    "--disable-blink-features=AutomationControlled"])
-            ctx = await browser.new_context(storage_state=str(self._state_path()),
-                                            viewport={"width": 1440, "height": 900})
+            # 优先复用**常驻有头 Chrome**（CDP 9334，持久 profile 里是已登录态）。
+            # 用户明确要求：视频号不许用无头浏览器（页面全黑），也不许每次新开 profile
+            # —— 新 profile 没有登录态，一进首页就被重定向到登录页。
+            cdp_url = os.getenv("CHANNELS_CDP_URL", "http://127.0.0.1:9334")
+            used_cdp = False
+            browser = None
+            ctx = None
+            try:
+                browser = await p.chromium.connect_over_cdp(cdp_url, timeout=8000)
+                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                used_cdp = True
+                logger.info(f"[CHANNELS] 复用常驻 Chrome（{cdp_url}），沿用已登录 profile")
+            except Exception as e:  # noqa: BLE001 — 常驻 Chrome 没开就走有头回退
+                logger.warning(f"[CHANNELS] 连不上常驻 Chrome({cdp_url}): {e} —— 回退有头启动")
+                browser = await p.chromium.launch(headless=False, channel="chrome",
+                                                  args=["--no-sandbox",
+                                                        "--disable-blink-features=AutomationControlled"])
+                ctx = await browser.new_context(storage_state=str(self._state_path()),
+                                                viewport={"width": 1440, "height": 900})
+            if headless:
+                logger.warning("[CHANNELS] 视频号不支持无头（页面全黑），本次按有头执行")
             page = await ctx.new_page()
             try:
                 await page.goto(self.HOME_URL, wait_until="domcontentloaded", timeout=60000)
@@ -422,7 +445,14 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                 else "已点击发表但未取得平台侧证据，请人工确认（不虚报成功）"),
                 }
             finally:
-                await browser.close()
+                if used_cdp:
+                    # 常驻 Chrome 是用户自己的浏览器，只关掉我们开的 page，绝不 close 浏览器
+                    try:
+                        await page.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    await browser.close()
 
     def save_draft(
         self,
