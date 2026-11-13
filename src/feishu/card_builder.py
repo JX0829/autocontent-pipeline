@@ -84,6 +84,7 @@ class FeishuCardBuilder:
         targets: Optional[list[Dict[str, Any]]] = None,
         delivered: bool = True,
         note: str = "",
+        desc: str = "",
     ) -> Dict[str, Any]:
         """审批 Card 2.0：说明本次将发布到哪些平台、各平台怎么发，底部两个按钮。
 
@@ -91,6 +92,9 @@ class FeishuCardBuilder:
         后台若已订阅卡片回调可直接接住，两边不冲突。
         """
         lines = [f"**标题**：{title or '（无标题）'}", f"**任务**：`{run_id}`"]
+        _desc = " ".join(str(desc or "").split())
+        if _desc:
+            lines.append(f"**正文**：{_desc if len(_desc) <= 200 else _desc[:199] + '…'}")
         if delivered:
             lines.append("成片与封面已在上一条消息交付，请先看片再确认。")
         if targets:
