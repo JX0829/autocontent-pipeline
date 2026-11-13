@@ -140,18 +140,51 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
 
     # 审批消息用 Card 2.0（交互卡片）：把"将发布到哪些平台、各平台怎么发"写清楚，
     # 附两个按钮；决策仍以回复 approve / reject 为权威路径（按钮回调可选）。
+    # 标题优先取 artifacts 里的 draft_script；取不到就按 run_id 到 output/*/<run_id>/ 找。
+    # （断点续跑 / 手工重入时 artifacts 可能是空的，以前会发出一张标题、正文都空白的卡）
+    def _run_dir() -> Path | None:
+        for key in ("draft_script", "video", "video_16_9", "cover"):
+            p = artifacts.get(key) if isinstance(artifacts, dict) else None
+            if p and Path(p).exists():
+                return Path(p).parent
+        hits = sorted((PROJ / "output").glob(f"*/{run_id}"), key=lambda p: p.stat().st_mtime,
+                      reverse=True)
+        return hits[0] if hits else None
+
     title = ""
+    run_dir = _run_dir()
     try:
-        dp_art = artifacts.get("draft_script") if isinstance(artifacts, dict) else None
-        if dp_art and Path(dp_art).exists():
-            _d = json.loads(Path(dp_art).read_text(encoding="utf-8"))
+        cands = [artifacts.get("draft_script") if isinstance(artifacts, dict) else None]
+        if run_dir:
+            cands.append(str(run_dir / "draft_script.json"))
+        for cand in cands:
+            if not cand or not Path(cand).exists():
+                continue
+            _d = json.loads(Path(cand).read_text(encoding="utf-8"))
             title = str(_d.get("title") or _d.get("short_title") or "")
+            if title:
+                break
     except Exception as e:  # noqa: BLE001 — 取标题失败不影响审批
         logger.debug(f"读取 draft_script 标题失败，卡片标题留空: {e}")
+    if not title:
+        logger.warning(f"审批卡标题为空（run={run_id}）：draft_script 里没有 title/short_title")
+        print(f"  ! 审批卡标题为空：run={run_id} 的 draft_script.json 里没有 title/short_title")
 
     since_ms = int(time.time() * 1000) - 5000      # 容忍 5s 时钟偏差
     msg_id = None
     chat_id = ""
+    # 同一个 run 只发一张审批卡：断点续跑 / 超时重入时复用已发的 msg_id。
+    # 以前每重入一次就再发一张，用户会看到两张"长得一样又不完全一样"的审批卡。
+    card_rec = (run_dir / "approval_card.json") if run_dir else (dp.parent / f"{run_id}.card.json")
+    if card_rec.exists():
+        try:
+            _r = json.loads(card_rec.read_text(encoding="utf-8"))
+            if str(_r.get("run_id") or "") == run_id and _r.get("msg_id"):
+                msg_id = str(_r["msg_id"])
+                chat_id = str(_r.get("chat_id") or "")
+                print(f"  [approval] 复用已发审批卡 msg_id={msg_id}（同一 run 不重复发卡）")
+        except Exception as e:  # noqa: BLE001 — 记录损坏就按未发卡处理
+            logger.debug(f"读取 approval_card.json 失败，按未发卡处理: {e}")
     try:
         from src.approval.styles import DEFAULT_STYLE, get_style
 
@@ -161,18 +194,22 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
             logger.warning(f"{e}；已回落到 {DEFAULT_STYLE}")
             style_fn = get_style(DEFAULT_STYLE)
 
-        card = style_fn(
-            run_id=run_id,
-            title=title,
-            targets=_publish_targets(),
-            delivered=True,
-            header_template=str(prof.get("header_template") or "blue"),
-            show_publish_matrix=bool(prof.get("show_publish_matrix", True)),
-        )
-        msg_id = svc.send_approval_card(receive_id=receive_id,
-                                        receive_id_type=rec_type, card_content=card)
-        if msg_id:
-            chat_id = receive_id if rec_type == "chat_id" else ""
+        if not msg_id:
+            card = style_fn(
+                run_id=run_id,
+                title=title,
+                targets=_publish_targets(),
+                delivered=True,
+                header_template=str(prof.get("header_template") or "blue"),
+                show_publish_matrix=bool(prof.get("show_publish_matrix", True)),
+            )
+            msg_id = svc.send_approval_card(receive_id=receive_id,
+                                            receive_id_type=rec_type, card_content=card)
+            if msg_id:
+                chat_id = receive_id if rec_type == "chat_id" else ""
+                card_rec.write_text(json.dumps(
+                    {"run_id": run_id, "msg_id": msg_id, "chat_id": chat_id,
+                     "at": int(time.time())}, ensure_ascii=False), encoding="utf-8")
     except Exception as e:  # noqa: BLE001 — 卡片失败必须降级到文本，不能卡住审批
         logger.warning(f"审批卡片发送失败，降级为文本: {e}")
         msg_id = None
