@@ -627,6 +627,22 @@ python3 -m src.pipeline.runner --material materials/<物料>.json \
 
 > 使用方（小品）只跑这一条命令，不直接调 provider、不改配置；问题写复现交开发。
 
+### 7.7 单平台 CLI 已废弃（默认拒绝）
+
+`publish_channels.py` / `publish_douyin_cdp.py` / `bilibili_live_uploader.py` 仍保留，但**不带 `--force` 直接退出 2**：
+
+```
+⚠️  单平台发布入口已废弃，统一走流水线一条命令：
+   python3 -m src.pipeline.runner --material materials/<物料>.json \
+           --publish douyin,bilibili,channels
+```
+
+原因：绕开 CLI 直接发会跳过**审批 + 台账 + 回执卡**三条链路，并让汇报退化成长串手工核验表。
+
+- 例外：`--probe` / `--dry-run` / `--stop-before-publish` 照常放行（不产生公开内容）
+- `bilibili_live_uploader.py` 没有 `--dry-run` 实现，故**只认 `--force`**，避免「以为在试跑、其实真发」
+- 真需要单平台排障：加 `--force`
+
 
 ---
 
