@@ -10,6 +10,7 @@ scripts/bilibili_live_uploader.py
 """
 
 import sys
+import os
 import json
 import argparse
 import asyncio
@@ -116,14 +117,22 @@ async def main():
         print(json.dumps({"error": f"视频不存在: {args.video}"}, ensure_ascii=False))
         sys.exit(2)
 
-    cookie_file = Path("/Users/a1/Downloads/workspace/team/project/autocontent-pipeline/data/cookies_bilibili.json")
+    # 凭据文件允许 env 覆盖（worktree / 测试环境没有 data/，不该靠硬编码绝对路径）
+    cookie_file = Path(os.getenv("BILI_COOKIE_FILE")
+                       or (PROJ / "data" / "cookies_bilibili.json"))
     if not cookie_file.exists():
         print(json.dumps({"error": "No cookies_bilibili.json found"}))
         sys.exit(1)
 
     # 发布前查重：同一视频在同一账号已发过就不再发（不可撤回的公开内容）
+    # 例外：流水线（builtin.publish）调用本脚本时**已经**抢过台账槽位，
+    # 这里再抢一次会被自己挡住（PublishBlocked → rc=3），上游用
+    # PIPELINE_LEDGER_PRE_CLAIMED=1 显式声明已抢过就跳过。
     led_key = ""
-    if not missing_probe(args):
+    pre_claimed = os.getenv("PIPELINE_LEDGER_PRE_CLAIMED") == "1"
+    if pre_claimed:
+        print(json.dumps({"ledger": "pre_claimed_by_pipeline"}, ensure_ascii=False))
+    if not missing_probe(args) and not pre_claimed:
         from src.publish_ledger import PublishBlocked, check_and_claim
         try:
             acct = "bilibili-main"
