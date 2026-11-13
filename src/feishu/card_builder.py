@@ -166,6 +166,46 @@ class FeishuCardBuilder:
         }
 
     # ================================================================
+    # 审批卡「原地更新」：发布中 / 已完成（同一个 msg_id，不刷屏）
+    # ================================================================
+
+    @staticmethod
+    def build_status_card(
+        run_id: str,
+        title: str,
+        desc: str = "",
+        header_text: str = "",
+        header_template: str = "blue",
+        lines: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+        """把已发出的审批卡改成状态卡：保留标题/详情两个代码块，去掉按钮。
+
+        用 message.patch 原地更新同一个 msg_id —— 审批人不用翻消息就能看到进展。
+        """
+        _desc = " ".join(str(desc or "").split())
+        if len(_desc) > 400:
+            _desc = _desc[:399] + "…"
+
+        def _code_block(text: str) -> Dict[str, Any]:
+            return {"tag": "markdown", "content": f"```\n{text}\n```"}
+
+        elements: list[Dict[str, Any]] = [_code_block(title or "（无标题）")]
+        if _desc:
+            elements.append(_code_block(_desc))
+        meta = [f"**任务**：`{run_id}`"]
+        meta.extend(str(x) for x in (lines or []) if str(x).strip())
+        elements.append({"tag": "markdown", "content": "\n".join(meta)})
+
+        return {
+            "schema": CARD2_SCHEMA,
+            "config": {"update_multi": True},
+            "header": {"title": {"tag": "plain_text",
+                                 "content": header_text or f"【待审批】{title or run_id}"},
+                       "template": header_template},
+            "body": {"elements": elements},
+        }
+
+    # ================================================================
     # T3.2-R3：Card 2.0 构建（原 run_publish_worker._post_to_card2 下沉至此）
     # ================================================================
 
