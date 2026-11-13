@@ -15,6 +15,10 @@ from .base import BaseSocialProvider
 
 logger = logging.getLogger("BilibiliProvider")
 
+# 仓库根：上传脚本跑在另一个 venv（装了 bilibili_api），需要它进 PYTHONPATH
+# 才能 `import src.*`；cwd 也必须是仓库根。
+PROJ_ROOT = Path(__file__).resolve().parents[2]
+
 class BilibiliProvider(BaseSocialProvider):
     """
     哔哩哔哩发布/草稿管理 Provider
@@ -94,11 +98,31 @@ class BilibiliProvider(BaseSocialProvider):
                         "--title", title,
                         "--desc", desc,
                         "--tags", tag_str,
-                        "--tid", str(self.tid)
+                        "--tid", str(self.tid),
+                        # provider 是「流水线 --publish」的合法下游调用方；
+                        # 上传脚本为防误用默认拒绝单平台调用，需显式 --force 放行。
+                        "--force",
                     ]
                     if is_private:
                         cmd.append("--only-self")
-                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    p = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
+                        # 上传脚本跑在另一个 venv（装了 bilibili_api），cwd 不是仓库根时
+                        # `import src.*` 会 ModuleNotFoundError → 必须显式给 PYTHONPATH。
+                        cwd=str(PROJ_ROOT),
+                        env={
+                            **os.environ,
+                            "PYTHONPATH": str(PROJ_ROOT) + (
+                                os.pathsep + os.environ["PYTHONPATH"]
+                                if os.environ.get("PYTHONPATH") else ""),
+                            # 台账槽位已由 exec_publish 抢过，上传脚本别再抢一次
+                            # （否则 PublishBlocked → rc=3，自己把自己拦住）
+                            "PIPELINE_LEDGER_PRE_CLAIMED": "1",
+                        },
+                    )
                     if p.returncode != 0:
                         logger.error(f"Bilibili real upload failed: rc={p.returncode} stderr={p.stderr[-600:]}")
                         # rc=2 是上传器的入参/依赖校验失败（确定没提交）；3 是被台账查重拦住

@@ -520,7 +520,9 @@ def test_p0_blockers() -> None:
         try:
             video = Path(tmpdir) / "tiny.mp4"
             video.write_bytes(b"x")
-            env = dict(os.environ, SQLITE_DB_PATH=str(Path(tmpdir) / "ledger.sqlite"))
+            env = dict(os.environ, SQLITE_DB_PATH=str(Path(tmpdir) / "ledger.sqlite"),
+                       BILI_COOKIE_FILE=str(Path(tmpdir) / "cookies_bilibili.json"))
+            (Path(tmpdir) / "cookies_bilibili.json").write_text("{}", encoding="utf-8")
             from src.publish_ledger import check_and_claim
             check_and_claim("bilibili", "bilibili-tech-main", video, "P0",
                             path=Path(tmpdir) / "ledger.sqlite")

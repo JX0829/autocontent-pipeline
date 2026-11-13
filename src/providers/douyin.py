@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
@@ -141,11 +142,22 @@ class DouyinProvider(BaseSocialProvider):
                 
                 # 先访问创作者主页建立会话上下文，再进入上传页
                 logger.info(f"Navigating to Douyin creator home: {self.CREATOR_URL}")
-                page.goto(self.CREATOR_URL, wait_until="networkidle", timeout=30000)
+                # 抖音 SPA 持续长轮询，networkidle 基本永不静默 → 直接 30s 超时（实测）。
+                # 用 domcontentloaded 起步 + 尽力等一次 networkidle（等不到不算失败），
+                # 后续靠选择器判断页面是否可用。
+                page.goto(self.CREATOR_URL, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:  # noqa: BLE001 — SPA 长轮询属正常
+                    logger.info("creator home 未在 8s 内 networkidle，继续")
                 time.sleep(2)
 
                 logger.info(f"Navigating to Douyin upload page: {self.UPLOAD_URL}")
-                page.goto(self.UPLOAD_URL, wait_until="networkidle", timeout=30000)
+                page.goto(self.UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:  # noqa: BLE001
+                    logger.info("upload 页未在 8s 内 networkidle，继续")
                 time.sleep(3)
 
                 # 检查登录态拦截
@@ -341,7 +353,28 @@ class DouyinProvider(BaseSocialProvider):
             return {"success": False, "error": str(e), "message": "保存抖音草稿异常"}
 
     def _verify_published(self, title: str, wait_sec: int = 45) -> Dict[str, Any]:
-        """权威回读：打开内容管理列表，确认标题真实出现（唯一成功判据）"""
+        """权威回读：打开内容管理列表，确认标题真实出现（唯一成功判据）。
+
+        必须放到独立线程里跑：publish 执行体可能已处在 asyncio 事件循环中，而
+        `sync_playwright()` 在运行中的事件循环里会直接抛「It looks like you are
+        using Playwright Sync API inside the asyncio loop」——以前因此每次回读都
+        失败，明明已发布却判成 READBACK_NOT_FOUND。
+        """
+        box: Dict[str, Any] = {}
+
+        def _worker() -> None:
+            try:
+                box.update(self._verify_published_sync(title, wait_sec))
+            except Exception as exc:  # noqa: BLE001 — 回读异常按未命中处理，不掩盖
+                logger.warning(f"verify worker failed: {exc}")
+                box.update({"found": False, "draft_id": None, "title": None})
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(wait_sec + 60)
+        return box or {"found": False, "draft_id": None, "title": None}
+
+    def _verify_published_sync(self, title: str, wait_sec: int = 45) -> Dict[str, Any]:
         key = (title or "").strip()[:14]
         if not key:
             return {"found": False, "draft_id": None, "title": None}

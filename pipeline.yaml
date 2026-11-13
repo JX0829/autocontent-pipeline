@@ -62,6 +62,9 @@ contract:
       - DISPATCH_MODE
       - DOUYIN_CDP_URL                    # 抖音 CDP 调试端口地址（默认 http://127.0.0.1:9222）
       - CHANNELS_CDP_URL                  # 视频号常驻 Chrome CDP 地址（默认 http://127.0.0.1:9334，复用持久 profile 登录态）
+      - PIPELINE_LEDGER_PRE_CLAIMED       # =1 表示上游(exec_publish)已抢过台账槽位，单平台脚本不再重复 claim
+      - BILI_COOKIE_FILE                  # B站上传脚本凭据文件路径（默认 data/cookies_bilibili.json）
+      - PYTHONPATH                        # 传给 B站上传子进程，保证它 `import src.*` 能通（仓库根）
       - CHANNELS_CDP_PORT                 # 视频号 CDP 端口（默认 9334；与抖音 9333、Agent-Reach 9222 并列）
       - CHANNELS_PROFILE_DIR              # 视频号持久化 profile 根目录（默认 data/browser_profiles/channels-tech；仅测试用）
       - CHROME_PATH                       # Chrome/Chromium 可执行文件路径（缺省按候选列表探测）
