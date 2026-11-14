@@ -1,0 +1,16 @@
+{
+  "title": "145B模型塞进消费显卡",
+  "body": "Edge0 开源了设备端模型 Edge0-145B 和 Edge0-120B，官方称是全球首个开源的原生设备端 1450 亿参数模型，底座是 Qwen3.8-Flash-Next。它用潜空间稀疏 MoE：48 层、每层 512 个专家、每个词元只激活 10 个，权重训练时就是 4 位。实测在一张 RTX 5090 上，16G 显存加 20G 内存跑出 121 tok/s 解码，256K 上下文，终端基准 86.5。",
+  "source_url": "https://huggingface.co/Edge0/Edge0-145B-q3k",
+  "source": "Hugging Face 模型卡 / Edge0 官方博客",
+  "published_at": "2026-11-13T02:00:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "Edge0",
+    "本地部署",
+    "MoE",
+    "开源模型",
+    "端侧AI"
+  ],
+  "hot_value": 96
+}

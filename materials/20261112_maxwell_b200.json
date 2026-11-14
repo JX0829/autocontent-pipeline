@@ -1,0 +1,16 @@
+{
+  "title": "B200跑出超GB300速度",
+  "body": "代码优化公司 Maxwell 实测：自研引擎在 B200 上服务 DeepSeek-V4.1-Flash，峰值吞吐是 vLLM 的 3 倍；128 路 agent 并发时每用户还快约一倍，单路也比最好的公开配置快 30%，端到端甚至快过可比的 GB300 整机。",
+  "url": "https://x.com/_doubleAI_/status/2120529003710747115",
+  "source": "Maxwell 官方博客 / 全网技术圈",
+  "published_at": "2026-11-11T14:48:06+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "推理加速",
+    "B200",
+    "DeepSeek",
+    "vLLM",
+    "开源技术"
+  ],
+  "hot_value": 90
+}

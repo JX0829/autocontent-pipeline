@@ -1,0 +1,16 @@
+{
+  "title": "阿里内部代码审查工具开源：5万星",
+  "body": "阿里巴巴把内部用了两年的官方 AI 代码审查助手开源了，仓库 alibaba/open-code-review，今天 Star 破 5 万、fork 3,721，到现在每天还在提交。它不走让 Agent 自由发挥那条路，而是确定性工程加 Agent 混合：文件筛选、智能分桶（相关文件合成一个单元、各跑独立子 Agent 并发）、模板引擎匹配规则，由工程逻辑保证不出错；行级定位和评论反思是独立模块，Agent 只做动态决策和上下文检索。内置规则集覆盖空指针、线程安全、跨站脚本、SQL 注入。官方基准用 50 个开源仓库、200 个真实 PR、10 种语言、1,505 条工程师复核的真值来跑：同一个模型下精确率和 F1 都高于通用 Agent，token 只用约九分之一。npm 一条命令装好，命令叫 ocr，也能委派给 Claude Code、Codex 自己审，兼容 OpenAI 和 Anthropic 接口，Apache-2.0 协议。",
+  "source_url": "https://github.com/alibaba/open-code-review",
+  "source": "GitHub · alibaba/open-code-review 官方 README + GitHub API",
+  "published_at": "2026-11-13T18:10:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "OpenCodeReview",
+    "阿里巴巴",
+    "代码审查",
+    "Agent",
+    "Go"
+  ],
+  "hot_value": 95
+}

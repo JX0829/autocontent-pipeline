@@ -1,0 +1,16 @@
+{
+  "title": "OpenAI未发布安全模型跑分77%",
+  "body": "11 月 12 日，OpenAI 在一场网络安全主题直播里放出一张评测图：其中一条红色曲线属于「尚未发布的下一代网络安全模型」，在 ExploitGym（把已知漏洞做成可运行验证代码的评测集）上拿到 77.0%。同一张图里，在售的 GPT-6 Cyber 是 52.6%，谷歌 Gemini 4 Carbon 54.8%，Anthropic Claude Mythos 5.2 只有 39.2%。77.0% 比 OpenAI 官方 11 月 5 日发布 GPT-6 Cyber 时公布的 48.5% 高出约 28 个百分点。不过这次只给了一张图：没有模型名，没有系统卡，官网同步上线的只有 Daybreak 的两个落地页，测试是否同一档难度也没说明，海外技术圈普遍把它当成预告，而不是已发布的能力。",
+  "source_url": "https://x.com/i/status/2120952754776449159",
+  "source": "OpenAI Cyber at the Frontier 直播 + 全网技术圈转述",
+  "published_at": "2026-11-13T02:51:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "OpenAI",
+    "网络安全",
+    "ExploitGym",
+    "GPT6Cyber",
+    "评测"
+  ],
+  "hot_value": 96
+}

@@ -1,0 +1,16 @@
+{
+  "title": "一张3090跑763B模型",
+  "body": "DeepSeek V4.1 Flash 1017 是 7630 亿总参数、160 亿激活的 MoE 模型，MIT 协议，上下文 26 万 token。有人把它塞进一张 24GB 的 RTX 3090：专家权重全放内存（约 200GB，EXL3 3.0 量化），预填充时分批搬进显存，解码时热专家留显存、冷专家交给 CPU 计算。实测单流约 20 token/s，从 8k 到 26 万上下文都能跑，长任务质量没掉。",
+  "source_url": "https://github.com/sybil-solutions/dsv41-flash-offload",
+  "source": "dsv41-flash-offload 项目 README / DeepSeek 官方权重",
+  "published_at": "2026-11-12T00:49:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "DeepSeek",
+    "本地部署",
+    "RTX3090",
+    "MoE",
+    "量化"
+  ],
+  "hot_value": 94
+}

@@ -1,0 +1,10 @@
+{
+  "title": "DeepSeek 要卖编程套餐？还是传闻",
+  "body": "11 月 13 日晚，全网技术圈流传一条消息：DeepSeek 准备推出官方编程套餐，同时发布新模型 deepseek-v4.1-flash-1114。线索是有人在前端代码里发现配额同步、额度耗尽提醒、重置通知等字段，同名版本号还出现在一个国内比赛页面上。但截至 11 月 14 日上午，官方口径还是老样子：Hugging Face 上 deepseek-ai 最新的仍是 DeepSeek-V4.1-Flash-1017，下载 39.8 万、点赞 5600 多；API 文档的模型列表只有 V4.1-Flash-1017 和 V4-Pro-0813，上下文 1M、最大输出 384K；定价页没有任何订阅或套餐条目。DeepSeek 一直只做按 token 计费的 API 加免费聊天，从没卖过订阅。第三方套餐已经把 V4.1 Flash 的用量打包进十美元档，所以社区觉得官方下场是早晚的事。这条目前只能算传闻，等权重或公告落地再算数。",
+  "source_url": "https://x.com/i/status/2121280176835494038",
+  "source": "全网技术圈爆料帖 + Hugging Face / DeepSeek API 文档实测核对（2026-11-14 上午）",
+  "published_at": "2026-11-14T00:33:00+08:00",
+  "target_account_type": "tech",
+  "tags": ["DeepSeek", "编程套餐", "V4.1", "传闻核实", "AI订阅"],
+  "hot_value": 88
+}

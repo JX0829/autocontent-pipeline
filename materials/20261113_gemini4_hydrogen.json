@@ -1,0 +1,16 @@
+{
+  "title": "Gemini 4 Hydrogen 发布",
+  "body": "11 月 12 日，Google DeepMind 发布 Gemini 4 Hydrogen，当天面向所有用户开放。它不做最难的深度推理，专门干日常编码和智能体工作流：Artificial Analysis 智能指数默认高思考档 51 分，反超旗舰 Argon 的 50，xhigh 档能到 54。相比 3.8 Flash 完成任务快 2.5 倍，Terminal-Bench 4.1 从 18.2% 涨到 57%，编造结论减少 5 倍以上。价格全程不涨价：100 万 token 上下文，输入每百万 1.5 美元，输出 7.5 美元。安全上智能体越权行为减少 81%，工具与编码测试里的错位动作降 12 倍，内部诚实率 96.7%。Gemini app、搜索、AI Studio、API 和 Antigravity 全部可用。",
+  "source_url": "https://deepmind.google/blog/introducing-gemini-4-hydrogen/",
+  "source": "Google DeepMind 官方博客",
+  "published_at": "2026-11-13T02:00:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "Gemini4",
+    "Hydrogen",
+    "GoogleDeepMind",
+    "智能体",
+    "编码模型"
+  ],
+  "hot_value": 97
+}
