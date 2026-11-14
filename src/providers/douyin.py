@@ -165,19 +165,21 @@ class DouyinProvider(BaseSocialProvider):
         title: str,
         topics: list[str],
         content_text: str,
-        declare_aigc: Optional[bool] = None
+        declare_aigc: Optional[bool] = None,
+        stop_before_publish: bool = False,
     ) -> Dict[str, Any]:
         """对外入口：CDP 模式下先抢端口级单实例锁（R5），再走上传流程。
 
         抢不到锁返回 `CDP_BUSY`（明确失败，不排队抢同一个 tab）；非 CDP 模式零开销。
         """
+        kw = dict(stop_before_publish=stop_before_publish)
         if not self.cdp_url:
             return self._save_draft_impl(video_path, cover_path, title, topics,
-                                         content_text, declare_aigc)
+                                         content_text, declare_aigc, **kw)
         try:
             with cdp_session.exclusive("douyin", self.cdp_url):
                 return self._save_draft_impl(video_path, cover_path, title, topics,
-                                             content_text, declare_aigc)
+                                             content_text, declare_aigc, **kw)
         except cdp_session.CdpBusy as exc:
             logger.warning(f"[douyin] {exc}")
             return {"success": False, "error": "CDP_BUSY", "message": str(exc)}
@@ -192,7 +194,8 @@ class DouyinProvider(BaseSocialProvider):
         title: str,
         topics: list[str],
         content_text: str,
-        declare_aigc: Optional[bool] = None
+        declare_aigc: Optional[bool] = None,
+        stop_before_publish: bool = False,
     ) -> Dict[str, Any]:
         """
         上传短视频至抖音创作者中心并仅保存为草稿（绝不执行直接发布）
@@ -270,21 +273,84 @@ class DouyinProvider(BaseSocialProvider):
                     pass
 
                 # 3. 构造文案与话题标签
-                topic_tags = " ".join([f"#{t.strip('#')}" for t in topics])
-                full_caption = f"{title} {topic_tags}\n{content_text}".strip()
-
+                #    2026-11-15 实测：原来把「标题 + 话题 + 全文」一次性 type(delay=50) 打进
+                #    contenteditable，抖音的话题联想面板会在打字过程中插入/重排内容，
+                #    最终简介变成「标题和正文交错、#A#n#C#A」这种乱码。
+                #    改为：标题进独立「作品标题」输入框；正文原子插入；话题逐个带停顿地打。
+                # 3a. 简介正文（标题已在 build_desc 里打头，不再塞进独立标题框，避免重复）
+                body_text = content_text
                 caption_editor = page.locator('div[contenteditable="true"]').first
-                if caption_editor.count() > 0:
+                editor_ok = caption_editor.count() > 0
+                if editor_ok:
                     caption_editor.click()
-                    caption_editor.fill("")
-                    caption_editor.type(full_caption, delay=50)
+                    caption_editor.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                    # 原子插入：一次 execCommand，不走逐字符，避免联想面板重排
+                    caption_editor.evaluate(
+                        "(el, t) => { el.focus(); document.execCommand('insertText', false, t); }",
+                        body_text)
+                    time.sleep(1)
+                    got = (caption_editor.inner_text() or "").strip()
+                    if got[:20] != body_text.strip()[:20]:
+                        logger.warning("原子插入未生效，回退 fill()")
+                        caption_editor.fill(body_text)
                 else:
                     textarea = page.locator('textarea').first
                     if textarea.count() > 0:
-                        textarea.fill(full_caption)
+                        textarea.fill(body_text)
+                        editor_ok = True
 
-                logger.info(f"Filled video title and topics: {title}")
+                # 3c. 话题：先把光标移到文本末尾（JS Range，press("End") 只到行尾），
+                #     再逐个打 + 停顿，让抖音把每个 #tag 收成话题chip
+                if editor_ok and topics:
+                    caption_editor.click()
+                    caption_editor.evaluate("""el => {
+                        el.focus();
+                        const r = document.createRange();
+                        r.selectNodeContents(el);
+                        r.collapse(false);                       // false = 折叠到末尾
+                        const s = window.getSelection();
+                        s.removeAllRanges(); s.addRange(r);
+                    }""")
+                    time.sleep(0.3)
+                    page.keyboard.type(" ", delay=10)            # 正文与话题之间留个分隔
+                    for t in topics:
+                        page.keyboard.type(f"#{t.strip('#')}", delay=20)
+                        time.sleep(0.5)
+                        page.keyboard.press("Space")
+                        time.sleep(0.4)
+                logger.info(f"Filled caption: title={title[:20]!r} topics={topics}")
+
+                # 3d. 回读简介真实内容（发布前自证：乱码/截断都在这里暴露）
+                filled_text = ""
+                try:
+                    filled_text = (caption_editor.inner_text() or "").strip() if editor_ok else ""
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"简介回读失败: {exc}")
+                if filled_text and body_text.strip()[:20] not in filled_text:
+                    logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:80]!r}")
+                    browser.close()
+                    return {"success": False, "published": False,
+                            "error": "CAPTION_MISMATCH",
+                            "expected": body_text[:200], "filled": filled_text[:200],
+                            "message": "简介回读与预期不符（疑似乱码/被联想面板重排），拒绝发布"}
                 time.sleep(2)
+
+                if stop_before_publish:
+                    logger.info("STOP_BEFORE_PUBLISH：表单已填好，未点发布")
+                    shot_dir = Path("output/douyin_diag")
+                    shot_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        page.screenshot(path=str(shot_dir / f"stop_before_publish_{int(time.time())}.png"),
+                                        full_page=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    browser.close()
+                    return {"success": True, "published": False,
+                            "status": "STOPPED_BEFORE_PUBLISH",
+                            "filled_title": title[:30], "filled_text": filled_text,
+                            "topics": topics,
+                            "message": "表单已填好（含回读校验），按 stop_before_publish 未点发布"}
+
 
                 # 4. AIGC 合规声明勾选
                 if should_declare_aigc:
