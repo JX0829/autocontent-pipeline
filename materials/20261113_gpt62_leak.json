@@ -1,0 +1,16 @@
+{
+  "title": "OpenAI 6.2 模型名泄露",
+  "body": "OpenAI 还没发布的模型名字被提前挖出来了。11 月 1 日，gpt-6.2-astra 先出现在编程工具 Codex 的用量记录里；4 日到 5 日，两个爆料账号贴出云平台配额截图，出现 base_model:gpt-6.2-astra 和 gpt-6.2-sol；还有人拍到 API 文档写着「On models 6.2 and later」，并列出 Astra、Sol、Terra、Luna 四个名字。OpenAI 和谷歌都没官宣，截图真伪也没确认。",
+  "source_url": "https://ai-oriens.com/en/news/gpt-6-2-google-cloud-leak/",
+  "source": "AI Oriens / The Information 报道",
+  "published_at": "2026-11-12T09:04:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "OpenAI",
+    "GPT6.2",
+    "模型泄露",
+    "Astra",
+    "传闻"
+  ],
+  "hot_value": 95
+}

@@ -117,3 +117,6 @@ backup/
 
 # 审批裁决文件（运行期状态，不入库）
 data/approvals/
+
+# 运行时锁（CDP 会话占用标记，进程级临时文件，不入库）
+data/locks/

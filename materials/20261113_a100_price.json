@@ -1,0 +1,16 @@
+{
+  "title": "A100二手价跌了两三成",
+  "body": "极客社区的算力卖家发现，A100 的二手价自上一轮讨论之后已经跌了 20% 到 30%。原因是买家算清了账：Rubin 和 Blackwell 每瓦效率已经是 A100 的 3 到 4 倍，融资渠道也更多；发帖人认为 A100 已经不适合跑推理，剩下的买家只拿它和 R9700、英特尔 Crescent Island（显存 160 到 480GB）比价。租赁端同样在掉：按需 A100 80GB 的中位价从 2024 年 1 月 1 日的每小时 3.20 美元跌到 2026 年 11 月的 1.75 美元，最低有 0.53 美元的成交；二手 80GB 卡今年三季度报价 7000 到 9500 美元。连 RTX 6000 也从 1.8 万美元的峰值掉到 1.48 万。AWS 在 2025 年 6 月已经把 A100 实例的按需价砍了 33%。",
+  "source_url": "https://www.reddit.com/r/LocalLLaMA/comments/1xuxbeb/a100_prices_down_2030_since_my_post_about_them/",
+  "source": "极客社区 r/LocalLLaMA + Compute Census 价格指数",
+  "published_at": "2026-11-13T11:31:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "A100",
+    "显卡价格",
+    "二手市场",
+    "算力",
+    "Blackwell"
+  ],
+  "hot_value": 93
+}

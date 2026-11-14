@@ -1,0 +1,16 @@
+{
+  "title": "llama.cpp 终于发布 v1.0",
+  "body": "11 月 13 日，llama.cpp 发布 v1.0.0，底层张量库 ggml 同步进 v1.0.0。这个用 C/C++ 写本地推理的项目做了三年半，GitHub 上 13.4 万星、2.5 万 fork，早被大量下游应用当基础库用，所以 v1.0 真正落地的是规矩：以后公开头文件出现破坏性改动才升主版本，加功能升次版本，纯修 bug 只升补丁号。功能上新增 OCP FP8 的 KV 缓存，MoE 模型可开专家缓存并指定 CPU 份额，外部 PLE 分片支持单独加载。新架构收进 Kimi-K3.1-Pro、65B 的 Ripple-65B-Preview 和 xing4_0，语音侧接上 drama-3 TTS，llama-server 补了 OpenAI 兼容的语音合成接口。服务端同时加固请求伪造、跨域、DNS 重绑定几类问题。目前支持 150 多个模型架构变体，从手机到服务器全覆盖，官方还上线了 llama.app 桌面客户端，把本地跑模型压到几次点击。",
+  "source_url": "https://reddit.com/r/LocalLLaMA/comments/1xv8t2e/llamacpp_v10_is_here/",
+  "source": "r/LocalLLaMA 官方帖 + llama.cpp v1.0.0 Release + Hugging Face 官方博客",
+  "published_at": "2026-11-13T22:07:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "llamacpp",
+    "ggml",
+    "本地推理",
+    "开源",
+    "HuggingFace"
+  ],
+  "hot_value": 96
+}

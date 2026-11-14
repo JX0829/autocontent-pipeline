@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
+from . import cdp_session
 from .base import BaseSocialProvider
 
 logger = logging.getLogger("DouyinProvider")
@@ -65,12 +66,26 @@ class DouyinProvider(BaseSocialProvider):
         # 发布用有头浏览器：抖音会识别无头（扫码/短信验证必失败，页面也不稳）。
         # 账号配置可覆盖（accounts.yaml: headless: true），默认 false = 有头。
         self.headless_publish = bool(account_config.get("headless", False))
+        # CDP 接管（R1/R2，2026-11-13）：账号配置 > DOUYIN_CDP_URL > 空（=老逻辑）。
+        # 空串表示不接管，仍走「起临时 profile + storage_state 快照」的历史路径。
+        self.cdp_url = cdp_session.resolve(account_config, "DOUYIN_CDP_URL")
+        self.profile_name = Path(self.profile_path).name
 
         # 确保 profile 目录存在
         os.makedirs(os.path.abspath(self.profile_path), exist_ok=True)
 
     def _get_browser_context(self, p, headless: bool | None = None):
-        """headless=None 时按账号配置（默认有头）；显式传值可覆盖。"""
+        """headless=None 时按账号配置（默认有头）；显式传值可覆盖。
+
+        CDP 模式（self.cdp_url 非空）：探活 → `connect_over_cdp` 接管**已登录的常驻
+        Chrome**，取它的真实 context。返回的 browser 是包装器，`close()` 只关本流程
+        开的页面，不会把 Chrome（和那次人工扫码的登录态）关掉。
+        探活失败抛 `CdpUnavailable`，调用方不许继续（也不许占台账，R3）。
+        """
+        if self.cdp_url:
+            context, browser = cdp_session.connect(p, self.cdp_url)
+            logger.info(f"[douyin] 接管常驻 Chrome: cdp={self.cdp_url} profile={self.profile_name}")
+            return context, browser
         if headless is None:
             headless = self.headless_publish
         launch_args = [
@@ -99,26 +114,78 @@ class DouyinProvider(BaseSocialProvider):
         )
         return context, browser
 
+    #: 登录页的正文特征（2026-11-13 实测：登录页 URL 也在 creator-micro 下，
+    #: 只看 URL 会把未登录判成已登录，正是 llamacpp-v1-1 那天「检查说有登录、
+    #: 真发时 LOGIN_REQUIRED」的来源）。
+    LOGIN_PAGE_MARKERS = ("扫码登录", "验证码登录", "密码登录", "登录即代表同意")
+
+    def _is_login_page(self, page) -> bool:
+        """页面是否落在登录墙：URL 命中 passport，或正文出现登录页特征。"""
+        url = (page.url or "").lower()
+        if "passport.douyin.com" in url or "/login" in url:
+            return True
+        try:
+            body = page.inner_text("body")[:2000]
+        except Exception:  # noqa: BLE001 — 取不到正文按未登录处理（fail-closed）
+            return True
+        return sum(1 for m in self.LOGIN_PAGE_MARKERS if m in body) >= 2
+
     def check_login_status(self) -> bool:
-        """
-        检查当前 profile 是否已在抖音创作者中心登录
+        """检查当前 profile 是否**真的**已登录创作者中心（fail-closed）。
+
+        CDP 模式下走 `_get_browser_context` 的接管分支，判据与发布流程一致：
+        不看 URL 猜，看登录页特征。
         """
         try:
             with sync_playwright() as p:
                 context, browser = self._get_browser_context(p, headless=None)
                 page = context.new_page()
-                page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=30000)
+                page.goto(self.UPLOAD_URL, wait_until="domcontentloaded", timeout=30000)
                 time.sleep(2)
-                
-                current_url = page.url
-                is_logged_in = "creator-micro" in current_url and ("passport.douyin.com" not in current_url)
+
+                logged_in = not self._is_login_page(page)
+                if not logged_in:
+                    logger.warning(
+                        f"[douyin] 未登录：profile={self.profile_name}"
+                        f"{'，cdp=' + self.cdp_url if getattr(self, 'cdp_url', '') else ''}"
+                        f"，URL={page.url[:80]}")
                 browser.close()
-                return is_logged_in
+                return logged_in
+        except cdp_session.CdpError as e:
+            logger.error(f"[douyin] 登录检查失败（CDP）：{e}")
+            return False
         except Exception as e:
             logger.warning(f"Error checking Douyin login status: {e}")
             return False
 
     def save_draft(
+        self,
+        video_path: str,
+        cover_path: Optional[str],
+        title: str,
+        topics: list[str],
+        content_text: str,
+        declare_aigc: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """对外入口：CDP 模式下先抢端口级单实例锁（R5），再走上传流程。
+
+        抢不到锁返回 `CDP_BUSY`（明确失败，不排队抢同一个 tab）；非 CDP 模式零开销。
+        """
+        if not self.cdp_url:
+            return self._save_draft_impl(video_path, cover_path, title, topics,
+                                         content_text, declare_aigc)
+        try:
+            with cdp_session.exclusive("douyin", self.cdp_url):
+                return self._save_draft_impl(video_path, cover_path, title, topics,
+                                             content_text, declare_aigc)
+        except cdp_session.CdpBusy as exc:
+            logger.warning(f"[douyin] {exc}")
+            return {"success": False, "error": "CDP_BUSY", "message": str(exc)}
+        except cdp_session.CdpUnavailable as exc:
+            logger.error(f"[douyin] {exc}")
+            return {"success": False, "error": "CDP_UNAVAILABLE", "message": str(exc)}
+
+    def _save_draft_impl(
         self,
         video_path: str,
         cover_path: Optional[str],
@@ -163,10 +230,13 @@ class DouyinProvider(BaseSocialProvider):
                 # 检查登录态拦截
                 if "passport.douyin.com" in page.url or page.locator("text=扫码登录").count() > 0:
                     browser.close()
+                    hint = (f"需人工在 cdp={self.cdp_url} profile={self.profile_name} 的 Chrome 窗口扫码"
+                            if self.cdp_url else "请先运行 scripts/login_douyin.py 扫码登录")
                     return {
                         "success": False,
                         "error": "LOGIN_REQUIRED",
-                        "message": "抖音账号登录态已失效或未初始化，请先运行 scripts/login_douyin.py 扫码登录"
+                        "message": f"抖音登录态已失效或未初始化（profile={self.profile_name}"
+                                   f"{'，cdp=' + self.cdp_url if self.cdp_url else ''}）：{hint}"
                     }
 
                 # 1. 触发文件选择（兼容 input[type="file"] 与新版 SPA 点击上传）
@@ -348,6 +418,10 @@ class DouyinProvider(BaseSocialProvider):
                         "message": "视频已成功上传并保存至抖音创作者中心草稿箱"
                     }
 
+        except cdp_session.CdpError:
+            # CDP 类错误（不可用/占用/需登录）必须原样上抛，由 save_draft 归类成
+            # CDP_UNAVAILABLE / CDP_BUSY / LOGIN_REQUIRED，不能被下面的大 except 吞成裸文案
+            raise
         except Exception as e:
             logger.exception(f"Error during Douyin draft saving: {e}")
             return {"success": False, "error": str(e), "message": "保存抖音草稿异常"}
