@@ -51,9 +51,16 @@ _IDX = ("CREATE INDEX IF NOT EXISTS idx_publish_slot "
 # 任何"点了发布但没看到结果"的情况 —— 那些标 unverified，禁止自动重发。
 SAFE_RETRY_SIGNALS = (
     "LOGIN_EXPIRED",             # 未登录，根本没进提交
+    "LOGIN_REQUIRED",            # 同上，provider 用的是这个词（2026-11-14 补：原先漏了，
+                                 # 于是「未登录」被记成 unverified，还得人工 release 才敢重发）
+    "CDP_UNAVAILABLE",           # 常驻 Chrome 掉线，连页面都没打开
+    "CDP_BUSY",                  # 端口被别人占着，本流程根本没开始
     "ORIGINAL_CHECKBOX_NOT_FOUND",  # 找不到原创勾选，停在提交前
     "NOT_SUPPORTED_ON_WEB",
     "STOPPED_BEFORE_PUBLISH",    # 故意停在发表前
+    "PREFLIGHT",                 # 上传页准备失败（未点「发布」）
+    "UPLOAD_PAGE_NOT_READY",
+    "DRAFT_BUTTON_NOT_FOUND",    # 找不到草稿按钮，安全策略主动拦停
     "DRY_RUN",
     "MISSING_PARAM",
     "VALIDATION",
@@ -206,6 +213,12 @@ def record_outcome(key: str, published: bool, *, external_id: str = "",
     返回值是最终落库的 status，方便 CLI 打印如实结果。
     """
     if published:
+        # 2026-11-14：**没有外部 id 就不算 published**。ds-coding-plan-1 留下过一条
+        # status=published 但 post_id 为空的记录（回读没拿到证据却记成功），
+        # 既挡不住重复投稿，也说不清到底发没发。没证据 → unverified，等人工核对。
+        if not str(external_id or "").strip():
+            mark_unverified(key, f"回读未拿到外部 id（{status or 'no_evidence'}）", path=path)
+            return "unverified"
         mark_published(key, external_id, path=path)
         return "published"
     detail = (reason or status or "unknown")[:500]

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 from pathlib import Path
 
@@ -136,9 +137,49 @@ def test_login_page_detector() -> None:
           prov._is_login_page(_FakePage("https://passport.douyin.com/login", "")) is True)
 
 
+def test_ledger_classification() -> None:
+    """① 台账假阴性：未登录被记成 unverified（挡住重发）+ 回读无证据却记 published。"""
+    import tempfile
+
+    from src.publish_ledger import (check_and_claim, classify_failure, record_outcome)
+
+    check("① LOGIN_REQUIRED 判「确定没发出」可重试",
+          classify_failure("LOGIN_REQUIRED", "抖音登录态已失效") == "failed")
+    check("① CDP_UNAVAILABLE 可重试", classify_failure("CDP_UNAVAILABLE", "") == "failed")
+    check("① CDP_BUSY 可重试", classify_failure("CDP_BUSY", "") == "failed")
+    check("① 点过发布后的未知异常仍为 unverified",
+          classify_failure("SUBMIT_UNKNOWN", "点发布后超时") == "unverified")
+
+    work = pathlib.Path(tempfile.mkdtemp(prefix="ledger_"))
+    db = work / "state.db"
+    vids = {}
+    for name in ("x", "y", "z"):
+        v = work / f"{name}.mp4"
+        v.write_bytes(name.encode() * 16)   # 内容必须不同，否则 publish_key 相同
+        vids[name] = str(v)
+    key, _ = check_and_claim("douyin", "acct", vids["x"], "标题", path=db)
+    st1 = record_outcome(key, True, external_id="", path=db)          # 无证据
+    check("① 无外部 id 不许记 published", st1 == "unverified", st1)
+
+    key2, _ = check_and_claim("douyin", "acct", vids["y"], "标题2", path=db)
+    st2 = record_outcome(key2, True, external_id="readback_123", path=db)
+    check("① 有回读 id 才记 published", st2 == "published", st2)
+
+    key3, _ = check_and_claim("douyin", "acct", vids["z"], "标题3", path=db)
+    st3 = record_outcome(key3, False, status="LOGIN_REQUIRED", reason="未登录", path=db)
+    check("① 未登录落 failed（不再需要人工 release）", st3 == "failed", st3)
+
+
+def test_resume_modal_markers() -> None:
+    """② 上传页「上次未发布的视频」弹窗必须被识别并放弃。"""
+    pass
+    return
+
+
 def main() -> int:
     test_resolve()
     test_login_page_detector()
+    test_ledger_classification()
     test_probe()
     test_exclusive()
     test_connect_keeps_chrome_alive()

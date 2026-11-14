@@ -152,6 +152,48 @@ def _seed_comment_plan(account: dict, draft: dict) -> tuple[bool, bool, str]:
         return False, False, ""
 
 
+RESUME_MODAL_MARKERS = ("上次未发布", "是否继续编辑", "继续编辑上次", "还有未发布的视频")
+
+
+def dismiss_resume_modal(page, timeout: float = 8.0) -> str:
+    """处理「你还有上次未发布的视频，是否继续编辑？」弹窗，一律选**放弃**。
+
+    2026-11-14 实测：这个弹窗挡在上传页时，脚本会一直等 `div[contenteditable="true"]`
+    直到 30s 超时 EXIT=2（使用者手动点「放弃」后重跑才通）。
+    为什么不选「继续编辑」：我们每次都是整条新片重传，续上旧草稿会挂错视频/旧标题。
+    返回 'none' / 'dismissed' / 'escape'，只用于日志。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            body = page.inner_text("body")[:4000]
+        except Exception:  # noqa: BLE001 — 页面切换中取不到正文，下一轮再试
+            body = ""
+        if any(m in body for m in RESUME_MODAL_MARKERS):
+            for sel in ('button:has-text("放弃")', 'button:has-text("不继续")',
+                        'button:has-text("重新上传")',
+                        'div[role="dialog"] button:has-text("放弃")',
+                        'div[class*="modal"] button:has-text("放弃")'):
+                loc = page.locator(sel).first
+                try:
+                    if loc.count() > 0:
+                        loc.click(timeout=3000)
+                        time.sleep(2)
+                        _log(f"检测到「上次未发布视频」弹窗 → 已放弃旧草稿（{sel}）")
+                        return "dismissed"
+                except Exception:  # noqa: BLE001 — 换下一个候选选择器
+                    continue
+            _log("检测到「上次未发布视频」弹窗，但没找到「放弃」按钮 → 按 Esc 关掉")
+            try:
+                page.keyboard.press("Escape")
+                time.sleep(1)
+            except Exception:  # noqa: BLE001
+                pass
+            return "escape"
+        time.sleep(0.5)
+    return "none"
+
+
 def publish(video: Path, title: str, summary: str, tags: list[str],
             cdp_url: str, dry_run: bool, account: dict) -> int:
     try:
@@ -188,6 +230,7 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
         try:
             page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=60000)
             time.sleep(5)
+            dismiss_resume_modal(page)
             page.locator('input[type="file"]').first.set_input_files(str(video))
             page.wait_for_selector('div[contenteditable="true"]', timeout=90000)
             time.sleep(3)
@@ -308,6 +351,20 @@ def main() -> int:
             _log(f"  {chrome_launch_hint(args.cdp_url)}")
             return 2
         _log(f"CDP 探活 ok（{args.cdp_url}）: {detail}")
+        # 端口级互斥（R5，2026-11-14 补）：provider 侧早就有，CLI 这半边一直缺，
+        # 于是「流水线在发 + 人手动 CLI 补发」会抢同一个 tab（模板：ds-coding-plan-1
+        # 那次 contenteditable 点击超时，很可能就是并发抢焦点导致）。
+        # CLI 是短命进程，锁持有到进程退出即可（flock 随进程自动释放）。
+        cdp_session = None
+        try:
+            from src.providers import cdp_session
+            _port_lock = cdp_session.exclusive("douyin", args.cdp_url)
+            _port_lock.__enter__()
+        except Exception as exc:  # noqa: BLE001
+            if cdp_session is not None and isinstance(exc, cdp_session.CdpBusy):
+                _log(f"⛔ {exc}")
+                return 2
+            _log(f"[warn] 端口互斥锁不可用，继续发布：{type(exc).__name__}: {exc}")
         seed_on, seed_pin, _ = _seed_comment_plan(account, draft)
         if seed_on:
             _log(f"seed_comment: 已配置(置顶={seed_pin})，抖音 CDP 首评链路待实拍验证后启用")
