@@ -871,14 +871,37 @@ def fetch_github_ai_topics(
 # 10. Twitter (X) 全球 AI 领袖一手动态原子抓取函数
 # ─────────────────────────────────────────────────────────────
 
+LEGACY_X_QUERY = "Claude 3.7 OR DeepSeek OR Coding Agent OR OpenAI"
+
+
+def _configured_x_query() -> str:
+    """X 检索词从 config/trends.yaml 的 `x.queries` 读第一组（R4：不写死在默认参数里）。
+
+    配置读不到时退回 LEGACY_X_QUERY 并**打印原因**（静默兜底等于悄悄换了口径）。
+    """
+    try:
+        from src.digest.config import load as _load_digest_config
+        queries = _load_digest_config().get("x", {}).get("queries") or []
+        if queries and str(queries[0]).strip():
+            return str(queries[0]).strip()
+        print("[WARN] config/trends.yaml 未配置 x.queries，使用内置默认检索词", file=sys.stderr)
+    except Exception as exc:
+        print(f"[WARN] 读速报配置失败（{type(exc).__name__}: {exc}），使用内置默认检索词", file=sys.stderr)
+    return LEGACY_X_QUERY
+
+
 def fetch_twitter_x_tech(
-    query: str = "Claude 3.7 OR DeepSeek OR Coding Agent OR OpenAI",
+    query: Optional[str] = None,
     limit: int = 5,
     timeout_sec: int = 15
 ) -> List[Dict[str, Any]]:
     """
     单一信源原子函数：基于 agent-reach opencli 检索全球 X (Twitter) 先锋一手推文
+
+    query 传 None 时从速报配置取检索词（旧调用方零改动，口径统一到 config/trends.yaml）。
     """
+    if not query:
+        query = _configured_x_query()
     items: List[Dict[str, Any]] = []
     agent_reach_bin = "/Users/a1/.local/bin/agent-reach"
     if not os.path.exists(agent_reach_bin):
