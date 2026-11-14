@@ -90,6 +90,31 @@ class FeishuApprovalService:
         
         self.client = lark.Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
 
+    def resolve_chat_id(self, message_id: str) -> str:
+        """把 message_id 还原成会话 chat_id（拿不到返回 ""，不抛）。
+
+        为什么需要：审批卡发到「个人」时用的是 open_id，而「等人在会话里回
+        approve」只能按 chat_id 拉消息列表。没有这一步，open_id 模式下文字兜底
+        形同虚设——只有点卡片有效（cyber77-1 实测：超时后回复 approve 不被识别）。
+        """
+        if not message_id:
+            return ""
+        try:
+            from lark_oapi.api.im.v1 import GetMessageRequest
+
+            req = GetMessageRequest.builder().message_id(message_id).build()
+            resp = self.client.im.v1.message.get(req)
+            if not _ok(resp, "resolve_chat_id"):
+                return ""
+            items = getattr(getattr(resp, "data", None), "items", None) or []
+            chat_id = (getattr(items[0], "chat_id", "") or "") if items else ""
+            if chat_id:
+                logger.info(f"resolve_chat_id: {message_id} -> {chat_id}")
+            return chat_id
+        except Exception as exc:  # noqa: BLE001 — 拿不到只是少一条兜底通道
+            logger.warning(f"resolve_chat_id 失败（卡片点击链路不受影响）: {exc}")
+            return ""
+
     def send_approval_card(self, receive_id: str, receive_id_type: str, card_content: Dict[str, Any]) -> Optional[str]:
         """
         向指定用户或群聊发送交互式卡片

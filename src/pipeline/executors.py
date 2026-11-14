@@ -379,6 +379,43 @@ def send_publish_receipt(report: dict[str, Any], title: str = "") -> str:
     return str(msg_id or "")
 
 
+def _adopt_late_decision(ctx: StepContext, ap_path: Path) -> None:
+    """卡片裁决晚于审批步时，把 run 级裁决文件补记进 approval.json。
+
+    场景（cyber77-1 实测）：审批卡等满超时被判 reject → run 卡在 BLOCKED；人过一会
+    才点「✅ 发布」。点卡片写的是 data/approvals/<run_id>.json，没人回填
+    approval.json，于是 resume 又被门禁2 拦死，只能人工改状态库。
+
+    判定：裁决文件比 approval.json 新（mtime）且 decision 合法 → 以它为准。
+    只做「补记」，不伪造来源：decided_by 照抄裁决文件里的 by（card:...）。
+    """
+    try:
+        from src.approval.feishu import _decision_path
+
+        dp = _decision_path(ctx.run_id)
+        if not dp.exists():
+            return
+        if ap_path.exists() and dp.stat().st_mtime <= ap_path.stat().st_mtime:
+            return
+        data = json.loads(dp.read_text(encoding="utf-8"))
+        decision = str(data.get("decision") or "").lower()
+        if decision not in ("approve", "reject"):
+            return
+        rec = {
+            "decision": decision,
+            "decided_by": f"feishu_file:{data.get('by') or '?'}",
+            "feishu_msg_id": data.get("msg_id") or "",
+            "evidence_msg_id": data.get("evidence_msg_id") or "",
+            "mode": "feishu",
+            "reason": "补记：卡片裁决晚于审批步（审批步曾超时判 reject）",
+            "adopted_from": str(dp),
+        }
+        ap_path.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"  [approval] 采纳晚到的卡片裁决：{decision}（by={rec['decided_by']}）")
+    except Exception as exc:  # noqa: BLE001 — 补记失败不该让发布推进变成异常
+        print(f"  [approval] 晚到裁决补记跳过：{exc}")
+
+
 def exec_publish(ctx: StepContext) -> dict[str, str]:
     """builtin.publish：v2 发布方案 deliver→approval→publish，**三重门禁，默认关闭**。
 
@@ -410,6 +447,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
 
     # ---- 门禁2：审批 ----
     ap_path = ctx.run_root / "approval.json"
+    _adopt_late_decision(ctx, ap_path)   # 卡片点击晚于审批步 → 按 mtime 补记
     decision = ""
     if ap_path.exists():
         try:
