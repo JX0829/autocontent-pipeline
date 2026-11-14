@@ -1,0 +1,52 @@
+# 科技速报信息源配置（SPEC-20261114 · T0）
+# 改这个文件就能调行为，不用动代码；代码里的 DEFAULTS 保持「迁移前行为」，
+# 所以配置缺失/写坏时退回旧行为，不会静默变成另一种口径。
+
+version: 1
+
+# ── 信源开关（R2）──────────────────────────────────────────────
+# false 时完全不调用 fetch_huggingface_daily_papers / fetch_arxiv_ai_papers，
+# 顺带省掉两次 30s 超时预算。以后要开，改回 true 即可。
+papers: false
+
+# ── 去重口径（R3）──────────────────────────────────────────────
+dedupe_window_days: 5     # 去重库滑动窗口（旧行为 2 天）
+fill_gap: false           # false = 宁缺勿凑：新鲜条目不足就少出一条，不许回捞看过的
+
+paths:
+  seen_file: /Users/a1/Downloads/workspace/team/agents_context/xiao-pin/data/seen_trends.json
+  snapshot_file: /Users/a1/Downloads/workspace/team/agents_context/xiao-pin/data/last_digest_snapshot.json
+
+# ── X / Twitter 口径（R4）──────────────────────────────────────
+x:
+  queries:
+    - 'OpenAI OR Anthropic OR DeepSeek OR Gemini OR Claude'
+    - 'NVIDIA OR Microsoft OR Apple OR Meta OR TSMC OR Tesla'
+    - 'announces OR launches OR release OR "generally available" OR breaking'
+  exclude: [crypto, airdrop, giveaway, 空投]
+  limit_per_query: 5
+  timeout_sec: 10
+  # 三组查询串行；关闭论文后省下的两次抓取正好抵掉（口径 2）
+
+# ── 板块（R1：4 板块 9 条 → 2 板块 5~6 条）──────────────────────
+# total    : 该板块最多出几条
+# count    : null = 用该板块剩余名额（官方优先占位这种写法）
+# merge    : true = 同板块多个源合成一个池子统一排序 + 跨源去重
+sections:
+  - id: official_x
+    title: '🛰 Section 1: 官方公告 + 一线动态 (官方 1 + X 2 · 近 7 天/2 天)'
+    link_label: 查看原文
+    total: 3
+    sources:
+      - {name: blog, count: 1, max_days: 7, limit: 8, timeout_sec: 25}   # 实测：limit=4 时热门 4 条全在 7 天去重库里 → 官方位空着
+      - {name: x, count: null, max_days: 2}
+
+  - id: open_source
+    title: '🔥 Section 2: 开源爆款 + 社区热议 (GitHub + Reddit 合并池 · 2~3 条)'
+    link_label: 查看原文
+    total: 3
+    min_expected: 2          # 少于这个数就在正文里显式告警（不许静默缩水）
+    merge: true
+    sources:
+      - {name: github, count: 3, max_days: null, limit: 15, timeout_sec: 25, sort: stars_today}  # limit=6 时全是昨天已发的爆款
+      - {name: reddit, count: 3, max_days: 2, limit: 15, timeout_sec: 25}
