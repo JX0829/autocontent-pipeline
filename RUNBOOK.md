@@ -317,10 +317,18 @@ for f in video.mp4 video_16_9.mp4; do cp "$f" "/tmp/video_$(md5 -q "$f").mp4"; d
 | 平台 | 格式 |
 |---|---|
 | 视频号 | `正文`（provider 内部自己拼 `#标签`，调用方传 `include_tags=False`） |
-| 抖音 | `标题 #标签\n正文`（标题必须在首行，发布器按首行识别） |
+| 抖音 | **三段式**：`标题` / 空行 / `正文` / 空行 / `#标签 …`（话题挪到末尾；写入统一走 `src/utils/douyin_caption.py`） |
 | B站 | `正文\n\n#标签`（标题单独走 title 字段） |
 
 用法：
+
+**抖音描述排版（2026-11-15 修）**：旧写法 `editor.type(caption, delay=10)` 是逐字符输入，
+contenteditable 会把 `\n` 吞成空格、每敲一个 `#` 都会唤起话题联想并插入 `\u200b`/`\xa0` ——
+平台读回的真实文本是「换行 0、零宽 5、NBSP 8」，手机上看着像乱码。
+现在统一 `build_caption()` 三段式 + `insert_caption()` 一次性写入（JS 段落 → `insert_text` → `fill` 降级）
++ `verify_caption()` 回读校验（换行 / 零宽 / NBSP / 正文一致），不合格自动重试一次，
+仍不合格写入 `publish.json` 的 `douyin_caption` 并在日志标「⚠️ 简介排版异常」。
+回归：`python3 scripts/test_douyin_caption.py`（20 条断言，离线）。
 
 ```bash
 python3 scripts/publish_channels.py --run-id <run_id>            # 视频号
