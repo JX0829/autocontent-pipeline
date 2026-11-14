@@ -4,6 +4,11 @@ accounts:
     name: "程序员科技热点"
     account_type: "tech"
     profile_path: "./data/browser_profiles/douyin-tech"
+    # 2026-11-13：CDP 接管（SPEC-20261113-douyin-cdp-publish R1）
+    # 非空 = 发布时接管这个已登录的常驻 Chrome，不再起临时 profile + 靠 storage_state 快照；
+    # 留空/删掉 = 回退老逻辑（行为与今天一致，允许 LOGIN_REQUIRED）。
+    # 常驻 Chrome 的 profile 目录是 data/browser_profiles/douyin-cdp（与 douyin-tech 快照无关）。
+    cdp_url: "http://127.0.0.1:9333"
     proxy_server: ""                 # 留空则直连；生产环境填入 http://user:***@host:port
     fingerprint_seed: "fp_seed_894102_mac_m3"
     publish_mode: "public_publish"   # 公开发布（原 private_publish 仅自己可见已切公开）；可见性由 provider 勾选「公开可见」，找不到选项即 fail-closed

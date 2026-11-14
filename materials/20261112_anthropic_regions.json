@@ -1,0 +1,16 @@
+{
+  "title": "Claude新规今天生效",
+  "body": "Anthropic 新版《支持地区政策》11 月 12 日生效，判定从「人在哪」扩到三层：人在不支持地区、公司注册地或总部在不支持地区、以及被不支持地区主体直接或间接多数持股或控制，即便员工人在美国也一样受限。政策覆盖 Claude 应用、API、云平台与授权经销商。",
+  "source_url": "https://www.anthropic.com/legal/supported-regions",
+  "source": "Anthropic 官方政策页",
+  "published_at": "2026-11-12T00:00:00+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "Anthropic",
+    "Claude",
+    "支持地区政策",
+    "合规",
+    "AI监管"
+  ],
+  "hot_value": 93
+}

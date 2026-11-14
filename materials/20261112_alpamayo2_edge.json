@@ -1,0 +1,16 @@
+{
+  "title": "英伟达开源自动驾驶模型",
+  "body": "英伟达 11 月 10 日在 Hugging Face 放出 Alpamayo 2 Edge 权重：20 亿参数的推理式视觉语言动作模型，能输出行驶轨迹并给出因果解释，专为车端 Thor 实时设计。Embedl 优化版每秒 10 次决策，比 PyTorch 快 10 倍以上。",
+  "source_url": "https://huggingface.co/nvidia/Alpamayo2-Edge",
+  "source": "NVIDIA 官方 / Hugging Face",
+  "published_at": "2026-11-11T16:34:38+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "自动驾驶",
+    "开源模型",
+    "英伟达",
+    "VLA",
+    "边缘计算"
+  ],
+  "hot_value": 92
+}

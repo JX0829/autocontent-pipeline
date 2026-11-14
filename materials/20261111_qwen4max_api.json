@@ -1,0 +1,6 @@
+{
+  "title": "Qwen4-Max只开API不开源",
+  "body": "阿里 Qwen4-Max 预览版已在 API 上线，模型 ID qwen4-max-preview，百万词元上下文、最多 39.3 万输出词元。但它只走 Token Plan、限新加坡区，11 月 25 日截止，还不许接进自动化脚本或业务后端；权重仍未放出。",
+  "source_url": "https://www.reddit.com/r/LocalLLaMA/comments/1xtcrgm/qwen4max_preview_is_out_on_api_access_no_word_on/",
+  "task_id": "rd_qwen4max_api_20261111"
+}

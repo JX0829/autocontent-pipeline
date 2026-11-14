@@ -1,0 +1,16 @@
+{
+  "title": "微软想租你的闲置显卡",
+  "body": "微软 11 月 5 日公开一项专利「闲置 GPU 机会式微训练」：把大训练任务拆成可独立训练的微任务，按通信开销、显存占用和数据本地性挑切分点，动态下发给自愿加入的用户设备，只在空闲时段跑。参与者按算力获积分，可换软件或现金，但没公布兑换费率。",
+  "source_url": "https://insider-gaming.com/microsoft-ai-use-your-gpu/",
+  "source": "Microsoft 专利 / Insider Gaming",
+  "published_at": "2026-11-11T18:05:04+08:00",
+  "target_account_type": "tech",
+  "tags": [
+    "微软",
+    "专利",
+    "闲置算力",
+    "AI训练",
+    "分布式"
+  ],
+  "hot_value": 88
+}
