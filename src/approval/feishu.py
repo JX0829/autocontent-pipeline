@@ -273,7 +273,10 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
             msg_id = svc.send_approval_card(receive_id=receive_id,
                                             receive_id_type=rec_type, card_content=card)
             if msg_id:
-                chat_id = receive_id if rec_type == "chat_id" else ""
+                # open_id 模式下 chat_id 本来为空 → 文字兜底（在会话里回 approve）会失效。
+                # 用 message_id 反查会话 chat_id，让两条通道都成立。
+                chat_id = (receive_id if rec_type == "chat_id"
+                           else (svc.resolve_chat_id(msg_id) or ""))
                 card_rec.write_text(json.dumps(
                     {"run_id": run_id, "msg_id": msg_id, "chat_id": chat_id,
                      "at": int(time.time())}, ensure_ascii=False), encoding="utf-8")
@@ -289,7 +292,8 @@ def ask(run_id: str, artifacts: dict[str, Any], message: str,
         return {"decision": "reject", "decided_by": "feishu_send_failed",
                 "reason": "审批通知发送失败"}
     if not chat_id:
-        chat_id = receive_id if rec_type == "chat_id" else ""
+        chat_id = (receive_id if rec_type == "chat_id"
+                   else (svc.resolve_chat_id(msg_id) or ""))
 
     # 2026-11-13：**环境变量优先**。旧写法 prof 在前，pipeline.yaml 里写死的
     # timeout_sec=600 永远盖掉 APPROVAL_TIMEOUT_SEC，导致「按文档传 1800 仍是 600s」，
