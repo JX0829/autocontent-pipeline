@@ -67,6 +67,25 @@ def _normalize_tags(tags: list[str]) -> str:
     return " ".join(t if str(t).startswith("#") else f"#{t}" for t in tags if str(t).strip())
 
 
+def _record_caption_evidence(video: Path, result: dict) -> None:
+    """把回读结论落到 run 目录，回执/返工能查到（不再静默）。"""
+    try:
+        path = Path(video).parent / "publish.json"
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data["douyin_caption"] = {
+            "ok": bool(result["verify"].get("ok")),
+            "strategy": result.get("strategy"),
+            "newlines": result["verify"].get("newlines"),
+            "zero_width": result["verify"].get("zw"),
+            "nbsp": result["verify"].get("nbsp"),
+            "problems": result["verify"].get("problems") or [],
+        }
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _log(f"描述回读结论已写入 {path}")
+    except Exception as exc:  # noqa: BLE001 — 写证据失败不能挡住发布
+        _log(f"⚠️ 描述回读结论文档写入失败：{type(exc).__name__}: {exc}")
+
+
 def _load_from_run(run_id: str) -> tuple[Path, str, str, list[str]]:
     """从 output/<YYYYMMDD>/<run_id>/ 读取产物与文案。"""
     candidates = sorted(PROJ.glob(f"output/*/{run_id}/video.mp4"), key=lambda p: p.stat().st_mtime)
@@ -201,7 +220,8 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
     except ModuleNotFoundError as exc:
         raise PublishPreflightError(f"缺少 playwright（当前解释器 {sys.executable}）: {exc.name}") from exc
 
-    caption = f"{title} {_normalize_tags(tags)}\n{summary}".strip()
+    from src.utils.douyin_caption import build_caption, describe, insert_caption
+    caption = build_caption(title, summary, tags)
     if dry_run:
         _log(f"[dry-run] video={video} exists={video.exists()} size={video.stat().st_size if video.exists() else 0}")
         _log(f"[dry-run] title={title!r} tags={len(tags)} caption_len={len(caption)}")
@@ -237,7 +257,14 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
             editor = page.locator('div[contenteditable="true"]').first
             editor.click()
             editor.fill("")
-            editor.type(caption, delay=10)
+            caption_result = insert_caption(page, editor, caption)
+            if not caption_result["ok"]:
+                _log(f"描述回读不合格，清空重试一次：{'；'.join(caption_result['verify']['problems'])}")
+                caption_result = insert_caption(page, editor, caption)
+            _log(f"描述回读 {describe(caption_result['verify'])}（策略 {caption_result['strategy']}）")
+            _record_caption_evidence(video, caption_result)
+            if not caption_result["ok"]:
+                _log("⚠️ 简介排版异常：结论已写入 publish.json 的 douyin_caption，发布继续（内容已上传）")
             time.sleep(2)
 
             for _ in range(40):
@@ -289,6 +316,15 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
             if title in text:
                 idx = text.find(title)
                 _log(f"VERIFIED_OK {line} | {text[max(0, idx - 80):idx + 120]!r}")
+                # 作品卡片里若显示「无作品描述」，说明描述只在 DOM 里、没进提交态
+                card = page.locator(f'div[class*="video-card"]:has-text("{title}")').first
+                card_text = card.inner_text() if card.count() else ""
+                if "无作品描述" in card_text:
+                    _log("⚠️ CAPTION_NOT_SUBMITTED：作品已发布但卡片显示「无作品描述」，"
+                         "描述没进提交态（需人工核对/补描述）")
+                    return 7
+                _log(f"作品描述回读：{'命中标题' if title in card_text else '未见标题'}"
+                     f"（卡片文本 {len(card_text)} 字）")
                 return 0
             _log(f"readback{attempt + 1} 未命中（{line or '未识别'}）")
             time.sleep(6)

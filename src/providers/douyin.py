@@ -269,19 +269,27 @@ class DouyinProvider(BaseSocialProvider):
                 except Exception:
                     pass
 
-                # 3. 构造文案与话题标签
-                topic_tags = " ".join([f"#{t.strip('#')}" for t in topics])
-                full_caption = f"{title} {topic_tags}\n{content_text}".strip()
+                # 3. 构造文案（三段式）+ 一次性插入 + 回读校验
+                from src.utils.douyin_caption import build_caption, describe, insert_caption
+                full_caption = build_caption(title, content_text, topics)
 
                 caption_editor = page.locator('div[contenteditable="true"]').first
                 if caption_editor.count() > 0:
-                    caption_editor.click()
-                    caption_editor.fill("")
-                    caption_editor.type(full_caption, delay=50)
+                    caption_result = insert_caption(page, caption_editor, full_caption, logger=logger)
+                    if not caption_result["ok"]:
+                        logger.warning(f"[douyin] 描述回读不合格，重试一次："
+                                       f"{'；'.join(caption_result['verify']['problems'])}")
+                        caption_result = insert_caption(page, caption_editor, full_caption, logger=logger)
+                    logger.info(f"[douyin] 描述回读 {describe(caption_result['verify'])}"
+                                f"（策略 {caption_result['strategy']}）")
+                    caption_ok = caption_result["ok"]
                 else:
-                    textarea = page.locator('textarea').first
+                    textarea = page.locator("textarea").first
+                    caption_ok = textarea.count() == 0
                     if textarea.count() > 0:
                         textarea.fill(full_caption)
+                        from src.utils.douyin_caption import verify_caption
+                        caption_ok = verify_caption(textarea.input_value(), full_caption)["ok"]
 
                 logger.info(f"Filled video title and topics: {title}")
                 time.sleep(2)
@@ -389,6 +397,7 @@ class DouyinProvider(BaseSocialProvider):
                         "success": True,
                         "draft_id": verified["draft_id"],
                         "verified_title": verified["title"],
+                        "caption_ok": caption_ok,
                         "message": "已确认私密发布成功：内容管理列表真实回读到该作品"
                     }
 

@@ -248,7 +248,8 @@ def build_desc(draft: dict, tags=None, platform: str = "channels",
     title = str(draft.get("title") or "").strip()
 
     if platform == "douyin":
-        head = f"{title} {tag_str}".strip()
-        return f"{head}\n{body}".strip()
+        # 统一走三段式构造（标题 / 简介 / 话题），与发布器实际写入完全一致
+        from .douyin_caption import build_caption
+        return build_caption(title, body, tags if include_tags else [])
     # 视频号 / B站：正文在前，标签在后（标题各自走 title 字段）
     return f"{body}\n\n{tag_str}".strip() if tag_str else body.strip()
