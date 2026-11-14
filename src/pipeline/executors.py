@@ -488,9 +488,19 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
         # 每个平台用自己的成片方向：竖版平台发 video.mp4，B站发 video_16_9.mp4
         aspect = forced_aspect or aspect_for_platform(plat)
         video, cover = _pick_media(ctx, aspect)
+        # 方向与成片必须写进 publish.json（回执/明细/返工全靠它），
+        # 2026-11-14 之前明细里没有 aspect，B站连发三条竖屏没人能从台账看出来。
+        _aspect_meta = {"aspect": aspect, "video": video.name, "cover": cover.name,
+                        "source": "params.aspect(强制)" if forced_aspect else "PLATFORM_ASPECT"}
+        print(f"      · {plat}: aspect={aspect} 成片={video.name} 封面={cover.name}"
+              f"（来源 {_aspect_meta['source']}）")
         if not video.exists():
-            report["failed"].append({"platform": plat,
+            report["failed"].append({"platform": plat, **_aspect_meta,
                                      "error": f"缺 {aspect} 成片: {video.name}"})
+            continue
+        if not cover.exists():
+            report["failed"].append({"platform": plat, **_aspect_meta,
+                                     "error": f"缺 {aspect} 封面: {cover.name}"})
             continue
 
         # ---- 门禁3：平台发布台账（与飞书 send_ledger 分开，fail-closed）----
@@ -502,7 +512,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
 
         if dry_run:
             ledger_release(key)               # 预检不占用台账位
-            report["skipped"].append({"platform": plat, "gate": "dry_run",
+            report["skipped"].append({"platform": plat, "gate": "dry_run", **_aspect_meta,
                                       "reason": "dry_run=true，只预检不真发"})
             continue
 
@@ -515,7 +525,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
         except Exception as exc:  # noqa: BLE001 — 结果未知，禁止自动重发
             state = record_outcome(key, False, status="SUBMIT_UNKNOWN",
                                    reason=f"{type(exc).__name__}: {exc}")
-            report["failed"].append({"platform": plat, "ledger": state,
+            report["failed"].append({"platform": plat, "ledger": state, **_aspect_meta,
                                      "error": f"{type(exc).__name__}: {exc}"})
             continue
 
@@ -524,6 +534,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                          or f"{plat}_{ctx.task_id}")
             state = record_outcome(key, True, external_id=msg_id)
             report["published"].append({"platform": plat, "msg_id": msg_id, "ledger": state,
+                                        **_aspect_meta,
                                         "status": res.get("status") or res.get("distribution") or "ok"})
         else:
             state = record_outcome(key, False, status=str(res.get("status") or ""),
