@@ -352,7 +352,8 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
             prov.headless_publish = bool(opts.get("headless"))
         return prov.save_draft(
             video_path=str(video), cover_path=str(cover), title=title,
-            topics=topics, content_text=body)
+            topics=topics, content_text=body,
+            stop_before_publish=bool(opts.get("stop_before_publish")))
     if platform == "bilibili":
         from src.providers.bilibili import BilibiliProvider
         body = build_desc(draft, platform="bilibili", run_root=run_root, include_tags=True)
