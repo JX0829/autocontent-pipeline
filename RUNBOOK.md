@@ -635,6 +635,10 @@ python3 -m src.pipeline.runner --material materials/<物料>.json \
   **门禁2 审批 approve 与门禁3 台账照旧生效**，省略则只出片
 - 每个平台按自己的方向选片：抖音/视频号 `video.mp4`，B站 `video_16_9.mp4`
   （映射唯一来源 `src/utils/accounts.py::PLATFORM_ASPECT`）
+- ⚠️ `pipeline.yaml::publish.aspect` **必须留空**（`aspect: ""`）。写了值就是强制覆盖，会短路上面的
+  平台映射 —— 2026-11-14 B站连发三条 1080x1920 竖屏就是 `aspect: vertical` 写死导致的。
+  只有手工单平台强推某版成片时才显式写；`publish.json` 里每平台都记录了
+  `aspect / video / cover / source`，核对方向直接看这个文件。
 - 发布结束：发一张「发布回执」卡（≤100 字）+ 写 `output/<日期>/<run_id>/publish_detail.md`
   （每平台结果 / 外部 ID / 失败原因），**聊天里只有那一行摘要**
 
