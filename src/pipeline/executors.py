@@ -530,14 +530,18 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
             continue
 
         if res.get("success"):
-            msg_id = str(res.get("msg_id") or res.get("bvid") or res.get("draft_id")
-                         or f"{plat}_{ctx.task_id}")
-            state = record_outcome(key, True, external_id=msg_id)
-            report["published"].append({"platform": plat, "msg_id": msg_id, "ledger": state,
+            # 只认平台真的给的 id；**不许用 `${plat}_${task_id}` 编一个**，
+            # 那会把「回读没证据」伪装成成功（ds-coding-plan-1 出现过 post_id 空的 published 行）
+            msg_id = str(res.get("msg_id") or res.get("bvid") or res.get("draft_id") or "")
+            state = record_outcome(key, True, external_id=msg_id,
+                                   status=str(res.get("status") or ""))
+            report["published"].append({"platform": plat, "msg_id": msg_id or "(无外部 id)", "ledger": state,
                                         **_aspect_meta,
                                         "status": res.get("status") or res.get("distribution") or "ok"})
         else:
-            state = record_outcome(key, False, status=str(res.get("status") or ""),
+            # 失败码优先取 `error`（LOGIN_REQUIRED / CDP_UNAVAILABLE…），分类器靠它判「可重试」
+            state = record_outcome(key, False,
+                                   status=str(res.get("status") or res.get("error") or ""),
                                    reason=str(res.get("message") or res.get("error") or "unknown"))
             report["failed"].append({"platform": plat, "ledger": state,
                                      "error": res.get("message") or res.get("error") or "unknown"})
