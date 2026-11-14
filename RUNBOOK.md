@@ -113,6 +113,37 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 
 ---
 
+### 3.2 速报抓取与编排（流水线内唯一实现）
+
+信息源抓取在 `src/crawlers/atomic_fetchers.py`，**编排/去重/板块/快照在 `src/digest/`**
+（原先在 `agents_context/xiao-pin/scripts/fetch_trends.py`，现为薄壳转发，两周后删）。
+
+```bash
+# 跑一轮但只看正文、不写去重库/快照（排查口径首选）
+python3 -m src.digest.orchestrator --dry-run
+
+# 真实落库（写 seen_trends.json + last_digest_snapshot.json，默认指 xiao-pin data/）
+python3 -m src.digest.orchestrator
+
+# 推送飞书（cron 用的就是这条；--build-only 只打印正文）
+python3 -m src.digest.push_stream [--build-only]
+```
+
+口径全部在 `config/trends.yaml`，改配置不用改代码：
+
+| 键 | 现状 | 说明 |
+|---|---|---|
+| `papers` | `false` | 关掉 HF/arXiv 两个论文源（省两次 30s 超时） |
+| `dedupe_window_days` | `5` | 去重库窗口；旧行为是 2 天 |
+| `fill_gap` | `false` | 宁缺勿凑：新鲜条目不够就少出，不回捞看过的 |
+| `x.queries` / `x.exclude` | 三组查询 + 排除词 | X 检索口径 |
+| `sections` | 2 板块 5~6 条 | 板块 1 = 官方 1 + X 2；板块 2 = GitHub+Reddit 合并池 2~3 |
+
+`src.digest.config.DEFAULTS` **故意等于迁移前行为**：配置丢了/写坏了就退回老口径，不会静默换标准。
+契约回归：`python3 scripts/test_digest_revamp.py`（24 断言，不联网，含新旧实现 A/B 对照）。
+
+---
+
 ## 4. 运行模式（最容易踩的两个坑）
 
 ### 4.1 发不发片
