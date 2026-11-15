@@ -109,12 +109,22 @@ def main() -> int:
     check("list_rows 能读出台账", len(rows) >= 4, str(len(rows)))
     check("台账带 status 字段", all("status" in r for r in rows))
 
+    print("\n[9] manual_verified_* 不算发布凭证")
+    mv_key, _ = check_and_claim("douyin", "acc-mv", video3, "标题MV", path=db)
+    mv_state = record_outcome(mv_key, True, external_id="manual_verified_20261115_blank", path=db)
+    check("manual_verified_* 落成 unverified（不是 published）", mv_state == "unverified", mv_state)
+    real_key, _ = check_and_claim("douyin", "acc-real", video3, "标题REAL", path=db)
+    real_state = record_outcome(real_key, True, external_id="readback_1794672416", path=db)
+    check("真外部 id 照常 published", real_state == "published", real_state)
+
     print(f"\n✅ PASS {PASS}   ❌ FAIL {FAIL}")
     if FAIL:
         print("PUBLISH_LEDGER CONTRACT FAIL")
         return 1
     print("PUBLISH_LEDGER CONTRACT PASS")
     return 0
+
+
 
 
 if __name__ == "__main__":
