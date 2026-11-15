@@ -540,11 +540,15 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                                         **_aspect_meta,
                                         "status": res.get("status") or res.get("distribution") or "ok"})
         else:
-            # 失败码优先取 `error`（LOGIN_REQUIRED / CDP_UNAVAILABLE…），分类器靠它判「可重试」
+            # 失败码优先取 `error`（LOGIN_REQUIRED / CDP_UNAVAILABLE / PUBLISHED_NO_TITLE…），
+            # 分类器靠它判「可重试」；`post_id` 有值说明作品其实已经出现（有作品无标题），
+            # 必须挂到 unverified 行上，方便人工定位补标题。
             state = record_outcome(key, False,
                                    status=str(res.get("status") or res.get("error") or ""),
+                                   external_id=str(res.get("post_id") or ""),
                                    reason=str(res.get("message") or res.get("error") or "unknown"))
-            report["failed"].append({"platform": plat, "ledger": state,
+            report["failed"].append({"platform": plat, "ledger": state, **_aspect_meta,
+                                     "post_id": str(res.get("post_id") or ""),
                                      "error": res.get("message") or res.get("error") or "unknown"})
 
     # ---- 回执：发布结果只发这一张卡（≤100 字），全部被门禁拦下时不发 ----
