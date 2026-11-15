@@ -138,15 +138,28 @@ def main() -> int:
             reason=str(res.get("reason") or res.get("message") or ""))
         print(json.dumps({"ledger": state}, ensure_ascii=False))
 
-    # ---- 回执：与 pipeline 同一张卡 ----
+    # ---- 回执 / 明细 / 卡片：与流水线同一张卡 ----
+    # 走 publish_report 合并进该 run 的 publish.json 并**原地更新审批卡**，
+    # 不再另发一张 1/1 的回执（那样一个 run 会有两张卡、各说一半）。
     if not (args.no_receipt or args.stop_before_publish):
-        report = ({"published": [{"platform": "channels"}]} if res.get("published")
-                  else {"failed": [{"platform": "channels",
-                                    "error": res.get("status") or res.get("message") or "失败"}]})
-        try:
-            send_publish_receipt(report, title)
-        except Exception as exc:  # noqa: BLE001 — 回执失败不改发布结论
-            print(f"  ! 发布回执发送失败（不影响发布结论）：{type(exc).__name__}: {exc}")
+        item = {"platform": "channels", "bucket": "published" if res.get("published") else "failed",
+                "msg_id": str(res.get("post_id") or res.get("msg_id") or ""),
+                "ledger": "published" if res.get("published") else "failed",
+                "status": res.get("status") or "", "aspect": "vertical",
+                "video": video.name, "cover": cover.name if cover else "",
+                "source": "single_platform_cli"}
+        if not res.get("published"):
+            item["error"] = str(res.get("status") or res.get("message") or "失败")
+        if run_root is not None:
+            from src.publish_report import merge_and_finalize
+            _rep = merge_and_finalize(Path(run_root), [item], title)
+            print(f"  ✓ 已合并进 run 的发布结论：{_rep.get('receipt')}")
+        else:
+            # 纯 CLI（没有 run 目录）才发独立回执，保证结果仍可见
+            from src.publish_report import merge_results, send_receipt_card
+            _rep = merge_results({}, [item])
+            _rep["receipt"] = None
+            send_receipt_card(_rep, title)
 
     return 0 if res.get("published") else 1
 
