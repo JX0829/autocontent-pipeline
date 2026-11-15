@@ -41,8 +41,13 @@ def _short_reason(raw: Any) -> str:
 
 def publish_receipt_text(report: Dict[str, Any], title: str = "", limit: int = 100) -> str:
     """把发布结果压成一行摘要（≤limit 字），不含卡片标题。"""
+    ok_items = report.get("published") or []
+    # 台账 unverified = 平台侧没拿到可回读的凭证（无外部 id）。这种不能报「✅ 已发布」，
+    # 否则记录与实际对不上（2026-11-15 视频号真发出去了却被记 unverified，卡片却报成功）。
     ok = [PLATFORM_CN.get(str(p.get("platform")), str(p.get("platform")))
-          for p in report.get("published") or []]
+          for p in ok_items if str(p.get("ledger") or "") != "unverified"]
+    unverified = [PLATFORM_CN.get(str(p.get("platform")), str(p.get("platform")))
+                  for p in ok_items if str(p.get("ledger") or "") == "unverified"]
     bad = report.get("failed") or []
     skipped = report.get("skipped") or []
 
@@ -50,10 +55,14 @@ def publish_receipt_text(report: Dict[str, Any], title: str = "", limit: int = 1
         names = [PLATFORM_CN.get(str(b.get("platform")), str(b.get("platform"))) for b in bad]
         head = "、".join(names[:2]) + (f" 等{len(names)}个" if len(names) > 2 else "")
         first = bad[0]
-        line = (f"⚠️ {len(ok)}/{len(ok) + len(bad)} 成功｜{head}失败："
+        line = (f"⚠️ {len(ok)}/{len(ok) + len(unverified) + len(bad)} 成功｜{head}失败："
                 f"{_short_reason(first.get('error') or first.get('message'))}")
     elif ok:
-        line = f"✅ 已发布 {len(ok)}/{len(ok)}：{'·'.join(ok)}"
+        line = f"✅ 已发布 {len(ok)}/{len(ok) + len(unverified)}：{'·'.join(ok)}"
+        if unverified:
+            line += f"｜⚠️ 未验证：{'·'.join(unverified)}"
+    elif unverified:
+        line = f"⚠️ 已提交但未验证（无平台回读凭证）：{'·'.join(unverified)}"
     elif skipped:
         line = f"⏭ 未发布（{len(skipped)} 项被门禁拦下）"
     else:

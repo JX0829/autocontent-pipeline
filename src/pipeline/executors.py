@@ -537,7 +537,8 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
         if res.get("success"):
             # 只认平台真的给的 id；**不许用 `${plat}_${task_id}` 编一个**，
             # 那会把「回读没证据」伪装成成功（ds-coding-plan-1 出现过 post_id 空的 published 行）
-            msg_id = str(res.get("msg_id") or res.get("bvid") or res.get("draft_id") or "")
+            msg_id = str(res.get("msg_id") or res.get("bvid") or res.get("draft_id")
+                         or res.get("post_id") or "")
             state = record_outcome(key, True, external_id=msg_id,
                                    status=str(res.get("status") or ""))
             report["published"].append({"platform": plat, "msg_id": msg_id or "(无外部 id)", "ledger": state,
