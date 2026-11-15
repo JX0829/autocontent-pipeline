@@ -308,6 +308,9 @@ def _cli() -> int:
     ap.add_argument("--deleted", metavar="KEY", help="标记该条已被平台删除（允许重发）")
     ap.add_argument("--attach", nargs=2, metavar=("KEY", "POST_ID"),
                     help="给 unverified 行挂上平台作品 id（「有作品无标题」人工补标题后用）")
+    ap.add_argument("--mark-published", action="store_true",
+                    help="配合 --attach：人工在平台补完标题/确认作品已发出后，"
+                         "把该行结账为 published（不再挂 unverified）")
     ap.add_argument("--db", help="指定数据库路径（默认 SQLITE_DB_PATH 或 data/pipeline_state.db）")
     a = ap.parse_args()
 
@@ -322,8 +325,15 @@ def _cli() -> int:
     if a.attach:
         key, post_id = a.attach
         hit = attach_post_id(key, post_id, path=p)
-        print("已挂上 post_id" if hit else "没有可挂的 unverified 行:", key)
-        return 0 if hit else 1
+        if not hit:
+            print("没有可挂的 unverified 行:", key)
+            return 1
+        if a.mark_published:
+            mark_published(key, post_id, path=p)
+            print("已挂上 post_id 并结账为 published:", key, post_id)
+        else:
+            print("已挂上 post_id（仍为 unverified，禁止自动重发）:", key)
+        return 0
     rows = list_rows(a.list or None, 50, path=p)
     print(json.dumps(rows, ensure_ascii=False, indent=2))
     return 0
