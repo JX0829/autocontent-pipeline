@@ -482,6 +482,37 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                        [f"已批准（{_by}），正在发布到 {'、'.join(platforms)} …",
                         "完成后本卡会更新为结果，无需再发消息"])
 
+    # ---- 门禁2.5：前置登录态预检（T2，2026-11-15）----
+    # 抖音 CDP / 视频号常驻 Chrome / B站 cookie 任一不可用 → **不进发布循环、不占台账、
+    # 不发任何内容**，直接发告警卡（含修复命令）并 exit≠0。
+    # 过去的毛病是「跑到第 N 步才炸」：一半平台已发出去、另一半静默失败。
+    if not dry_run:
+        from src.pipeline.preflight import probe_all, send_alert
+
+        probes = probe_all(platforms)
+        for _r in probes:
+            print(f"      · preflight {_r['platform']}: "
+                  f"{'ok' if _r['ok'] else _r['code']} — {_r['detail']}")
+        fails = [r for r in probes if not r["ok"]]
+        if fails:
+            for f in fails:
+                report["failed"].append({"platform": f["platform"], "gate": "preflight",
+                                         "error": f"{f['code']}: {f['detail']}",
+                                         "fix": f.get("fix") or ""})
+            report["preflight"] = probes
+            report["receipt"] = ("🚫 前置预检未通过：" +
+                                 "、".join(f["platform"] for f in fails) + "（未发布）")
+            try:
+                send_alert(fails, ctx.run_id, _card_title)
+            except Exception as exc:  # noqa: BLE001 — 告警发不出去也要 exit≠0
+                print(f"  ! 前置告警卡发送失败：{type(exc).__name__}: {exc}")
+            _out()
+            update_card_status(
+                ctx.run_id, f"🚫 前置预检未通过 · {_card_title}", "red",
+                [report["receipt"]] + [f"- ❌ {f['platform']}：{f['code']}" for f in fails])
+            raise ExecutorError("发布前置预检未通过: " +
+                                ", ".join(f["platform"] for f in fails))
+
     for plat in platforms:
         account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
         acct_id = str(account.get("id") or "")
