@@ -67,7 +67,7 @@ def main() -> int:
 
     # 2. ensure 拉起
     t0 = time.time()
-    url = cs.ensure(headless=True, timeout=30)
+    url = cs.ensure(headless=False, timeout=30)
     cost = time.time() - t0
     version = cs.probe() or {}
     check("ensure 返回固定端口地址", url == f"http://127.0.0.1:{PORT}", url)
@@ -79,7 +79,7 @@ def main() -> int:
     pid_first = holder[0] if holder else -1
 
     # 3. 复用：第二次 ensure 不重启
-    cs.ensure(headless=True)
+    cs.ensure(headless=False)
     holder2 = cs.lock_holder()
     check("第二次 ensure 复用同一浏览器", bool(holder2) and holder2[0] == pid_first,
           f"{pid_first} -> {holder2[0] if holder2 else None}")
@@ -93,7 +93,7 @@ def main() -> int:
     os.symlink(f"testhost-{proc.pid}", busy_ud / "SingletonLock")
     restore = _point_at(busy_dir, PORT_BUSY)
     try:
-        cs.ensure(headless=True, timeout=5)
+        cs.ensure(headless=False, timeout=5)
         check("真占用时抛 ChannelsSessionError", False, "没有抛异常")
     except cs.ChannelsSessionError as exc:
         msg = str(exc)
@@ -112,7 +112,7 @@ def main() -> int:
     os.symlink(f"testhost-{unrelated.pid}", copy_ud / "SingletonLock")
     restore = _point_at(copy_dir, PORT_COPY)
     try:
-        cs.ensure(headless=True, timeout=30)
+        cs.ensure(headless=False, timeout=30)
         check("拷贝 profile 的旧锁不误判占用", cs.probe() is not None,
               f"pid={unrelated.pid} 仍在，但目录不是它占的")
         check("旧锁已被清理", not (copy_ud / "SingletonLock").exists())
