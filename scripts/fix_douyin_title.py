@@ -50,7 +50,9 @@ def _title_from_run(run_id: str) -> str:
                 continue
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
+            except (json.JSONDecodeError, OSError) as exc:
+                # 只吞「读不到 / 不是 JSON」这两种确定性问题，其他异常要冒出来
+                _log(f"[跳过] 不可读的 draft {f}: {exc}")
                 continue
             t = str((data.get("draft") or data).get("title") or data.get("title") or "").strip()
             if t:
