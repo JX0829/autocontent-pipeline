@@ -24,6 +24,10 @@ class ChannelsCDPProvider(BaseSocialProvider):
         super().__init__(account_config)
         self.profile_path = account_config.get("profile_path", "./data/browser_profiles/channels-tech")
         self.publish_mode = account_config.get("publish_mode", "public") # public (公开分发) | draft (草稿箱)
+        # 账号级「有头/无头」标记，与抖音同口径（config/accounts.yaml 的 headless）。
+        # 2026-11-15 之前这里**根本没读**这个键 —— 账号里写 headless: false 也不生效，
+        # 真正决定形态的是 publish_live(headless=True) 的硬编码默认值（无头）。
+        self.headless_publish = bool(account_config.get("headless", False))
 
     def _warn_if_headless(self) -> bool:
         """常驻实例是不是无头；是的话大声报出来（用户要求视频号必须有头）。"""
@@ -90,7 +94,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
         declare_aigc: bool = True,
         dry_run: bool = False,
         allow_missing_flags: bool = False,
-        headless: bool = False,
+        headless: bool | None = None,
         stop_before_publish: bool = False,
     ) -> Dict[str, Any]:
         """真实发布到微信视频号（公开可见 + 原创声明 + AI 声明）。
@@ -109,10 +113,18 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
         from .channels_session import CDP_URL, ChannelsSessionError, ensure
 
+        # 浏览器形态优先级：显式参数 > 账号配置(config/accounts.yaml: headless) > 默认有头。
+        # 视频号**不允许**无头：无头实例会被风控/登录态校验打回，且常驻进程一旦无头，
+        # 后续所有发布都复用它（2026-11-15 用户明确要求）。
+        eff_headless = self.headless_publish if headless is None else headless
+        if eff_headless:
+            logger.warning("[CHANNELS] 显式要求无头（headless=true）：视频号会被风控/登录态打回，"
+                           "仅在排障时短暂使用")
+
         # 登录态来源统一为「常驻 Chrome + 持久化 profile」：没起来就自愈拉起，
         # 被别的进程占用时 ensure() 会给可执行提示（关窗 / kill pid / --stop）
         try:
-            cdp_url = ensure(headless=headless)
+            cdp_url = ensure(headless=eff_headless)
         except ChannelsSessionError as exc:
             return {"success": False, "published": False, "status": "CDP_UNAVAILABLE",
                     "message": str(exc)}
@@ -122,7 +134,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
             video_path=video_path, cover_path=cover_path, title=title,
             content_text=content_text, topics=topics,
             declare_original=declare_original, declare_aigc=declare_aigc,
-            dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=headless,
+            dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
             stop_before_publish=stop_before_publish, cdp_url=cdp_url))
 
     async def _publish_live_async(self, video_path: str, cover_path: str, title: str,

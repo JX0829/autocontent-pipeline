@@ -77,11 +77,13 @@ def main() -> int:
                     violations.append(f"{rel}:{lineno}  {code.strip()[:90]}")
                     break
 
-    yaml_path = PROJ / "pipeline.yaml"
-    if yaml_path.exists():
+    yaml_targets = [PROJ / "pipeline.yaml", PROJ / "config" / "accounts.yaml"]
+    for yaml_path in yaml_targets:
+        if not yaml_path.exists():
+            continue
         for lineno, code in strip_comments_and_docstrings(yaml_path.read_text(encoding="utf-8")):
             if YAML_BAD.search(code):
-                violations.append(f"pipeline.yaml:{lineno}  {code.strip()[:90]}")
+                violations.append(f"{yaml_path.relative_to(PROJ)}:{lineno}  {code.strip()[:90]}")
 
     print("=== 渠道无头巡检 ===")
     if violations:
@@ -91,7 +93,7 @@ def main() -> int:
         print("CHANNELS_HEADFUL_FAIL")
         return 1
 
-    print(f"  扫描 {len([t for t in TARGETS if (PROJ / t).exists()])} 个文件 + pipeline.yaml")
+    print(f"  扫描 {len([t for t in TARGETS if (PROJ / t).exists()])} 个文件 + pipeline.yaml/accounts.yaml")
     print("  未发现 headless=True / headless: true")
     print("CHANNELS_HEADFUL_OK")
     return 0
