@@ -395,6 +395,10 @@ publish:
   # 导致 B站连发三条 1080x1920 竖屏（executors.py 的 forced_aspect 优先于平台映射）。
   # 只在「手工单平台强推某版成片」时才在这里显式写 vertical/landscape。
   aspect: ""
+  # 浏览器形态：视频号/抖音**必须**有头（headless=false）。无头实例会被平台风控/登录态
+  # 校验打回，而且 channels_session 拉起的是**常驻**进程 —— 一旦以无头起来，
+  # 后续所有发布会复用它，等于整条链路变成无头。2026-11-15 显式声明，不靠代码默认值。
+  headless: false
   receipt: true         # 发完发一张「发布回执」卡（≤100 字，摘要见 card_builder.publish_receipt_text）
 
 # ---------------------------------------------------------------- 通知配置

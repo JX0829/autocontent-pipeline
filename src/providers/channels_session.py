@@ -71,10 +71,13 @@ async def is_logged_in(page) -> bool:
     return any(m in body for m in markers)
 
 
-async def verify_login(cdp_url: str = "", *, headless: bool = True) -> tuple[bool, str]:
+async def verify_login(cdp_url: str = "", *, headless: bool = False) -> tuple[bool, str]:
     """开一个临时页真访问后台，返回 (是否已登录, 当前 URL)。
 
     只探 CDP 端口不算「登录可用」——端口活着但会话过期是最常见的误判来源。
+
+    headless 默认 False：cdp_url 为空时会 ensure() 拉起**常驻** Chrome，绝不能是无头
+    （2026-11-15 用户明确要求：视频号不用无头浏览器）。
     """
     from playwright.async_api import async_playwright
 
@@ -119,6 +122,27 @@ def _process_cmdline(pid: int) -> str:
         logger.debug(f"ps 取 cmdline 失败（pid={pid}）：{type(exc).__name__}: {exc}")
         return ""
     return out.strip()
+
+
+def running_headless() -> bool | None:
+    """常驻实例是不是**无头**。None = 探测不到（没起来/拿不到 cmdline）。
+
+    2026-11-15 用户明确要求：「视频号不要使用无头浏览器」。ensure() 拉起的是常驻进程，
+    一旦历史遗留的无头实例还在跑，改代码默认值也救不回来 —— 所以这里在真机上核对
+    一次进程命令行（`--headless`），让调用方能把「当前实例是无头」明说出来。
+    """
+    holder = lock_holder()
+    pid = holder[0] if holder else None
+    if pid is None:
+        try:
+            pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as exc:
+            logger.debug(f"读 pid 文件失败（{PID_FILE}）：{type(exc).__name__}: {exc}")
+            return None
+    cmd = _process_cmdline(pid)
+    if not cmd:
+        return None
+    return "headless" in cmd
 
 
 def lock_holder() -> tuple[int, bool, bool] | None:

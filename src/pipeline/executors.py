@@ -342,7 +342,7 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
             video_path=str(video), cover_path=str(cover), title=title,
             content_text=body, topics=topics,
             declare_original=declare_original, declare_aigc=declare_aigc,
-            dry_run=dry_run, headless=bool(opts.get("headless", True)), **extra)
+            dry_run=dry_run, headless=bool(opts.get("headless", False)), **extra)
     if platform == "douyin":
         from src.providers.douyin import DouyinProvider
         body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=True)
