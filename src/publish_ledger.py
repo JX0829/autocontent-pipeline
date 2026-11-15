@@ -61,6 +61,8 @@ SAFE_RETRY_SIGNALS = (
     "PREFLIGHT",                 # 上传页准备失败（未点「发布」）
     "UPLOAD_PAGE_NOT_READY",
     "DRAFT_BUTTON_NOT_FOUND",    # 找不到草稿按钮，安全策略主动拦停
+    "TITLE_NOT_LANDED",          # 2026-11-15：标题没落进「作品标题」框 → 未点发布，可重试
+    "CAPTION_MISMATCH",          # 正文回读与预期不符 → 未点发布，可重试
     "DRY_RUN",
     "MISSING_PARAM",
     "VALIDATION",
@@ -178,16 +180,23 @@ def mark_failed(key: str, reason: str = "", *, path: Path | None = None) -> None
         conn.close()
 
 
-def mark_unverified(key: str, reason: str = "", *, path: Path | None = None) -> None:
+def mark_unverified(key: str, reason: str = "", *, external_id: str = "",
+                    path: Path | None = None) -> None:
     """结果未知 → 标 unverified：占位保留，**禁止自动重发**，等人工去平台核对。
 
     典型场景：点了"发表"之后超时/异常、页面报 PUBLISHED_UNVERIFIED。
     这类不能标 failed —— failed 允许重试，而"可能已经发出去"的情况下重试就是重复发布。
+
+    `external_id`：2026-11-15 起允许挂上回读到的作品 id（"有作品无标题"场景）——
+    状态仍是 unverified（不许自动重发），但人工补标题时能直接定位是哪一个作品。
     """
     conn = connect(path)
     try:
-        conn.execute("UPDATE publish_ledger SET status='unverified', reason=?, updated_at=?"
-                     " WHERE publish_key=?", (reason[:500], _now(), key))
+        conn.execute(
+            "UPDATE publish_ledger SET status='unverified', reason=?,"
+            " post_id=COALESCE(NULLIF(?, ''), post_id), updated_at=?"
+            " WHERE publish_key=?",
+            (reason[:500], str(external_id or "").strip(), _now(), key))
         conn.commit()
     finally:
         conn.close()
@@ -225,8 +234,26 @@ def record_outcome(key: str, published: bool, *, external_id: str = "",
     if classify_failure(status, reason) == "failed":
         mark_failed(key, detail, path=path)
         return "failed"
-    mark_unverified(key, detail, path=path)
+    mark_unverified(key, detail, external_id=external_id, path=path)
     return "unverified"
+
+
+def attach_post_id(key: str, post_id: str, *, path: Path | None = None) -> bool:
+    """给 unverified 行补上平台作品 id（不改变 status，仍是 unverified）。
+
+    用途：`PUBLISHED_NO_TITLE` / 回读漏判导致「作品在、台账不知道」时，
+    人工核对平台后把 id 挂上，避免以后再被判成"没发出去"重复投稿。
+    """
+    conn = connect(path)
+    try:
+        cur = conn.execute(
+            "UPDATE publish_ledger SET post_id=?, updated_at=?"
+            " WHERE publish_key=? AND status='unverified'",
+            (str(post_id).strip(), _now(), key))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 def mark_deleted(key: str, *, path: Path | None = None) -> None:
@@ -279,6 +306,8 @@ def _cli() -> int:
     ap.add_argument("--list", nargs="?", const="", metavar="PLATFORM", help="列出台账（可按平台过滤）")
     ap.add_argument("--release", metavar="KEY", help="清掉未收尾的 claimed 占位")
     ap.add_argument("--deleted", metavar="KEY", help="标记该条已被平台删除（允许重发）")
+    ap.add_argument("--attach", nargs=2, metavar=("KEY", "POST_ID"),
+                    help="给 unverified 行挂上平台作品 id（「有作品无标题」人工补标题后用）")
     ap.add_argument("--db", help="指定数据库路径（默认 SQLITE_DB_PATH 或 data/pipeline_state.db）")
     a = ap.parse_args()
 
@@ -290,6 +319,11 @@ def _cli() -> int:
         mark_deleted(a.deleted, path=p)
         print("已标记 deleted:", a.deleted)
         return 0
+    if a.attach:
+        key, post_id = a.attach
+        hit = attach_post_id(key, post_id, path=p)
+        print("已挂上 post_id" if hit else "没有可挂的 unverified 行:", key)
+        return 0 if hit else 1
     rows = list_rows(a.list or None, 50, path=p)
     print(json.dumps(rows, ensure_ascii=False, indent=2))
     return 0

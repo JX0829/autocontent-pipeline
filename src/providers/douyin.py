@@ -158,6 +158,57 @@ class DouyinProvider(BaseSocialProvider):
             logger.warning(f"Error checking Douyin login status: {e}")
             return False
 
+    #: 抖音「作品标题」输入框的候选选择器（placeholder 会微调，多给几个兜底）
+    TITLE_SELECTORS = (
+        'input[placeholder*="标题"]',
+        'input[placeholder*="作品标题"]',
+        'input[placeholder*="填写作品"]',
+        'input[placeholder*="流量"]',
+        'input[maxlength="30"]',
+        'textarea[placeholder*="标题"]',
+    )
+
+    def _fill_title(self, page, title: str) -> tuple[bool, str, str]:
+        """把标题填进抖音「作品标题」框，并**回读自证**（最多 3 轮）。
+
+        2026-11-15 事故：标题只拼在正文里、标题框留空 → 平台上「有作品、无标题」，
+        而回读又是按标题找作品 → 永远命中不了，记成 unverified。
+        返回 (是否落位, 回读到的文本, 失败原因)。落位失败调用方**不许点发布**。
+        """
+        want = (title or "").strip()[:30]
+        if not want:
+            return False, "", "标题为空"
+        loc = None
+        for sel in self.TITLE_SELECTORS:
+            cand = page.locator(sel).first
+            try:
+                if cand.count() > 0 and cand.is_visible():
+                    loc = cand
+                    break
+            except Exception:  # noqa: BLE001 — 选择器不可用就试下一个
+                continue
+        if loc is None:
+            return False, "", "页面上找不到「作品标题」输入框"
+
+        landed = ""
+        for attempt in range(3):
+            try:
+                loc.click()
+                # 用真实按键清空 + fill() 填：两者都派发 input 事件，React 状态才会更新
+                page.keyboard.press("ControlOrMeta+a")
+                page.keyboard.press("Delete")
+                loc.fill(want)
+                time.sleep(0.6)
+                landed = (loc.input_value() or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"标题填写第 {attempt + 1} 轮异常: {exc}")
+                landed = ""
+            if landed and landed[:10] == want[:10]:
+                logger.info(f"标题已落位（第 {attempt + 1} 轮）: {landed[:30]!r}")
+                return True, landed, ""
+            time.sleep(1)
+        return False, landed, f"回读不一致 filled={landed[:40]!r}"
+
     def save_draft(
         self,
         video_path: str,
@@ -277,17 +328,28 @@ class DouyinProvider(BaseSocialProvider):
                 #    contenteditable，抖音的话题联想面板会在打字过程中插入/重排内容，
                 #    最终简介变成「标题和正文交错、#A#n#C#A」这种乱码。
                 #    改为：标题进独立「作品标题」输入框；正文原子插入；话题逐个带停顿地打。
-                # 3a. 简介正文（标题已在 build_desc 里打头，不再塞进独立标题框，避免重复）
+                # 3a. 标题：进独立「作品标题」框并回读自证；落不上就不许发布
+                title_ok, landed_title, title_err = self._fill_title(page, title)
+                if not title_ok:
+                    logger.error(f"TITLE_NOT_LANDED: {title_err}（expected={title[:40]!r}）")
+                    browser.close()
+                    return {"success": False, "published": False,
+                            "error": "TITLE_NOT_LANDED",
+                            "expected": title[:60], "filled": (landed_title or "")[:60],
+                            "message": f"标题没能落到「作品标题」框（{title_err}），拒绝发布"}
+
+                # 3b. 简介正文（标题/话题各有入口，正文只放内容）
                 body_text = content_text
                 caption_editor = page.locator('div[contenteditable="true"]').first
                 editor_ok = caption_editor.count() > 0
                 if editor_ok:
                     caption_editor.click()
-                    caption_editor.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                    # 原子插入：一次 execCommand，不走逐字符，避免联想面板重排
-                    caption_editor.evaluate(
-                        "(el, t) => { el.focus(); document.execCommand('insertText', false, t); }",
-                        body_text)
+                    # 真实事件清空 + 原子插入：innerHTML='' + execCommand 只改 DOM，
+                    # React 状态不更新 → 点发布时正文被整体丢弃，平台上「无作品描述」。
+                    # keyboard.insert_text 一次派发 input/beforeinput 事件，原子且能进 state。
+                    page.keyboard.press("ControlOrMeta+a")
+                    page.keyboard.press("Delete")
+                    page.keyboard.insert_text(body_text)
                     time.sleep(1)
                     got = (caption_editor.inner_text() or "").strip()
                     if got[:20] != body_text.strip()[:20]:
@@ -441,15 +503,28 @@ class DouyinProvider(BaseSocialProvider):
 
                     # 权威回读：内容管理列表里必须真实出现该标题，否则一律判失败
                     logger.info(f"Publish signal={signal}, running authoritative read-back...")
-                    verified = self._verify_published(title)
+                    verified = self._verify_published(title, fallback_text=content_text[:40])
                     time.sleep(1)
                     browser.close()
-                    if not verified["found"]:
+                    if not verified.get("found"):
                         return {
                             "success": False,
                             "error": "READBACK_NOT_FOUND",
                             "signal": signal,
                             "message": "发布信号出现但内容管理列表回读未命中该作品，判定未发布（拒绝虚报成功）"
+                        }
+                    if not verified.get("title_ok", True):
+                        # 作品出现了、但标题没落上：既不能虚报成功，也不能当"没发出去"重发
+                        logger.error("PUBLISHED_NO_TITLE: 作品已在列表出现，但标题未落上")
+                        return {
+                            "success": False,
+                            "published": True,
+                            "status": "PUBLISHED_NO_TITLE",
+                            "error": "PUBLISHED_NO_TITLE",
+                            "post_id": verified.get("draft_id") or "",
+                            "signal": signal,
+                            "message": ("作品已在内容管理列表出现（按正文命中），但标题未落上："
+                                        "有作品无标题，按 unverified 记账，需人工到平台补标题")
                         }
                     return {
                         "success": True,
@@ -492,7 +567,8 @@ class DouyinProvider(BaseSocialProvider):
             logger.exception(f"Error during Douyin draft saving: {e}")
             return {"success": False, "error": str(e), "message": "保存抖音草稿异常"}
 
-    def _verify_published(self, title: str, wait_sec: int = 45) -> Dict[str, Any]:
+    def _verify_published(self, title: str, wait_sec: int = 45,
+                          fallback_text: str = "") -> Dict[str, Any]:
         """权威回读：打开内容管理列表，确认标题真实出现（唯一成功判据）。
 
         必须放到独立线程里跑：publish 执行体可能已处在 asyncio 事件循环中，而
@@ -504,20 +580,44 @@ class DouyinProvider(BaseSocialProvider):
 
         def _worker() -> None:
             try:
-                box.update(self._verify_published_sync(title, wait_sec))
+                box.update(self._verify_published_sync(title, wait_sec, fallback_text))
             except Exception as exc:  # noqa: BLE001 — 回读异常按未命中处理，不掩盖
                 logger.warning(f"verify worker failed: {exc}")
-                box.update({"found": False, "draft_id": None, "title": None})
+                box.update({"found": False, "draft_id": None, "title": None, "title_ok": False})
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
         t.join(wait_sec + 60)
         return box or {"found": False, "draft_id": None, "title": None}
 
-    def _verify_published_sync(self, title: str, wait_sec: int = 45) -> Dict[str, Any]:
+    @staticmethod
+    def _match_readback(text: str, title_key: str, caption_key: str) -> tuple[bool, bool, str]:
+        """回读命中判定（纯函数，便于回归）。
+
+        返回 (是否找到作品, 标题是否落上, 命中依据)。标题优先；
+        标题没命中但正文命中 = 作品发了、标题没落上（"有作品无标题"）。
+        """
+        blob = text or ""
+        if title_key and title_key in blob:
+            return True, True, "title"
+        if caption_key and caption_key in blob:
+            return True, False, "caption"
+        return False, False, ""
+
+    def _verify_published_sync(self, title: str, wait_sec: int = 45,
+                               fallback_text: str = "") -> Dict[str, Any]:
+        """回读内容管理列表。
+
+        判据两级：
+          1) 按**标题**前 14 字命中 → found=True, title_ok=True；
+          2) 按**正文**前 14 字命中 → found=True, title_ok=False（"有作品无标题"）。
+             这一级是 2026-11-15 加的：标题没落上时作品其实已经发出去了，
+             旧逻辑一律判 READBACK_NOT_FOUND → 台账 unverified 且说不清到底发没发。
+        """
         key = (title or "").strip()[:14]
-        if not key:
-            return {"found": False, "draft_id": None, "title": None}
+        fb = (fallback_text or "").strip()[:14]
+        if not key and not fb:
+            return {"found": False, "draft_id": None, "title": None, "title_ok": False, "matched": ""}
         deadline = time.time() + wait_sec
         last_count = 0
         while time.time() < deadline:
@@ -534,15 +634,18 @@ class DouyinProvider(BaseSocialProvider):
                     txt = page.inner_text("body")
                     browser.close()
                     last_count = txt.count("作品")
-                    if key in txt:
-                        return {"found": True,
-                                "draft_id": f"readback_{int(time.time())}",
-                                "title": key}
+                    rid = f"readback_{int(time.time())}"
+                    found, title_ok, matched = self._match_readback(txt, key, fb)
+                    if found:
+                        return {"found": True, "draft_id": rid,
+                                "title": key if title_ok else "",
+                                "title_ok": title_ok, "matched": matched}
             except Exception as e:
                 logger.warning(f"read-back attempt failed: {e}")
             time.sleep(8)
-        logger.error(f"READBACK_NOT_FOUND for key={key}")
-        return {"found": False, "draft_id": None, "title": None}
+        logger.error(f"READBACK_NOT_FOUND for key={key} (fallback={fb})")
+        return {"found": False, "draft_id": None, "title": None,
+                "title_ok": False, "matched": "", "last_count": last_count}
 
     def sync_published_videos(self) -> list[Dict[str, Any]]:
         """
