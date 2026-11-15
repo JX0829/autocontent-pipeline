@@ -33,6 +33,7 @@ CHANNELS_CDP = os.getenv("CHANNELS_CDP_URL") or "http://127.0.0.1:9334"
 BILI_COOKIES = PROJ / "data" / "cookies_bilibili.json"
 DOUYIN_PROFILE = PROJ / "data" / "browser_profiles" / "douyin-cdp"
 CHANNELS_STATE = PROJ / "data" / "browser_profiles" / "channels-tech" / "storage_state.json"
+CHANNELS_CDP_HOME = "https://channels.weixin.qq.com/platform"
 
 FIX_DOUYIN = (
     '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" '
@@ -43,6 +44,11 @@ FIX_CHANNELS = (
     f"python3 {PROJ / 'scripts' / 'channels_login.py'} "
     "--qr-out /tmp/qr_channels.png  # 扫码后常驻 Chrome(9334) 会被复用，不用再开"
 )
+
+#: 未登录时视频号后台页上的特征文案（2026-11-15 实测：地址栏可能仍是 /platform/post/create，
+#: 只看 URL 会误判成已登录 —— 必须看页面内容）
+CHANNELS_LOGGED_OUT_HINTS = ("登录视频号助手", "扫码登录")
+CHANNELS_LOGGED_IN_HINTS = ("内容管理", "数据中心", "发表动态", "互动管理")
 FIX_BILIBILI = f"重新导出 B站登录 cookie 到 {BILI_COOKIES}（需含 SESSDATA）"
 
 
@@ -54,6 +60,41 @@ def _probe_cdp(url: str, timeout: float = 2.0) -> Optional[Dict[str, Any]]:
         # 探测失败是常态（浏览器没起），但要看得出为什么，否则会误判成「死了」
         logging.getLogger(__name__).debug(f"CDP 探测失败（{url}）：{type(exc).__name__}: {exc}")
         return None
+
+
+def _channels_logged_in(timeout_ms: int = 12000) -> tuple[Optional[bool], str]:
+    """连 9334 打开视频号后台，按**页面内容**判登录态（headless 判不了，视频号必须 headful）。
+
+    返回 (True 已登录 / False 未登录 / None 判不了, 说明)。
+    踩过的坑：未登录时地址栏也可能是 `/platform/post/create`（落地页），
+    只看 URL 会把「未登录」当成「已登录」，这正是本次收口要堵的洞。
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:  # noqa: BLE001 — 没有 playwright 也要说清楚
+        return None, f"playwright 不可用：{type(exc).__name__}"
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(CHANNELS_CDP, timeout=timeout_ms)
+            ctx = browser.contexts[0]
+            page = ctx.new_page()
+            try:
+                page.goto(f"{CHANNELS_CDP_HOME}", wait_until="domcontentloaded",
+                          timeout=timeout_ms)
+                page.wait_for_timeout(2500)
+                body = page.inner_text("body")[:1500]
+                url = page.url or ""
+            finally:
+                page.close()
+            if "login" in url.lower():
+                return False, f"跳登录页 {url[:60]}"
+            if any(k in body for k in CHANNELS_LOGGED_OUT_HINTS):
+                return False, "页面含「登录视频号助手/扫码登录」"
+            if any(k in body for k in CHANNELS_LOGGED_IN_HINTS):
+                return True, f"后台可见（{url[:40]}）"
+            return None, "页面特征不明确"
+    except Exception as exc:  # noqa: BLE001 — 探测异常不等于未登录，交给调用方降级
+        return None, f"{type(exc).__name__}: {str(exc)[:60]}"
 
 
 def probe_douyin() -> Dict[str, Any]:
@@ -81,8 +122,16 @@ def probe_channels() -> Dict[str, Any]:
     if not CHANNELS_STATE.exists():
         return {"platform": "channels", "ok": False, "code": "CHANNELS_LOGIN_MISSING",
                 "detail": f"登录态快照不存在：{CHANNELS_STATE}", "fix": FIX_CHANNELS}
+    logged, detail = _channels_logged_in()
+    if logged is False:
+        return {"platform": "channels", "ok": False, "code": "CHANNELS_NOT_LOGGED_IN",
+                "detail": f"后台页显示未登录（{detail}）", "fix": FIX_CHANNELS}
+    if logged is None:
+        # 判不了（Playwright 不可用等）不拦，但要留痕：别把「没检查」伪装成「检查通过」
+        return {"platform": "channels", "ok": True, "code": "CHANNELS_LOGIN_UNKNOWN",
+                "detail": f"CDP ok，登录态无法判定（{detail}）", "fix": ""}
     return {"platform": "channels", "ok": True, "code": "",
-            "detail": "CDP ok + 登录态快照在位", "fix": ""}
+            "detail": f"CDP ok + 后台页已登录（{detail}）", "fix": ""}
 
 
 def probe_bilibili() -> Dict[str, Any]:

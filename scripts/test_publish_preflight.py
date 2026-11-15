@@ -64,6 +64,8 @@ def test_probes(tmp: Path) -> None:
           r["ok"] is False and r["code"] == "CHANNELS_CDP_UNAVAILABLE", str(r["code"]))
     check("视频号告警带扫码命令", "channels_login.py" in r["fix"], r["fix"][:60])
     cs.probe = lambda timeout=1.5: {"Browser": "ok"}   # type: ignore
+    # 登录态判定要连真浏览器，测试里一律替身（离线）
+    pf._channels_logged_in = lambda timeout_ms=12000: (True, "后台可见")   # type: ignore
     pf.CHANNELS_STATE = tmp / "no_state.json"
     r = pf.probe_channels()
     check("视频号登录态缺 → CHANNELS_LOGIN_MISSING",
@@ -71,6 +73,21 @@ def test_probes(tmp: Path) -> None:
     pf.CHANNELS_STATE = tmp / "state.json"
     pf.CHANNELS_STATE.write_text("{}", encoding="utf-8")
     check("视频号 CDP+登录态齐 → ok", pf.probe_channels()["ok"] is True)
+
+    # 收口（2026-11-15）：登录态快照在、CDP 也 UP，但后台页显示未登录 → 必须拦
+    pf._channels_logged_in = lambda timeout_ms=12000: (False, "页面含「登录视频号助手/扫码登录」")  # type: ignore
+    r = pf.probe_channels()
+    check("后台页未登录 → CHANNELS_NOT_LOGGED_IN（快照在位也拦）",
+          r["ok"] is False and r["code"] == "CHANNELS_NOT_LOGGED_IN", str(r["code"]))
+    check("未登录告警带扫码命令", "channels_login.py" in r["fix"], r["fix"][:50])
+
+    # 判不了（Playwright 不可用等）不拦，但要留痕，不能伪装成「检查通过」
+    pf._channels_logged_in = lambda timeout_ms=12000: (None, "playwright 不可用")  # type: ignore
+    r = pf.probe_channels()
+    check("登录态判不了 → 放行但留痕 CHANNELS_LOGIN_UNKNOWN",
+          r["ok"] is True and r["code"] == "CHANNELS_LOGIN_UNKNOWN", str(r["code"]))
+
+    pf._channels_logged_in = lambda timeout_ms=12000: (True, "后台可见")  # type: ignore
     cs.probe = orig_probe
 
     # B站：无文件 / 坏 JSON / 无 SESSDATA / 正常
