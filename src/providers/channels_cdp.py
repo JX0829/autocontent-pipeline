@@ -466,6 +466,11 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     "success": published,
                     "published": published,
                     "status": "PUBLISHED" if published else "PUBLISHED_UNVERIFIED",
+                    # 视频号的外部 id 是 post_list 回读到的 objectId（`export/…`）。
+                    # 2026-11-15 之前没往上报，executors 拿不到 id → 台账只能记 unverified，
+                    # 明明发出去了却没有凭证。这里显式给出，msg_id/post_id 都填。
+                    "msg_id": str(readback.get("objectId") or ""),
+                    "post_id": str(readback.get("objectId") or ""),
                     "evidence": evidence,
                     "url": page.url,
                     "declare_original": orig_done,
