@@ -71,7 +71,30 @@ def main() -> int:
     ap.add_argument("--no-receipt", action="store_true", help="不发发布回执卡")
     ap.add_argument("--force", action="store_true",
                     help="确认要走单平台入口（默认拒绝，统一用 runner --publish）")
+    ap.add_argument("--fix-short-title", action="store_true",
+                    help="补填已发布作品的短标题（SPEC-20261115）；配合 --run-id 或 --all-missing")
+    ap.add_argument("--all-missing", action="store_true",
+                    help="配合 --fix-short-title：扫全量短标题为空的已发布作品")
+    ap.add_argument("--match", default="",
+                    help="配合 --fix-short-title：按描述片段定位作品（run 产物被清理时用）")
+    ap.add_argument("--short-title", default="",
+                    help="配合 --fix-short-title：人工指定短标题（覆盖自动派生）")
     args = ap.parse_args()
+
+    if args.fix_short_title:
+        import asyncio
+        from src.providers import channels_edit
+
+        if not (args.run_id or args.all_missing or args.match):
+            print("✗ --fix-short-title 需要 --run-id <run_id> / --match <片段> / --all-missing")
+            return 2
+        rep = asyncio.run(channels_edit.fix_short_titles(
+            run_id=args.run_id or "", all_missing=bool(args.all_missing),
+            dry_run=bool(args.dry_run), override=args.short_title,
+            match=args.match))
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+        bad = [r for r in rep.get("results", []) if r.get("result") not in ("OK", "DRY_RUN", "ALREADY_SET")]
+        return 0 if not bad else 3 if not rep.get("dry_run") else 2
 
     if args.probe:
         res = ChannelsCDPProvider(ACCOUNT).publish_live(
