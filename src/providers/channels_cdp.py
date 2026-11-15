@@ -25,6 +25,21 @@ class ChannelsCDPProvider(BaseSocialProvider):
         self.profile_path = account_config.get("profile_path", "./data/browser_profiles/channels-tech")
         self.publish_mode = account_config.get("publish_mode", "public") # public (公开分发) | draft (草稿箱)
 
+    def _warn_if_headless(self) -> bool:
+        """常驻实例是不是无头；是的话大声报出来（用户要求视频号必须有头）。"""
+        try:
+            from .channels_session import running_headless
+            flag = running_headless()
+        except Exception as exc:  # noqa: BLE001 — 探测失败不影响主流程
+            logger.debug(f"[CHANNELS] 无头探测失败: {type(exc).__name__}: {exc}")
+            return False
+        if flag:
+            logger.error(
+                "[CHANNELS] 当前常驻 Chrome 是**无头**实例（--headless）：无头会被平台风控/"
+                "登录态校验打回。请先 `python -m src.providers.channels_session stop` 再重起有头。"
+            )
+        return bool(flag)
+
     def check_login_status(self) -> bool:
         """检查视频号会话**是否真的已登录**。
 
@@ -38,7 +53,11 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
         from .channels_session import ChannelsSessionError, ensure, verify_login
         try:
-            cdp = ensure(headless=True)
+            # 2026-11-15：视频号必须用**有头**浏览器（用户明确要求，且无头实例会被
+            # 微信风控/登录态校验打回）。ensure(headless=True) 会在 9334 没起来时拉起
+            # 一个 --headless=new 的**常驻**实例，之后所有发布会复用这个无头进程。
+            cdp = ensure(headless=False)
+            self._warn_if_headless()
             ok, url = asyncio.run(verify_login(cdp))
         except ChannelsSessionError as exc:
             logger.warning("[CHANNELS] 会话不可用: %s", exc)
@@ -71,7 +90,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
         declare_aigc: bool = True,
         dry_run: bool = False,
         allow_missing_flags: bool = False,
-        headless: bool = True,
+        headless: bool = False,
         stop_before_publish: bool = False,
     ) -> Dict[str, Any]:
         """真实发布到微信视频号（公开可见 + 原创声明 + AI 声明）。
@@ -97,6 +116,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
         except ChannelsSessionError as exc:
             return {"success": False, "published": False, "status": "CDP_UNAVAILABLE",
                     "message": str(exc)}
+        self._warn_if_headless()
 
         return asyncio.run(self._publish_live_async(
             video_path=video_path, cover_path=cover_path, title=title,
