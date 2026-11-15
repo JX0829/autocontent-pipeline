@@ -11,6 +11,30 @@ from .base import BaseSocialProvider
 
 logger = logging.getLogger("DouyinProvider")
 
+# 抖音编辑器会给「话题 chip」前后塞零宽字符和 NBSP（\u200b / \xa0），读回时它们
+# 既不算错也不能当作内容差异。比对前统一归一化：去零宽、NBSP→空格、压空白。
+_INVISIBLE = "\u200b\u200c\u200d\ufeff"
+
+
+def _normalize_caption(text: str) -> str:
+    s = text or ""
+    for ch in _INVISIBLE:
+        s = s.replace(ch, "")
+    s = s.replace("\xa0", " ")
+    return " ".join(s.split())
+
+
+def _caption_matches(actual: str, expected: str) -> bool:
+    """回读文本是否与期望一致（忽略零宽字符/空白差异）。
+
+    用途：发布前自证。话题被插进正文中间时，归一化后的字符串顺序不同 → 判 False，
+    宁可拒绝发布也不能把「错位的简介」发出去。
+    """
+    a, e = _normalize_caption(actual), _normalize_caption(expected)
+    if not a:
+        return False
+    return a == e
+
 # 可见性目标：publish_mode → (中文标签名, 候选选择器)。
 # 选择器全落空时 fail-closed —— 绝不"找不到就按默认发"，
 # 否则一次选择器改版就可能把私密内容误发成公开。
@@ -338,63 +362,59 @@ class DouyinProvider(BaseSocialProvider):
                             "expected": title[:60], "filled": (landed_title or "")[:60],
                             "message": f"标题没能落到「作品标题」框（{title_err}），拒绝发布"}
 
-                # 3b. 简介正文（标题/话题各有入口，正文只放内容）
-                body_text = content_text
+                # 3b. 简介正文 + 话题：**一次性原子插入**
+                #     2026-11-15 实测：先插正文再把光标移到末尾逐字打话题，抖音的
+                #     React 重渲染会把 caret 复位到点击位置，于是话题被插进正文中间
+                #     （「…永久首席执行官的遴选， #英伟达 #黄仁勋 #AI算力 …，内部和外部
+                #     人选都在考虑范围内。」）—— 手机上就是「简介错位」。
+                #     现在正文与话题拼成一段、一次 insert_text 落进去，位置由文本本身决定。
+                body_text = content_text.strip()
+                tags_text = " ".join(f"#{str(t).strip('#')}" for t in topics if str(t).strip())
+                full_text = f"{body_text}\n\n{tags_text}".strip() if tags_text else body_text
                 caption_editor = page.locator('div[contenteditable="true"]').first
                 editor_ok = caption_editor.count() > 0
                 if editor_ok:
-                    caption_editor.click()
-                    # 真实事件清空 + 原子插入：innerHTML='' + execCommand 只改 DOM，
-                    # React 状态不更新 → 点发布时正文被整体丢弃，平台上「无作品描述」。
-                    # keyboard.insert_text 一次派发 input/beforeinput 事件，原子且能进 state。
-                    page.keyboard.press("ControlOrMeta+a")
-                    page.keyboard.press("Delete")
-                    page.keyboard.insert_text(body_text)
-                    time.sleep(1)
-                    got = (caption_editor.inner_text() or "").strip()
-                    if got[:20] != body_text.strip()[:20]:
-                        logger.warning("原子插入未生效，回退 fill()")
-                        caption_editor.fill(body_text)
+                    for attempt in (1, 2):
+                        caption_editor.click()
+                        page.keyboard.press("ControlOrMeta+a")
+                        page.keyboard.press("Delete")
+                        page.keyboard.insert_text(full_text)
+                        time.sleep(1)
+                        got = (caption_editor.inner_text() or "").strip()
+                        if _caption_matches(got, full_text):
+                            break
+                        logger.warning(f"第 {attempt} 次插入后回读不符，清空重插")
+                    else:
+                        caption_editor.fill(full_text)
                 else:
-                    textarea = page.locator('textarea').first
+                    textarea = page.locator("textarea").first
                     if textarea.count() > 0:
-                        textarea.fill(body_text)
+                        textarea.fill(full_text)
                         editor_ok = True
-
-                # 3c. 话题：先把光标移到文本末尾（JS Range，press("End") 只到行尾），
-                #     再逐个打 + 停顿，让抖音把每个 #tag 收成话题chip
-                if editor_ok and topics:
-                    caption_editor.click()
-                    caption_editor.evaluate("""el => {
-                        el.focus();
-                        const r = document.createRange();
-                        r.selectNodeContents(el);
-                        r.collapse(false);                       // false = 折叠到末尾
-                        const s = window.getSelection();
-                        s.removeAllRanges(); s.addRange(r);
-                    }""")
-                    time.sleep(0.3)
-                    page.keyboard.type(" ", delay=10)            # 正文与话题之间留个分隔
-                    for t in topics:
-                        page.keyboard.type(f"#{t.strip('#')}", delay=20)
-                        time.sleep(0.5)
-                        page.keyboard.press("Space")
-                        time.sleep(0.4)
                 logger.info(f"Filled caption: title={title[:20]!r} topics={topics}")
+                # 诊断：抖音把 #话题 变成 chip 时会有专门节点。纯文本插入通常不再生成
+                # chip（发布后由平台按 # 解析），这里只记录一下，便于下次比对。
+                if editor_ok:
+                    try:
+                        chips = caption_editor.evaluate(
+                            "el => el.querySelectorAll('[class*=\"topic\"], [class*=\"chip\"], a[href*=\"topic\"]').length")
+                        logger.info(f"话题 chip 节点数={chips}（0 表示纯文本话题）")
+                    except Exception as chip_exc:  # noqa: BLE001
+                        logger.debug(f"chip 计数失败: {chip_exc}")
 
-                # 3d. 回读简介真实内容（发布前自证：乱码/截断都在这里暴露）
+                # 3d. 回读简介真实内容（发布前自证：乱码/错位/截断都在这里暴露）
                 filled_text = ""
                 try:
                     filled_text = (caption_editor.inner_text() or "").strip() if editor_ok else ""
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"简介回读失败: {exc}")
-                if filled_text and body_text.strip()[:20] not in filled_text:
-                    logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:80]!r}")
+                if filled_text and not _caption_matches(filled_text, full_text):
+                    logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:120]!r}")
                     browser.close()
                     return {"success": False, "published": False,
                             "error": "CAPTION_MISMATCH",
-                            "expected": body_text[:200], "filled": filled_text[:200],
-                            "message": "简介回读与预期不符（疑似乱码/被联想面板重排），拒绝发布"}
+                            "expected": full_text[:200], "filled": filled_text[:200],
+                            "message": "简介回读与预期不符（乱码/话题错位/被重排），拒绝发布"}
                 time.sleep(2)
 
                 if stop_before_publish:
