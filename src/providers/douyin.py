@@ -319,45 +319,32 @@ class DouyinProvider(BaseSocialProvider):
                             "expected": title[:60], "filled": (landed_title or "")[:60],
                             "message": f"标题没能落到「作品标题」框（{title_err}），拒绝发布"}
 
-                # 3b. 简介正文 + 话题：**一次性原子插入**
-                #     2026-11-15 实测：先插正文再把光标移到末尾逐字打话题，抖音的
-                #     React 重渲染会把 caret 复位到点击位置，于是话题被插进正文中间
-                #     （「…永久首席执行官的遴选， #英伟达 #黄仁勋 #AI算力 …，内部和外部
-                #     人选都在考虑范围内。」）—— 手机上就是「简介错位」。
-                #     现在正文与话题拼成一段、一次 insert_text 落进去，位置由文本本身决定。
-                body_text = content_text.strip()
-                tags_text = " ".join(f"#{str(t).strip('#')}" for t in topics if str(t).strip())
-                full_text = f"{body_text}\n\n{tags_text}".strip() if tags_text else body_text
+                # 3b. 正文 + 话题：三段式构造 + 一次性写入 + 回读校验（唯一实现在
+                #     src/utils/douyin_caption，provider/CLI/预览三处共用）。
+                #     旧写法是逐字符 type：contenteditable 会把 \n 折成空格、每个 #
+                #     唤起联想并在两侧插 \u200b/\xa0 —— 手机上就是「糊成一行 + 看不见的
+                #     字符」。标题已进独立「作品标题」框，所以标题段留空。
+                from src.utils.douyin_caption import build_caption, describe
+                full_text = build_caption("", content_text.strip(), topics)
                 caption_editor = page.locator('div[contenteditable="true"]').first
                 editor_ok = caption_editor.count() > 0
                 if editor_ok:
-                    for attempt in (1, 2):
-                        caption_editor.click()
-                        page.keyboard.press("ControlOrMeta+a")
-                        page.keyboard.press("Delete")
-                        page.keyboard.insert_text(full_text)
-                        time.sleep(1)
-                        got = (caption_editor.inner_text() or "").strip()
-                        if _caption_matches(got, full_text):
-                            break
-                        logger.warning(f"第 {attempt} 次插入后回读不符，清空重插")
-                    else:
-                        caption_editor.fill(full_text)
+                    from src.providers import douyin_form
+                    caption_ok = douyin_form.fill_caption(page, full_text)
                 else:
                     textarea = page.locator("textarea").first
+                    caption_ok = False
                     if textarea.count() > 0:
                         textarea.fill(full_text)
+                        caption_ok = True
                         editor_ok = True
-                logger.info(f"Filled caption: title={title[:20]!r} topics={topics}")
-                # 诊断：抖音把 #话题 变成 chip 时会有专门节点。纯文本插入通常不再生成
-                # chip（发布后由平台按 # 解析），这里只记录一下，便于下次比对。
-                if editor_ok:
-                    try:
-                        chips = caption_editor.evaluate(
-                            "el => el.querySelectorAll('[class*=\"topic\"], [class*=\"chip\"], a[href*=\"topic\"]').length")
-                        logger.info(f"话题 chip 节点数={chips}（0 表示纯文本话题）")
-                    except Exception as chip_exc:  # noqa: BLE001
-                        logger.debug(f"chip 计数失败: {chip_exc}")
+                logger.info(f"Filled caption: title={title[:20]!r} topics={topics} ok={caption_ok}")
+                try:
+                    if editor_ok:
+                        ver = describe({"ok": caption_ok})
+                        logger.info(f"简介校验 {ver}")
+                except Exception as ver_exc:  # noqa: BLE001
+                    logger.debug(f"简介校验日志失败: {ver_exc}")
 
                 # 3d. 回读简介真实内容（发布前自证：乱码/错位/截断都在这里暴露）
                 filled_text = ""

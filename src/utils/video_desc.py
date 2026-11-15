@@ -248,9 +248,9 @@ def build_desc(draft: dict, tags=None, platform: str = "channels",
     title = str(draft.get("title") or "").strip()
 
     if platform == "douyin":
-        # 2026-11-15 返工：抖音的「作品标题」是独立输入框，标签由 provider 逐个打。
-        # 早先在这里把 title+tags 拼到正文头部，结果标题没进标题框 → 平台上
-        # 「有作品、无标题/无描述」。所以这里只给正文，标题与话题各走各的入口。
-        return body.strip()
+        # 三段式（标题留空：抖音「作品标题」是独立输入框，由发布器单独填并自证）。
+        # 预览口径 = 实际写进编辑器的正文 —— 话题统一在末尾，正文里不再拼 title/tags。
+        from .douyin_caption import build_caption
+        return build_caption("", body, tags if include_tags else [])
     # 视频号 / B站：正文在前，标签在后（标题各自走 title 字段）
     return f"{body}\n\n{tag_str}".strip() if tag_str else body.strip()

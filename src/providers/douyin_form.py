@@ -82,7 +82,15 @@ def fill_title(page, title: str, *, attempts: int = 3) -> tuple[bool, str, str]:
 
 
 def fill_caption(page, text: str) -> bool:
-    """正文写入：真实事件 + 原子插入（不用 innerHTML/execCommand，否则 React 丢内容）。"""
+    """正文写入：委托 `src/utils/douyin_caption.insert_caption`（唯一实现）。
+
+    为什么不自己写：这里的旧实现只比对前 20 个字，抓不到「换行被压平 / 话题前后
+    夹零宽字符与 NBSP」这类手机上看得见、前 20 字看不出的毛病（2026-11-15 用户
+    截图就是这种）。现在统一走三段式构造 + 一次性写入 + 回读校验（换行数 / 零宽 /
+    NBSP / 全文一致），不合格会重试并降级策略。
+    """
+    from src.utils.douyin_caption import describe, insert_caption
+
     body = (text or "").strip()
     if not body:
         return False
@@ -94,18 +102,12 @@ def fill_caption(page, text: str) -> bool:
         ta.click()
         ta.fill(body)
         return True
-    editor.click()
-    page.keyboard.press("ControlOrMeta+a")
-    page.keyboard.press("Delete")
-    page.keyboard.insert_text(body)     # 一次派发 beforeinput/input，原子且能进 state
-    time.sleep(1)
-    got = (editor.inner_text() or "").strip()
-    if got[:20] != body[:20]:
-        logger.warning("原子插入未生效，回退 fill()")
-        editor.fill(body)
-        time.sleep(0.5)
-        got = (editor.inner_text() or "").strip()
-    return got[:20] == body[:20]
+    res = insert_caption(page, editor, body, logger=logger)
+    if not res["ok"]:
+        logger.warning("正文回读不合格，重试一次：%s", "；".join(res["verify"]["problems"]))
+        res = insert_caption(page, editor, body, logger=logger)
+    logger.info("正文写入 %s（策略 %s）", describe(res["verify"]), res["strategy"])
+    return bool(res["ok"])
 
 
 def caption_text(page) -> str:

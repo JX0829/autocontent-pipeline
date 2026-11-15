@@ -349,7 +349,7 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
             dry_run=dry_run, headless=ch_headless, **extra)
     if platform == "douyin":
         from src.providers.douyin import DouyinProvider
-        body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=True)
+        body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=False)
         prov = DouyinProvider(account)
         # 抖音识别无头（扫码/短信验证必失败）→ 默认有头；账号配置或步骤参数可覆盖
         if "headless" in opts:

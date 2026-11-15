@@ -1,87 +1,186 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""抖音简介填充验证器（只读验证，硬编码 stop_before_publish=True，**永不点发布**）。
+"""抖音简介（作品描述）排版回归 —— 离线，不碰平台。
 
-命名用 test_ 前缀是为了走发布入口审计的测试豁免（见 audit_publish_entrypoints.py）。
+守的三件事（对应用户实测的乱码截图）：
+1. 旧写法逐字输入会被编辑器压平 + 插入零宽/NBSP，校验器必须判不合格；
+2. 三段式写入（标题 / 简介 / 话题）必须判合格；
+3. 写入策略要能降级，且**降级后仍不合格时必须报问题**，不许静默当成功。
 
-为什么需要：2026-11-15 抖音简介发出后是乱码（标题与正文交错、`#A#n#C#A`）。
-根因是把「标题 + 话题 + 全文」一次性 type(delay=50) 打进 contenteditable，
-抖音的话题联想面板在打字过程中插入/重排内容。修完后必须能"发布前自证"，
-否则只能等发出去看手机上乱不乱。
-
-用法:
-    python3 scripts/test_douyin_caption.py <run_id>
-    python3 scripts/test_douyin_caption.py <run_id> --profile /abs/path/to/douyin-tech
-
-判据：正文开头在位 + 每个话题都在 + 无交错乱码 → 打印 VERDICT PASS/FAIL
-退出码：0 PASS / 1 FAIL / 2 找不到 run
+用法：python3 scripts/test_douyin_caption.py [-v]
 """
 from __future__ import annotations
 
-import json
-import re
 import sys
 from pathlib import Path
 
 PROJ = Path(__file__).resolve().parent.parent
-if str(PROJ) not in sys.path:
-    sys.path.insert(0, str(PROJ))
+sys.path.insert(0, str(PROJ))
+
+from src.utils.douyin_caption import (  # noqa: E402
+    build_caption,
+    describe,
+    insert_caption,
+    verify_caption,
+)
+
+RESULTS: list[tuple[str, bool, str]] = []
+VERBOSE = "-v" in sys.argv
+
+PLATFORM_ACTUAL = (
+    "黄仁勋辞任 英伟达突然换帅 \u200b\xa0#英伟达\xa0 #黄仁勋 \u200b\xa0#AI算力\xa0 "
+    "\u200b\xa0#科技巨头\xa0 \u200b\xa0#行业人事\xa0 英伟达官方公告确认，黄仁勋辞去总裁、"
+    "首席执行官和董事职务，即时生效，33年的任期到这里结束。"
+)
+
+TITLE = "黄仁勋辞任 英伟达突然换帅"
+DESC = "英伟达官方公告确认，黄仁勋辞去总裁、首席执行官和董事职务，即时生效。"
+TAGS = ["英伟达", "#黄仁勋", "AI算力"]
+
+
+def check(label: str, cond: bool, detail: str = "") -> None:
+    RESULTS.append((label, bool(cond), detail))
+    if VERBOSE or not cond:
+        print(f"{'PASS' if cond else 'FAIL'} {label}" + (f" | {detail}" if detail else ""))
+
+
+# ── 假编辑器 / 假页面：只实现 insert_caption 用到的口子 ─────────
+class FakeEditor:
+    """modes: {strategy: 回读文本工厂} —— 用来模拟各策略在真编辑器里的效果。"""
+
+    def __init__(self, behaviors: dict):
+        self.behaviors = behaviors
+        self.text = ""
+        self.calls: list[str] = []
+
+    def click(self):
+        self.calls.append("click")
+
+    def fill(self, value: str):
+        self.calls.append(f"fill({value!r})")
+        self.text = self.behaviors.get("fill", value)
+
+    def evaluate(self, _js, value):
+        self.calls.append("evaluate")
+        if self.behaviors.get("evaluate") is None:
+            raise RuntimeError("evaluate 不可用")
+        self.text = self.behaviors["evaluate"](value)
+
+    def inner_text(self):
+        return self.text
+
+
+class FakeKeyboard:
+    def __init__(self, editor: FakeEditor):
+        self.editor = editor
+
+    def press(self, key: str):
+        self.editor.calls.append(f"press({key})")
+        if self.editor.behaviors.get("press") is None:
+            raise RuntimeError("press 不可用")
+        self.editor.text += "\n" if key == "Enter" else key
+
+    def insert_text(self, value: str):
+        self.editor.calls.append("insert_text")
+        factory = self.editor.behaviors.get("insert_text")
+        if factory is None:
+            raise RuntimeError("insert_text 不可用")
+        # append=True 时模拟「多次 insert_text 累积」（原生造段策略）
+        if self.editor.behaviors.get("append"):
+            self.editor.text += factory(value)
+        else:
+            self.editor.text = factory(value)
+
+
+class FakePage:
+    def __init__(self, editor: FakeEditor):
+        self.keyboard = FakeKeyboard(editor)
+
+
+def test_build() -> None:
+    cap = build_caption(TITLE, DESC, TAGS)
+    check("三段式：三段之间各一个空行", cap.count("\n\n") == 2, repr(cap[:40]))
+    check("三段式：话题在最后一段且补齐 #", cap.split("\n\n")[-1] == "#英伟达 #黄仁勋 #AI算力",
+          repr(cap.split("\n\n")[-1]))
+    check("空 tags 只出两段", build_caption(TITLE, DESC, []).count("\n\n") == 1)
+    check("空 body 只出两段", build_caption(TITLE, "", TAGS).count("\n\n") == 1)
+
+
+def test_verify() -> None:
+    cap = build_caption(TITLE, DESC, TAGS)
+
+    bad = verify_caption(PLATFORM_ACTUAL, cap)
+    check("平台真实乱文本 → 不合格", bad["ok"] is False)
+    check("乱文本能报出「换行不足」", any("换行" in p for p in bad["problems"]), str(bad["problems"]))
+    check("乱文本能报出「零宽」", bad["zw"] > 0, f"zw={bad['zw']}")
+    check("乱文本能报出「NBSP」", bad["nbsp"] > 0, f"nbsp={bad['nbsp']}")
+
+    good = verify_caption(cap, cap)
+    check("三段式回读 → 合格", good["ok"] is True, str(good))
+    check("合格摘要可读", describe(good).startswith("ok"), describe(good))
+
+    flat = cap.replace("\n\n", " ")
+    check("反向：换行被吞 → 不合格", verify_caption(flat, cap)["ok"] is False)
+
+    dirty = cap.replace("#英伟达", "\u200b\xa0#英伟达\xa0")
+    check("反向：夹带零宽/NBSP → 不合格", verify_caption(dirty, cap)["ok"] is False)
+
+    check("反向：正文被改字 → 不合格", verify_caption(cap.replace("辞去", "卸任"), cap)["ok"] is False)
+
+
+def test_insert() -> None:
+    cap = build_caption(TITLE, DESC, TAGS)
+
+    # ① 原生造段正常（首选策略）
+    ed = FakeEditor({"insert_text": lambda v: v, "press": True, "append": True})
+    r = insert_caption(FakePage(ed), ed, cap)
+    check("原生造段成功即采用", r["ok"] and r["strategy"] == "native_paragraphs", str(r["strategy"]))
+    check("原生造段用了 Enter×2 而不是逐字",
+          ed.calls.count("press(Enter)") == 4 and "insert_text" in ed.calls, str(ed.calls[:8]))
+
+    # ② 原生造段被压平 → 整段 insert_text 成功
+    ed = FakeEditor({"insert_text": lambda v: v.replace("\n\n", " "), "press": True,
+                     "evaluate": lambda v: v})
+    r = insert_caption(FakePage(ed), ed, cap)
+    check("原生造段压平时用 html_div 兜底", r["ok"] and r["strategy"] == "html_div",
+          f"{r['strategy']} problems={r['verify']['problems']}")
+
+    # ③ 原生不可用 → DOM 兜底仍能写进去
+    ed = FakeEditor({"evaluate": lambda v: v})
+    r = insert_caption(FakePage(ed), ed, cap)
+    check("原生不可用时 DOM 兜底", r["ok"] and r["strategy"] == "html_div", r["strategy"])
+
+    # ④ 所有策略都被压平 → 必须报不合格（不静默）
+    ed = FakeEditor({"evaluate": lambda v: v.replace("\n\n", " "),
+                     "insert_text": lambda v: v.replace("\n\n", " "),
+                     "fill": lambda v: v.replace("\n\n", " ")})
+    r = insert_caption(FakePage(ed), ed, cap)
+    check("全策略压平 → 判不合格", r["ok"] is False, str(r["strategy"]))
+    check("不合格原因非空（可用于回执告警）", bool(r["verify"]["problems"]), str(r["verify"]["problems"]))
+
+
+def test_video_desc_consistent() -> None:
+    from src.utils.video_desc import build_desc
+    draft = {"title": TITLE, "video_desc": DESC, "tags": TAGS}
+    got = build_desc(draft, platform="douyin")
+    # 2026-11-15 收口：抖音「作品标题」是独立输入框（douyin_form.fill_title 负责填并自证），
+    # 所以简介里不再重复标题 —— 预览口径 = 实际写进编辑器的正文（正文 + 末尾话题）。
+    check("video_desc(抖音) 与发布器构造一致", got == build_caption("", DESC, TAGS), repr(got[:50]))
+    check("简介里不重复标题（标题走独立输入框）", TITLE not in got, repr(got[:50]))
 
 
 def main() -> int:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    if not args:
-        print(__doc__)
-        return 2
-    run_id = args[0]
-    profile = ""
-    for i, a in enumerate(sys.argv):
-        if a == "--profile" and i + 1 < len(sys.argv):
-            profile = sys.argv[i + 1]
-
-    hits = sorted(PROJ.glob(f"output/*/{run_id}"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not hits:
-        print(f"FATAL: 找不到 run 目录 output/*/{run_id}")
-        return 2
-    run_dir = hits[0]
-
-    from src.providers.douyin import DouyinProvider
-    from src.utils.accounts import for_platform
-    from src.utils.video_desc import build_desc
-
-    draft = json.loads((run_dir / "draft_script.json").read_text(encoding="utf-8"))
-    title = str(draft.get("title") or "")
-    topics = list(draft.get("tags") or [])
-    body = build_desc(draft, platform="douyin", run_root=run_dir, include_tags=False)
-
-    acc = dict(for_platform("douyin"))
-    if profile:
-        acc["profile_path"] = profile
-
-    print(f"run      : {run_dir}")
-    print(f"标题     : {title}")
-    print(f"话题     : {topics}")
-    print(f"正文     : {body[:70]}...  (共 {len(body)} 字)")
-
-    res = DouyinProvider(acc).save_draft(
-        video_path=str(run_dir / "video.mp4"),
-        cover_path=str(run_dir / "cover.png") if (run_dir / "cover.png").exists() else None,
-        title=title, topics=topics, content_text=body, stop_before_publish=True)
-
-    print("\n=== 浏览器回读 ===")
-    for k in ("success", "published", "status", "error", "message"):
-        if k in res:
-            print(f"{k:10s}: {res[k]}")
-    filled = res.get("filled_text", "") or ""
-    print(f"filled({len(filled)}): {filled[:400]}")
-
-    ok_head = body.strip()[:20] in filled
-    ok_tags = all(f"#{t.strip('#')}" in filled for t in topics)
-    garbled = bool(re.search(r"#.\w?#.\w?#", filled))     # #A#n#C 这类交错特征
-    print(f"\n开头在位 : {ok_head}\n话题都在 : {ok_tags}\n交错乱码 : {garbled}")
-    verdict = ok_head and ok_tags and not garbled and bool(filled)
-    print(f"VERDICT  : {'PASS' if verdict else 'FAIL'}")
-    return 0 if verdict else 1
+    for fn in (test_build, test_verify, test_insert, test_video_desc_consistent):
+        try:
+            fn()
+        except Exception:
+            import traceback
+            check(f"{fn.__name__} 未抛异常", False, traceback.format_exc(limit=2).replace("\n", " | "))
+    ok = sum(1 for _, c, _ in RESULTS if c)
+    bad = [(l, d) for l, c, d in RESULTS if not c]
+    print(f"\nDOUYIN CAPTION {ok} PASS / {len(bad)} FAIL")
+    for l, d in bad:
+        print(f"  ✗ {l} {d}")
+    return 0 if not bad else 1
 
 
 if __name__ == "__main__":
