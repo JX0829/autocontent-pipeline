@@ -155,8 +155,9 @@ def test_ledger_states() -> None:
 def test_source_discipline() -> None:
     """静态纪律：不许再用 innerHTML='' + execCommand 写正文（绕过 React，发布时被丢弃）。"""
     src = (PROJ / "src" / "providers" / "douyin.py").read_text(encoding="utf-8")
-    check("② 正文改用 keyboard.insert_text", "keyboard.insert_text(body_text)" in src)
-    bad = 'el.innerHTML = \'\'' in src or "document.execCommand('insertText'" in src
+    form = (PROJ / "src" / "providers" / "douyin_form.py").read_text(encoding="utf-8")
+    check("② 正文改用 keyboard.insert_text（单一实现 douyin_form）", "keyboard.insert_text" in form)
+    bad = 'el.innerHTML = \'\'' in src + form or "document.execCommand('insertText'" in src + form
     check("② 不再用 innerHTML/execCommand 直改 DOM", not bad)
 
 

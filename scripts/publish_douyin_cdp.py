@@ -234,13 +234,20 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
             page.locator('input[type="file"]').first.set_input_files(str(video))
             page.wait_for_selector('div[contenteditable="true"]', timeout=90000)
             time.sleep(3)
-            editor = page.locator('div[contenteditable="true"]').first
-            editor.click()
-            editor.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-            # 原子插入一次，不走逐字符：抖音话题联想面板会重排节点 → 简介乱码
-            editor.evaluate(
-                "(el, t) => { el.focus(); document.execCommand('insertText', false, t); }",
-                caption)
+
+            # 标题进独立「作品标题」框（2026-11-15：CLI 这条通道以前只把标题拼进简介，
+            # 标题框空着 → 平台上「无作品描述/空标题」，且回读按标题找 → 必然 miss）
+            from src.providers import douyin_form
+            title_ok, landed_title, title_err = douyin_form.fill_title(page, title)
+            if not title_ok:
+                _log(f"TITLE_NOT_LANDED（{title_err}）：拒绝发布")
+                return 2
+
+            # 正文用真实事件原子写入：innerHTML/execCommand 只改 DOM 不进 React state，
+            # 点发布时正文会被整体丢弃（17:57 那次作品数 44→45 却「无作品描述」）
+            if not douyin_form.fill_caption(page, caption):
+                _log("CAPTION_NOT_LANDED：正文回读不符，拒绝发布")
+                return 2
             time.sleep(2)
 
             for _ in range(40):
@@ -254,6 +261,18 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
                     label.click()
                     time.sleep(1)
                     _log("已勾选「仅自己可见」")
+
+            # ★ 点「发布」前最后一道自证：可见性/AIGC 等操作会触发重渲染，标题可能被清空。
+            ready, form_detail = douyin_form.assert_form_ready(page, title, caption)
+            if not ready:
+                DIAG_DIR.mkdir(parents=True, exist_ok=True)
+                shot = DIAG_DIR / f"submit_blocked_{int(time.time())}.png"
+                try:
+                    page.screenshot(path=str(shot), full_page=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                _log(f"SUBMIT_BLOCKED：点发布前自证不通过 {form_detail}，截图 {shot}")
+                return 2
 
             clicked = False
             for i in range(page.locator('button:has-text("发布")').count()):
