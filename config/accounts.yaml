@@ -12,6 +12,7 @@ accounts:
     proxy_server: ""                 # 留空则直连；生产环境填入 http://user:***@host:port
     fingerprint_seed: "fp_seed_894102_mac_m3"
     publish_mode: "public_publish"   # 公开发布（原 private_publish 仅自己可见已切公开）；可见性由 provider 勾选「公开可见」，找不到选项即 fail-closed
+    headless: false                  # 浏览器形态标记：false=有头（抖音识别无头，扫码/短信必失败）
     schedule_delay_minutes: 120
     declare_aigc: true
     max_daily_tasks: 4
@@ -76,6 +77,7 @@ accounts:
     account_type: "tech"
     profile_path: "./data/browser_profiles/channels-tech"
     publish_mode: "public"           # 公开分发模式
+    headless: false                  # 浏览器形态标记：false=有头（视频号无头会被风控/登录态打回；改这里会覆盖 provider 默认）
     declare_aigc: false              # Web 端无 AI 声明控件（真机实测 2026-11-10）
     declare_original: true           # 与 publish_live() 实际勾选保持一致，卡片才不说谎
     seed_comment:                    # 发布后自动发作者首评（漏掉的字段，2026-11-10 补齐）

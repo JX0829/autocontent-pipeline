@@ -62,7 +62,10 @@ def main() -> int:
                     help="原创控件找不到时仍继续（默认中止，fail-closed）")
     ap.add_argument("--no-original", action="store_true", help="不勾原创")
     ap.add_argument("--no-aigc", action="store_true", help="不勾 AI 声明")
-    ap.add_argument("--headful", action="store_true", help="有头模式（排障用）")
+    ap.add_argument("--headful", action="store_true",
+                    help="（已默认有头，此开关仅为兼容保留；视频号不允许无头）")
+    ap.add_argument("--headless", action="store_true",
+                    help="无头模式（不推荐：视频号会被风控/登录态校验打回；仅排障用）")
     ap.add_argument("--stop-before-publish", action="store_true",
                     help="上传+填文案+声明原创后停在发表前（测试选择器用，不产生公开内容）")
     ap.add_argument("--no-receipt", action="store_true", help="不发发布回执卡")
@@ -73,7 +76,7 @@ def main() -> int:
     if args.probe:
         res = ChannelsCDPProvider(ACCOUNT).publish_live(
             video_path="", cover_path="", title="", content_text="", topics=[],
-            dry_run=True, headless=not args.headful)
+            dry_run=True, headless=bool(args.headless))
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0 if res.get("status") == "DRY_RUN_OK" else 2
 
@@ -113,7 +116,7 @@ def main() -> int:
     res = _invoke_provider(
         "channels", ACCOUNT, video, cover, draft, dry_run=args.dry_run,
         run_root=run_root,
-        opts={"headless": not args.headful,
+        opts={"headless": bool(args.headless),
               "stop_before_publish": args.stop_before_publish,
               "allow_missing_flags": args.allow_missing_flags,
               "declare_original": not args.no_original,
