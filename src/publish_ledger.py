@@ -225,7 +225,11 @@ def record_outcome(key: str, published: bool, *, external_id: str = "",
         # 2026-11-14：**没有外部 id 就不算 published**。ds-coding-plan-1 留下过一条
         # status=published 但 post_id 为空的记录（回读没拿到证据却记成功），
         # 既挡不住重复投稿，也说不清到底发没发。没证据 → unverified，等人工核对。
-        if not str(external_id or "").strip():
+        # 2026-11-15 追加：`manual_verified_*` 这类人手写占位 id 同样不算证据
+        # —— 当时把「回读未命中、判定未发布」的视频写成了 published，
+        # 平台上根本没有这条作品，台账却挡住了重发。
+        _eid = str(external_id or "").strip()
+        if not _eid or _eid.startswith("manual_verified") or _eid.startswith("manual_"):
             mark_unverified(key, f"回读未拿到外部 id（{status or 'no_evidence'}）", path=path)
             return "unverified"
         mark_published(key, external_id, path=path)
