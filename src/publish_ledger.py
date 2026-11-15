@@ -63,6 +63,9 @@ SAFE_RETRY_SIGNALS = (
     "DRAFT_BUTTON_NOT_FOUND",    # 找不到草稿按钮，安全策略主动拦停
     "TITLE_NOT_LANDED",          # 2026-11-15：标题没落进「作品标题」框 → 未点发布，可重试
     "CAPTION_MISMATCH",          # 正文回读与预期不符 → 未点发布，可重试
+    "SUBMIT_BLOCKED",            # 2026-11-15：点发布前自证不过（标题/正文读回为空）
+    "CAPTION_NOT_LANDED",        # CLI：正文没落上，未点发布
+    "TITLE_NOT_LANDED_CLI",      # 预留：CLI 侧标题失败别名
     "DRY_RUN",
     "MISSING_PARAM",
     "VALIDATION",

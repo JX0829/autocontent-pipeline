@@ -7,6 +7,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
 from . import cdp_session
+from . import douyin_form
 from .base import BaseSocialProvider
 
 logger = logging.getLogger("DouyinProvider")
@@ -182,56 +183,12 @@ class DouyinProvider(BaseSocialProvider):
             logger.warning(f"Error checking Douyin login status: {e}")
             return False
 
-    #: 抖音「作品标题」输入框的候选选择器（placeholder 会微调，多给几个兜底）
-    TITLE_SELECTORS = (
-        'input[placeholder*="标题"]',
-        'input[placeholder*="作品标题"]',
-        'input[placeholder*="填写作品"]',
-        'input[placeholder*="流量"]',
-        'input[maxlength="30"]',
-        'textarea[placeholder*="标题"]',
-    )
+    #: 标题选择器与填/验逻辑统一收在 `src/providers/douyin_form.py`（provider 与 CLI 共用）
+    TITLE_SELECTORS = douyin_form.TITLE_SELECTORS
 
     def _fill_title(self, page, title: str) -> tuple[bool, str, str]:
-        """把标题填进抖音「作品标题」框，并**回读自证**（最多 3 轮）。
-
-        2026-11-15 事故：标题只拼在正文里、标题框留空 → 平台上「有作品、无标题」，
-        而回读又是按标题找作品 → 永远命中不了，记成 unverified。
-        返回 (是否落位, 回读到的文本, 失败原因)。落位失败调用方**不许点发布**。
-        """
-        want = (title or "").strip()[:30]
-        if not want:
-            return False, "", "标题为空"
-        loc = None
-        for sel in self.TITLE_SELECTORS:
-            cand = page.locator(sel).first
-            try:
-                if cand.count() > 0 and cand.is_visible():
-                    loc = cand
-                    break
-            except Exception:  # noqa: BLE001 — 选择器不可用就试下一个
-                continue
-        if loc is None:
-            return False, "", "页面上找不到「作品标题」输入框"
-
-        landed = ""
-        for attempt in range(3):
-            try:
-                loc.click()
-                # 用真实按键清空 + fill() 填：两者都派发 input 事件，React 状态才会更新
-                page.keyboard.press("ControlOrMeta+a")
-                page.keyboard.press("Delete")
-                loc.fill(want)
-                time.sleep(0.6)
-                landed = (loc.input_value() or "").strip()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"标题填写第 {attempt + 1} 轮异常: {exc}")
-                landed = ""
-            if landed and landed[:10] == want[:10]:
-                logger.info(f"标题已落位（第 {attempt + 1} 轮）: {landed[:30]!r}")
-                return True, landed, ""
-            time.sleep(1)
-        return False, landed, f"回读不一致 filled={landed[:40]!r}"
+        """标题落位 + 回读自证。实现见 douyin_form.fill_title（单一实现，CLI 同源）。"""
+        return douyin_form.fill_title(page, title)
 
     def save_draft(
         self,
@@ -479,6 +436,25 @@ class DouyinProvider(BaseSocialProvider):
                         logger.error("PUBLISH_BUTTON_NOT_FOUND")
                         browser.close()
                         return {"success": False, "error": "PUBLISH_BUTTON_NOT_FOUND", "message": "未找到有效发布按钮"}
+
+                    # ★ 点「发布」前最后一道自证（2026-11-15）：话题/AIGC/可见性这些操作
+                    #   会触发 React 重渲染，早先填好的标题可能被清空。必须在最后一刻
+                    #   读回标题与正文，任一为空**不点发布**，绝不再产出空标题作品。
+                    ready, form_detail = douyin_form.assert_form_ready(page, title, content_text)
+                    if not ready:
+                        shot_dir = Path("output/douyin_diag")
+                        shot_dir.mkdir(parents=True, exist_ok=True)
+                        try:
+                            page.screenshot(path=str(shot_dir / f"submit_blocked_{int(time.time())}.png"),
+                                            full_page=True)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        browser.close()
+                        return {"success": False, "published": False,
+                                "error": "SUBMIT_BLOCKED",
+                                "form": form_detail,
+                                "message": ("点发布前自证不通过（标题/正文读回为空或不符），"
+                                            "拒绝发布，避免产出空标题作品")}
 
                     logger.info("Clicking publish button for private video...")
                     publish_btn.click()
