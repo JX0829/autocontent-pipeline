@@ -76,6 +76,7 @@ DISPATCH_MODE=output_only \
 | `body` 或 `source_url` | **二选一必填**（有正文走正文，没正文按 URL 抓） |
 | `account` | 可选，默认 `douyin-tech-main` |
 | `images` | 可选，参考图 |
+| `tags` | 可选，**≤6 个**；写了就一定是「硬约束」，见下节 |
 
 ```json
 {
@@ -89,6 +90,30 @@ DISPATCH_MODE=output_only \
 ⚠️ **`source_url` 缺失且没有 `body` 会直接 `ValueError`** —— 代码里没有占位 URL 兜底（T4.2 刻意设计）。
 
 ---
+
+### 3.0.1 物料硬约束：title 硬绑定 / tags ≤6 / 生成后自证（2026-11-15）
+
+**事故**：`material.tags` 从来进不了生成环节——`exec_expand_script` 只把 `title + body` 拼成
+`news_text` 喂 LLM，tags 全是模型现编。于是物料里的「学习方法」被「AI依赖」顶掉，
+狠的一次整组 tags 被换掉（`vibe知识大赏`/`ai学习工具` 全丢）；`title` 也被 LLM 重写，
+品牌前缀直接没了。
+
+**现在的契约**（`src/pipeline/material_binding.py`，唯一实现）：
+
+| 规则 | 行为 |
+|---|---|
+| title | 物料写了就用物料的（覆盖 LLM 重写）；物料没写才用生成的 |
+| tags | `dedupe(物料 tags + 生成 tags)[:6]`，**物料在前全保留**，生成只填空位 |
+| 物料 title >20 字 | ❌ `TITLE_TOO_LONG` → 停住，**要求改物料**（不静默截断） |
+| 物料 tags >6 个 | ❌ `TAGS_OVER_LIMIT` → 停住，要求物料侧裁剪 |
+| 生成后自证 | 物料 tags 少了 → `TAGS_DROPPED`；title 被换 → `TITLE_REWRITTEN` → `ExecutorError` |
+| 审计 | `output/<日期>/<run>/material_binding.json`：物料原值 / 生成原值 / 绑定后 / 最终 / 结论 |
+
+为什么超限要报错而不是截断：`schemas.DraftScriptPayload.title` 的 validator 本来就会**静默截断**
+>20 字，所以「物料标题被改」根本查不出来。硬约束必须在绑定前判，宁可停住让人改物料。
+
+回归：`python3 scripts/test_material_binding.py`（25 断言，含真机 `ai-study-survey-1` 对照），
+已挂 `verify_all.sh --fast`。
 
 ### 3.1 从速报直接转物料（量产链路 A）
 
