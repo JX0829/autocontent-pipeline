@@ -248,7 +248,10 @@ def build_desc(draft: dict, tags=None, platform: str = "channels",
     title = str(draft.get("title") or "").strip()
 
     if platform == "douyin":
-        head = f"{title} {tag_str}".strip()
-        return f"{head}\n{body}".strip()
+        # 2026-11-15：抖音上传页有**独立的「作品标题」输入框**（placeholder
+        # 「填写作品标题，为作品获得更多流量」）。标题必须填进那个框，正文里不能再带
+        # 一遍标题，否则手机上「标题」空着、正文第一行又是标题，看起来就是乱的。
+        # 话题也不拼进正文：由 provider 在正文末尾逐个打成 chip（见 douyin._fill_caption）。
+        return body.strip()
     # 视频号 / B站：正文在前，标签在后（标题各自走 title 字段）
     return f"{body}\n\n{tag_str}".strip() if tag_str else body.strip()

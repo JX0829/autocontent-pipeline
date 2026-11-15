@@ -277,7 +277,35 @@ class DouyinProvider(BaseSocialProvider):
                 #    contenteditable，抖音的话题联想面板会在打字过程中插入/重排内容，
                 #    最终简介变成「标题和正文交错、#A#n#C#A」这种乱码。
                 #    改为：标题进独立「作品标题」输入框；正文原子插入；话题逐个带停顿地打。
-                # 3a. 简介正文（标题已在 build_desc 里打头，不再塞进独立标题框，避免重复）
+                # 3a. 「作品标题」独立输入框（抖音上传页确实有，placeholder
+                #     「填写作品标题，为作品获得更多流量」）。2026-11-15 之前标题被塞在
+                #     正文第一行、这个框一直空着 → 手机上「标题」是空的、正文开头又是标题，
+                #     看着就是乱的。标题上限 30 字，超了截断并告警。
+                filled_title = ""
+                title_input = page.locator('input[placeholder*="作品标题"]').first
+                if title_input.count() == 0:
+                    title_input = page.locator('input[placeholder*="标题"]').first
+                if title_input.count() > 0:
+                    title_text = title.strip()
+                    if len(title_text) > 30:
+                        logger.warning(f"抖音标题超过 30 字，截断：{title_text[:30]!r}")
+                        title_text = title_text[:30]
+                    title_input.click()
+                    title_input.fill("")
+                    title_input.fill(title_text)
+                    time.sleep(0.3)
+                    filled_title = (title_input.input_value() or "").strip()
+                    if filled_title[:10] != title_text[:10]:
+                        logger.error(f"TITLE_MISMATCH: 标题框回读不符 filled={filled_title[:40]!r}")
+                        browser.close()
+                        return {"success": False, "published": False,
+                                "error": "TITLE_MISMATCH",
+                                "expected": title_text, "filled": filled_title,
+                                "message": "「作品标题」框回读与预期不符，拒绝发布"}
+                else:
+                    logger.warning("没找到「作品标题」输入框（页面结构变化？），标题只能留在正文里")
+
+                # 3b. 简介正文（标题/话题都不在正文里，正文就是 build_desc 的正文）
                 body_text = content_text
                 caption_editor = page.locator('div[contenteditable="true"]').first
                 editor_ok = caption_editor.count() > 0
@@ -347,9 +375,9 @@ class DouyinProvider(BaseSocialProvider):
                     browser.close()
                     return {"success": True, "published": False,
                             "status": "STOPPED_BEFORE_PUBLISH",
-                            "filled_title": title[:30], "filled_text": filled_text,
+                            "filled_title": filled_title, "filled_text": filled_text,
                             "topics": topics,
-                            "message": "表单已填好（含回读校验），按 stop_before_publish 未点发布"}
+                            "message": "表单已填好（含标题/正文回读校验），按 stop_before_publish 未点发布"}
 
 
                 # 4. AIGC 合规声明勾选
@@ -455,6 +483,8 @@ class DouyinProvider(BaseSocialProvider):
                         "success": True,
                         "draft_id": verified["draft_id"],
                         "verified_title": verified["title"],
+                        "filled_title": filled_title,
+                        "caption_ok": True,
                         "message": "已确认私密发布成功：内容管理列表真实回读到该作品"
                     }
 

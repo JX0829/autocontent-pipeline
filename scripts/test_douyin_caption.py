@@ -73,13 +73,17 @@ def main() -> int:
         if k in res:
             print(f"{k:10s}: {res[k]}")
     filled = res.get("filled_text", "") or ""
+    filled_title = res.get("filled_title", "") or ""
     print(f"filled({len(filled)}): {filled[:400]}")
+    print(f"filled_title: {filled_title!r}")
 
     ok_head = body.strip()[:20] in filled
     ok_tags = all(f"#{t.strip('#')}" in filled for t in topics)
     garbled = bool(re.search(r"#.\w?#.\w?#", filled))     # #A#n#C 这类交错特征
-    print(f"\n开头在位 : {ok_head}\n话题都在 : {ok_tags}\n交错乱码 : {garbled}")
-    verdict = ok_head and ok_tags and not garbled and bool(filled)
+    # 标题必须落在「作品标题」独立输入框里（2026-11-15：之前这个框一直是空的）
+    ok_title = bool(filled_title) and filled_title[:10] == title.strip()[:10]
+    print(f"开头在位 : {ok_head}\n话题都在 : {ok_tags}\n交错乱码 : {garbled}\n标题进框 : {ok_title}")
+    verdict = ok_head and ok_tags and not garbled and ok_title and bool(filled)
     print(f"VERDICT  : {'PASS' if verdict else 'FAIL'}")
     return 0 if verdict else 1
 
