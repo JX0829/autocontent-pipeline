@@ -556,52 +556,19 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                                      "post_id": str(res.get("post_id") or ""),
                                      "error": res.get("message") or res.get("error") or "unknown"})
 
-    # ---- 回执：发布结果只发这一张卡（≤100 字），全部被门禁拦下时不发 ----
+    # ---- 回执 / 明细 / 卡片：全部收敛到 src/publish_report（一个 run 一张卡）----
+    # 这里不再自己写 publish.json / 自己发卡：单平台补发走同一函数，才能保证
+    # 「三次发布 = 一张卡 = 3/3」，而不是 1/1 + 1/1 两张各说一半。
+    from src.publish_report import merge_and_finalize as _merge_and_finalize
+
     _title = str(draft.get("title") or "")
-    report["receipt"] = publish_receipt_text(report, _title)
-    # 明细落文件（聊天里只发那一行摘要）：小品/用户要查 BVID、外部 id、失败原因看这里
-    detail = [f"# 发布明细 · {_title or ctx.run_id}", "",
-              f"- run_id: `{ctx.run_id}`", f"- 摘要: {report['receipt']}", "",
-              "| 平台 | 结果 | 外部 ID | 说明 |", "|---|---|---|---|"]
-    for it in report["published"]:
-        detail.append(f"| {it['platform']} | ✅ 已发布 | `{it.get('msg_id') or ''}` | {it.get('status') or ''} |")
-    for it in report["failed"]:
-        detail.append(f"| {it['platform']} | ❌ 失败 | — | {it.get('error') or ''} |")
-    for it in report["skipped"]:
-        detail.append(f"| {it.get('platform') or '—'} | ⏭ 跳过 | — | {it.get('reason') or ''} |")
-    try:
-        (ctx.run_root / "publish_detail.md").write_text("\n".join(detail) + "\n", encoding="utf-8")
-    except OSError as exc:
-        print(f"  ! 发布明细写入失败：{exc}")
-    if (report["published"] or report["failed"]) and bool(
-            (_pub_cfg.get("receipt", True))):
-        try:
-            send_publish_receipt(report, _title)
-        except Exception as exc:  # noqa: BLE001 — 回执失败不能改变发布结论
-            print(f"  ! 发布回执发送失败（不影响发布结论）：{type(exc).__name__}: {exc}")
-
-    _out()
-    # 发布结论回写同一张审批卡（✅ 2/2 / ⚠️ 2/3），卡片和回执卡各司其职
-    _ok, _bad = len(report["published"]), len(report["failed"])
-    _total = _ok + _bad
-    if _bad:
-        _head, _tpl = f"⚠️ {_ok}/{_total} 成功 · {_card_title}", "orange"
-    elif _ok:
-        _head, _tpl = f"✅ 已发布 {_ok}/{_total} · {_card_title}", "green"
-    else:
-        _head, _tpl = f"⏭ 未发布 · {_card_title}", "grey"
-    _lines = [publish_receipt_text(report, "")]
-    for _r in report["published"]:
-        _lines.append(f"- ✅ {_r.get('platform')} · `{_r.get('msg_id') or ''}`")
-    for _r in report["failed"]:
-        _lines.append(f"- ❌ {_r.get('platform')}：{str(_r.get('error') or '')[:80]}")
-    for _r in report["skipped"]:
-        _lines.append(f"- ⏭ {_r.get('platform')}：{str(_r.get('reason') or '')[:60]}")
-    update_card_status(ctx.run_id, _head, _tpl, _lines)
-
+    report = _merge_and_finalize(
+        ctx.run_root, report["published"] + report["failed"] + report["skipped"], _title)
     if report["failed"]:
-        raise ExecutorError("发布失败: " + ", ".join(str(f.get("platform")) for f in report["failed"]))
-    return _out()
+        # 汇总/卡片已经写完了，才抛失败：调用方按失败处理，但结论与卡片不会丢
+        raise ExecutorError("发布失败: " + ", ".join(
+            str(f.get("platform")) for f in report["failed"]))
+    return {"publish": str(ctx.out("publish.json"))}
 
 
 def exec_dispatch(ctx: StepContext) -> dict[str, str]:

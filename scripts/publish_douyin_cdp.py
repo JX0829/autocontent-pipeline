@@ -236,8 +236,11 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
             time.sleep(3)
             editor = page.locator('div[contenteditable="true"]').first
             editor.click()
-            editor.fill("")
-            editor.type(caption, delay=10)
+            editor.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+            # 原子插入一次，不走逐字符：抖音话题联想面板会重排节点 → 简介乱码
+            editor.evaluate(
+                "(el, t) => { el.focus(); document.execCommand('insertText', false, t); }",
+                caption)
             time.sleep(2)
 
             for _ in range(40):
@@ -405,6 +408,24 @@ def main() -> int:
             else:
                 state = record_outcome(led_key, False, status="SUBMIT_UNKNOWN", reason=f"publish rc={rc}")
             _log(f"台账: {state}")
+
+        # 合并进 run 的唯一发布结论（同一张卡），不再另发一张 1/1 回执
+        if args.run_id and not args.dry_run:
+            try:
+                from src.publish_report import merge_and_finalize
+                _ok = (rc == 0)
+                item = {"platform": "douyin",
+                        "bucket": "published" if _ok else "failed",
+                        "msg_id": "", "ledger": "published" if _ok else "unverified",
+                        "status": "PUBLISHED_READBACK_OK" if _ok else f"rc={rc}",
+                        "aspect": "vertical", "video": video.name,
+                        "cover": "", "source": "single_platform_cli"}
+                if not _ok:
+                    item["error"] = f"publish rc={rc}"
+                _rep = merge_and_finalize(video.parent, [item], title)
+                _log(f"已合并进 run 的发布结论：{_rep.get('receipt')}")
+            except Exception as exc:  # noqa: BLE001 — 汇总失败不能改变发布结论
+                _log(f"合并发布结论失败（不影响发布）：{type(exc).__name__}: {exc}")
         return rc
     except FileNotFoundError as exc:
         _log(str(exc))
