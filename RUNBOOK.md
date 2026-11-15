@@ -357,6 +357,25 @@ seed_comment:
 原来的硬编码路径 `~/.agent-reach/tools/bili-cli/venv/bin/python3` 已删除 —— 那条路径一被清理，
 B站发布就 100% 失败。
 
+### 5.1.9 发布前置预检（T2，2026-11-15）
+
+审批通过后、**占任何台账之前**，流水线会对本次要发的每个平台做一次廉价探活
+（`src/pipeline/preflight.py`，绝不在预检里起浏览器）：
+
+| 平台 | 检查项 | 失败码 | 修复命令进告警卡 |
+|---|---|---|---|
+| douyin | 9333 `/json/version` + 持久 profile 目录 | `DOUYIN_CDP_UNAVAILABLE` / `DOUYIN_PROFILE_MISSING` | Chrome 启动命令（含 `--remote-debugging-port=9333`） |
+| channels | 9334 CDP（`channels_session.probe`）+ 登录态快照 | `CHANNELS_CDP_UNAVAILABLE` / `CHANNELS_LOGIN_MISSING` | `scripts/channels_login.py --qr-out …` |
+| bilibili | `data/cookies_bilibili.json` 含 `SESSDATA` | `BILI_NO_COOKIE` / `BILI_COOKIE_BROKEN` / `BILI_NO_SESSDATA` | 重新导出 cookie |
+
+任一平台不过 → **不进入发布循环、不占台账、不发任何内容**：
+① 发一张红头告警卡（每个失败平台一行原因 + 一段可直接粘贴的修复命令）；
+② 结论同时写进 `publish.json`（`failed[].gate="preflight"`、`receipt`）；
+③ 抛 `ExecutorError` → 流水线 `exit=64`（≠0）。
+未接入探活的新平台不拦（`NO_PROBE`），但要留痕。
+
+回归：`python3 scripts/test_publish_preflight.py`（26 断言，离线；含「预检失败时 provider 一次都没被调用」）。
+
 ### 5.2 抖音发布：必须走 CDP 真机（**headless 必失败**）
 
 抖音对 headless 自动化有指纹识别（`navigator.webdriver`、`--remote-debugging-pipe`），
@@ -530,7 +549,16 @@ python3 -m src.publish_ledger --release <publish_key>
 
 # 平台上确实删掉了这条 → 标记 deleted，允许以后重发
 python3 -m src.publish_ledger --deleted <publish_key>
+
+# 「有作品无标题」：先在平台补好标题，再挂 id 结账（2026-11-15 新增 --mark-published）
+python3 -m src.publish_ledger --attach <publish_key> <作品id> --mark-published
+#   不带 --mark-published → 只挂 id、仍是 unverified（禁止自动重发，等人工补标题）
+#   带   --mark-published → 挂 id 并置 published（人工已在平台补完标题/确认作品正常）
+# 作品 id 怎么拿：抖音后台「内容管理」→ 卡片「编辑作品」→ 地址栏 `mid=`
 ```
+
+**别乱结账**：`--mark-published` 的前提是**你在平台上已经确认这条作品是好的**；
+作品还在「无作品描述/无标题」状态时只 `--attach`，别把缺陷结账成成功（否则台账就骗人了）。
 
 跑测试（已挂 `verify_all.sh --fast`）：
 
