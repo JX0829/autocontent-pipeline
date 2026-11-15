@@ -338,11 +338,15 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
             extra["stop_before_publish"] = True
         if opts.get("allow_missing_flags"):
             extra["allow_missing_flags"] = True
+        # 浏览器形态：显式步骤参数 > 账号配置(accounts.yaml: headless) > provider 默认(有头)。
+        # 不传 None 给 provider 表示「没显式指定」，让它去读账号标记 —— 否则账号里的
+        # headless 永远被这里写死，配置形同虚设（2026-11-15 修）。
+        ch_headless = opts["headless"] if "headless" in opts else None
         return ChannelsCDPProvider(account).publish_live(
             video_path=str(video), cover_path=str(cover), title=title,
             content_text=body, topics=topics,
             declare_original=declare_original, declare_aigc=declare_aigc,
-            dry_run=dry_run, headless=bool(opts.get("headless", False)), **extra)
+            dry_run=dry_run, headless=ch_headless, **extra)
     if platform == "douyin":
         from src.providers.douyin import DouyinProvider
         body = build_desc(draft, platform="douyin", run_root=run_root, include_tags=True)
