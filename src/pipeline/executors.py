@@ -131,6 +131,8 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     超时/连接/429/5xx。此处只负责「扩写 → schema 校验 → 落盘」，失败即抛。
     """
     from src.hotspot_extractor import pick_and_convert_hotspot
+    from src.pipeline.material_binding import (MaterialBindingError, apply_binding,
+                                               finish_report, validate_bound)
     from src.schemas import DraftScriptPayload
 
     man = ctx.material or {}
@@ -139,9 +141,33 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
         raise ExecutorError("物料没有可用于扩写的正文")
 
     data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id)
-    payload = DraftScriptPayload(**data)            # schema 校验（失败即抛，不兜底）
-    out = _write_json(ctx.out("draft_script.json"), payload.model_dump())
-    return {"draft_script": str(out)}
+
+    # ---- 物料硬约束（2026-11-15）：title 用物料的，tags 物料在前、生成只补位到 6 个 ----
+    # 物料超限（title>20 / tags>6）→ 直接报错让物料侧改，**不静默截断**：
+    # schemas 的 title validator 会无声截断，截断后就再也看不出「物料标题被改」了。
+    try:
+        bound, audit = apply_binding(man, data)
+    except MaterialBindingError as exc:
+        raise ExecutorError(f"物料硬约束不通过（需改物料，不是改代码）：{exc}") from exc
+
+    payload = DraftScriptPayload(**bound)            # schema 校验（失败即抛，不兜底）
+    final = payload.model_dump()
+
+    # ---- 生成后自证：物料里的 title/tags 一项都不许少 ----
+    codes = validate_bound(man, final)
+    audit = finish_report(audit, final, codes)
+    _write_json(ctx.out("material_binding.json"), audit)
+    if audit["changed"]["title"] or audit["changed"]["tags"]:
+        _added = len(audit["bound"]["tags"]) - len(audit["material"]["tags"])
+        print(f"      · 物料绑定生效：title={audit['bound']['title']!r} "
+              f"tags={audit['bound']['tags']}"
+              f"（物料 {len(audit['material']['tags'])} 个全保留，生成补位 {max(_added, 0)} 个，"
+              f"未用生成 tags：{audit['dropped_generated'] or '无'}）")
+    if codes:
+        raise ExecutorError(f"物料绑定自证失败：{'、'.join(codes)}（见 material_binding.json）")
+
+    out = _write_json(ctx.out("draft_script.json"), final)
+    return {"draft_script": str(out), "material_binding": str(ctx.out("material_binding.json"))}
 
 
 def _load_draft(ctx: StepContext) -> dict[str, Any]:

@@ -35,6 +35,7 @@ run() {
 # ---------- 极速档：静态扫描（无渲染、无网络）----------
 run "任务契约回归"        "$PY" scripts/test_task_contracts.py
 run "fact_summary 截断契约" "$PY" scripts/test_schema_truncation.py
+run "物料硬约束(绑定/自证/审计)" "$PY" scripts/test_material_binding.py
 run "静默失败扫描"        "$PY" scripts/audit_silent_failure.py
 run "渠道无头巡检"        "$PY" scripts/audit_channels_headful.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send
