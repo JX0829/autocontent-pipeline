@@ -36,7 +36,7 @@ sys.path.insert(0, str(PROJ))
 from src.providers import channels_session  # noqa: E402
 from src.providers.channels_session import (  # noqa: E402
     CDP_URL, HOME_URL, LOGIN_URL, STORAGE_STATE, USER_DATA_DIR, ChannelsSessionError,
-    ensure, is_logged_in,
+    ensure, is_logged_in, verify_login,
 )
 
 
@@ -98,14 +98,64 @@ async def _refresh_snapshot(ctx) -> None:
         print(f"⚠️ 备份 storage_state 失败（不影响登录）: {exc}")
 
 
-async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int:
+async def _any_logged_in_page(ctx) -> bool:
+    """遍历已打开的页面找「已登录」的那个。
+
+    为什么要遍历：扫码成功后 SPA 往往在**另一个 tab** 落地（登录页 tab 的 URL 一直不变），
+    只盯自己开的那个页面会一直判不出来 —— 这正是「扫了码还等满 5 分钟超时」的根因。
+    """
+    for pg in list(ctx.pages):
+        try:
+            if "channels.weixin.qq.com" in (pg.url or "") and await is_logged_in(pg):
+                return True
+        except Exception:  # noqa: BLE001 — 页面可能在切换/关闭中，跳过即可
+            continue
+    return False
+
+
+async def wait_for_login(ctx, page, timeout_sec: int, *, poll: float = 3.0,
+                         full_check: float = 15.0, verify=None):
+    """等扫码：返回 (是否成功, 耗时秒, 判定方式)。
+
+    判定顺序（这是 C3「扫了码还等满超时」的修法）：
+      ① 每 `poll` 秒遍历 `ctx.pages` —— 扫码成功后 SPA 常在别的 tab 落地；
+      ② 每 `full_check` 秒调一次 `verify_login()` 真访问后台复验（URL 不变的 SPA 也能判出）。
+    """
+    verify = verify or (lambda url: verify_login(url))
+    waited = 0.0
+    last_full = 0.0
+    while waited < timeout_sec:
+        await asyncio.sleep(poll)
+        waited += poll
+        hit = await _any_logged_in_page(ctx)
+        how = "页面复查"
+        if not hit and waited - last_full >= full_check:
+            last_full = waited
+            try:
+                ok, url = await verify(CDP_URL)
+            except Exception as exc:  # noqa: BLE001 — 复验异常不代表没登录，下一轮再试
+                print(f"   （主页复验异常，稍后重试：{type(exc).__name__}: {str(exc)[:60]}）")
+                ok, url = False, ""
+            hit = ok
+            how = f"主页复验 {url[:50]}"
+        if hit:
+            return True, waited, how
+        if int(waited) % 15 == 0:
+            print(f"   …等待扫码 {waited:.0f}s / {timeout_sec}s")
+    return False, waited, ""
+
+
+async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360,
+              no_reuse: bool = False) -> int:
     from playwright.async_api import async_playwright
 
-    # 关键：ensure 会复用已在跑的 9334；关窗了就把它拉起来（--check 用无头，避免打扰）
+    # 视频号**不允许无头**（headless 下发布页控件不渲染、判登录也必失败）。
+    # --no-reuse-cdp：强制新开浏览器；常驻 9334 在跑时会拿到 PROFILE_BUSY（不是 Chromium 栈）。
     try:
-        ensure(headless=check_only)
+        ensure(headless=False, reuse=not no_reuse)
     except ChannelsSessionError as exc:
-        print(f"❌ {exc}")
+        code = getattr(exc, "code", "")
+        print(f"❌ [{code or 'CHANNELS_SESSION_ERROR'}] {exc}")
         return 3
 
     async with async_playwright() as p:
@@ -114,9 +164,10 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
             await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(6)
 
-            if await is_logged_in(page):
+            ok_check, check_url = await verify_login(CDP_URL)
+            if ok_check or await is_logged_in(page):
                 await _refresh_snapshot(ctx)
-                print(f"✅ 登录态有效（持久化 profile，复用 CDP {CDP_URL}）: {page.url}")
+                print(f"✅ 登录态有效（持久化 profile，复用 CDP {CDP_URL}）: {check_url or page.url}")
                 print(f"   profile: {USER_DATA_DIR}")
                 return 0
 
@@ -147,15 +198,12 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360) -> int
                     print(f"⚠️ 未定位到二维码，已存整页截图 → {qr_out}")
 
             print(f"浏览器窗口（CDP {CDP_URL}）已就绪，请用微信扫码登录。")
-            waited = 0
-            while waited < timeout_sec:
-                await asyncio.sleep(2)
-                waited += 2
-                if "login" not in (page.url or "").lower() and await is_logged_in(page):
-                    await asyncio.sleep(3)
-                    await _refresh_snapshot(ctx)
-                    print("✅ 登录成功，登录态已在持久化 profile 内（浏览器保持开启，供发布复用）")
-                    return 0
+            ok, waited, how = await wait_for_login(ctx, page, timeout_sec)
+            if ok:
+                await _refresh_snapshot(ctx)
+                print(f"✅ 登录成功（{waited:.0f}s 内确认，{how}），"
+                      f"登录态已在持久化 profile 内（浏览器保持开启，供发布复用）")
+                return 0
             print(f"❌ 等待登录超时（{timeout_sec}s）")
             return 1
         finally:
@@ -170,6 +218,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="只检查登录态（必要时无头自愈拉起 Chrome）")
     ap.add_argument("--stop", action="store_true", help="结束占用该 profile 的进程后退出")
+    ap.add_argument("--no-reuse-cdp", action="store_true",
+                    help="不复用已跑的 9334，强制新开浏览器（profile 被占用时返回 PROFILE_BUSY）")
     ap.add_argument("--qr-out", default=str(channels_session.PROFILE_ROOT / "qr.png"),
                     help="二维码图片保存路径（发给操作人扫码）")
     ap.add_argument("--timeout", type=int, default=360, help="等待扫码秒数，默认 360")
@@ -179,7 +229,8 @@ def main() -> int:
         acted, msg = channels_session.stop()
         print(("✅ " if acted else "ℹ️ ") + msg)
         return 0
-    return asyncio.run(run(args.check, args.qr_out, args.timeout))
+    return asyncio.run(run(args.check, args.qr_out, args.timeout,
+                          no_reuse=bool(getattr(args, "no_reuse_cdp", False))))
 
 
 if __name__ == "__main__":

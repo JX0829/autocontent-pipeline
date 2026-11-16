@@ -67,7 +67,11 @@ async def is_logged_in(page) -> bool:
         body = await page.inner_text("body")
     except Exception:  # noqa: BLE001 — 页面切换中取不到正文
         return False
-    markers = ("视频号", "发表视频", "内容管理", "视频号ID", "助手")
+    # 先排除「登录落地页」：旧 markers 里的 `视频号`/`助手` 会命中「登录视频号助手」，
+    # 于是未登录被判成已登录（2026-11-15 实测：这是每日第一条卡住的根因之一）。
+    if any(h in body for h in ("登录视频号助手", "扫码登录")):
+        return False
+    markers = ("发表视频", "内容管理", "视频号ID", "数据中心")
     return any(m in body for m in markers)
 
 
@@ -97,8 +101,22 @@ async def verify_login(cdp_url: str = "", *, headless: bool = False) -> tuple[bo
                 pass
 
 
+#: 机器可读错误码（调用方/告警卡靠它分类，不要去解析中文消息）
+ERR_PROFILE_BUSY = "PROFILE_BUSY"
+ERR_CDP_UNAVAILABLE = "CDP_UNAVAILABLE"
+
+
 class ChannelsSessionError(RuntimeError):
-    """会话不可用，message 已经是可以直接展示给操作人的中文提示。"""
+    """会话不可用，message 已经是可以直接展示给操作人的中文提示。
+
+    `code` 是机器可读的错误码（`PROFILE_BUSY` / `CDP_UNAVAILABLE`），
+    告警卡与 preflight 靠它分类；之前只有中文消息，调用方只能靠字符串匹配，
+    而 `launch_persistent_context` 的原始 Chromium 栈会直接糊到用户脸上。
+    """
+
+    def __init__(self, message: str, code: str = ERR_CDP_UNAVAILABLE) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # --------------------------------------------------------------------- 探测
@@ -207,6 +225,14 @@ def _chrome_binary() -> str:
 # --------------------------------------------------------------------- 启动
 
 def _busy_message(pid: int) -> str:
+    if pid <= 0:      # 拿不到 pid（Chrome 157 不写 SingletonLock）也别教人 kill 0
+        return (
+            f"视频号浏览器 profile 正被另一个进程占用。\n"
+            f"  占用目录: {USER_DATA_DIR}\n"
+            f"  处理办法（任选其一）：\n"
+            f"    1) 关掉那个 Chrome 窗口后重试；\n"
+            f"    2) 运行 `python3 scripts/channels_login.py --stop` 由脚本收尾（会按 cmdline 找进程）。"
+        )
     return (
         f"视频号浏览器 profile 正被另一个进程占用（pid={pid}）。\n"
         f"  占用目录: {USER_DATA_DIR}\n"
@@ -226,7 +252,7 @@ def launch(headless: bool = False, timeout: float = 25.0) -> None:
 
     holder = lock_holder()
     if holder and holder[1] and holder[2]:
-        raise ChannelsSessionError(_busy_message(holder[0]))
+        raise ChannelsSessionError(_busy_message(holder[0]), code=ERR_PROFILE_BUSY)
     # 悬空锁 / 拷贝出来的 profile 里的旧锁：都清掉，避免「看起来被占用」
     _clear_stale_lock()
 
@@ -263,19 +289,41 @@ def launch(headless: bool = False, timeout: float = 25.0) -> None:
 
     holder = lock_holder()
     if holder and holder[1] and holder[2]:
-        raise ChannelsSessionError(_busy_message(holder[0]))
+        raise ChannelsSessionError(_busy_message(holder[0]), code=ERR_PROFILE_BUSY)
     raise ChannelsSessionError(
         f"Chrome 未能在 {timeout:.0f}s 内就绪（{CDP_URL}）。\n"
         f"  启动日志: {LAUNCH_LOG}\n"
         f"  常见原因：profile 被占用、端口 {CDP_PORT} 被别的程序占、Chrome 版本不支持 --headless=new")
 
 
-def ensure(headless: bool = False, timeout: float = 25.0) -> str:
-    """保证 CDP 可用并返回地址；不可用时抛 ChannelsSessionError（消息可直接展示）。"""
-    if probe():
+def ensure(headless: bool = False, timeout: float = 25.0, *, reuse: bool = True) -> str:
+    """保证 CDP 可用并返回地址；不可用时抛 `ChannelsSessionError`（消息可直接展示）。
+
+    reuse=False（CLI `--no-reuse-cdp`）：**不复用**已跑的 9334，强制新开一个。
+    常驻 Chrome 正在用时必然撞 SingletonLock —— 这时要给 `PROFILE_BUSY` 和三条处理建议，
+    而不是把 `launch_persistent_context` 的 Chromium 原始栈抛给用户（这是 T1 的核心）。
+    """
+    if reuse and probe():
         return CDP_URL
+    if not reuse and probe():
+        holder = lock_holder()
+        pid = holder[0] if holder and holder[1] and holder[2] else 0
+        if not pid:
+            holders = sorted(_cmdline_holders())
+            pid = holders[0] if holders else _pid_from_file()
+        raise ChannelsSessionError(
+            _busy_message(pid or 0) + "\n  （--no-reuse-cdp 强制新开，但 9334 已有实例在跑）",
+            code=ERR_PROFILE_BUSY)
     launch(headless=headless, timeout=timeout)
     return CDP_URL
+
+
+def _pid_from_file() -> int:
+    try:
+        return int(PID_FILE.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError) as exc:
+        logger.debug(f"读 pid 文件失败（无所谓）：{type(exc).__name__}: {exc}")
+        return 0
 
 
 def stop() -> tuple[bool, str]:
