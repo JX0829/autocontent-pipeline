@@ -38,6 +38,7 @@ run "fact_summary 截断契约" "$PY" scripts/test_schema_truncation.py
 run "物料硬约束(绑定/自证/审计)" "$PY" scripts/test_material_binding.py
 run "静默失败扫描"        "$PY" scripts/audit_silent_failure.py
 run "渠道无头巡检"        "$PY" scripts/audit_channels_headful.py
+run "视频号稳定性(复用/扫码/门禁)" "$PY" scripts/test_channels_stability.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send
 run "封面硬编码扫描"      "$PY" scripts/check_cover_hardcode.py
 run "发布入口收口审计"    "$PY" scripts/audit_publish_entrypoints.py
