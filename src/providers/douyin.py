@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import threading
 import logging
@@ -319,13 +320,11 @@ class DouyinProvider(BaseSocialProvider):
                             "expected": title[:60], "filled": (landed_title or "")[:60],
                             "message": f"标题没能落到「作品标题」框（{title_err}），拒绝发布"}
 
-                # 3b. 正文 + 话题：三段式构造 + 一次性写入 + 回读校验（唯一实现在
-                #     src/utils/douyin_caption，provider/CLI/预览三处共用）。
-                #     旧写法是逐字符 type：contenteditable 会把 \n 折成空格、每个 #
-                #     唤起联想并在两侧插 \u200b/\xa0 —— 手机上就是「糊成一行 + 看不见的
-                #     字符」。标题已进独立「作品标题」框，所以标题段留空。
-                from src.utils.douyin_caption import build_caption, describe
-                full_text = build_caption("", content_text.strip(), topics)
+                # 3b. 正文：三段式构造（标题留空）+ 一次性写入 + 回读校验。
+                #     **话题不拼进正文** —— 纯文本 #话题 在抖音只是文字，必须走联想面板
+                #     才会成为真话题节点（见 3c 与 douyin_form.fill_topics）。
+                from src.utils.douyin_caption import build_caption
+                full_text = build_caption("", content_text.strip(), [])
                 caption_editor = page.locator('div[contenteditable="true"]').first
                 editor_ok = caption_editor.count() > 0
                 if editor_ok:
@@ -338,13 +337,16 @@ class DouyinProvider(BaseSocialProvider):
                         textarea.fill(full_text)
                         caption_ok = True
                         editor_ok = True
-                logger.info(f"Filled caption: title={title[:20]!r} topics={topics} ok={caption_ok}")
-                try:
-                    if editor_ok:
-                        ver = describe({"ok": caption_ok})
-                        logger.info(f"简介校验 {ver}")
-                except Exception as ver_exc:  # noqa: BLE001
-                    logger.debug(f"简介校验日志失败: {ver_exc}")
+                logger.info(f"Filled caption: title={title[:20]!r} ok={caption_ok}")
+
+                # 3c. 话题：敲 #关键词 → 点联想面板 → 真话题节点（[data-mention="#"]）
+                from src.providers import douyin_form
+                _tp = douyin_form.fill_topics(page, topics, log_obj=logger)
+                topics_declared, topics_landed = _tp["declared"], _tp["landed"]
+                topics_ok = bool(_tp["ok"])
+                if topics_declared and not topics_ok:
+                    logger.warning(f"[douyin] 话题未全部落地 landed={topics_landed} "
+                                   f"declared={topics_declared}：{'; '.join(_tp['problems'])}")
 
                 # 3d. 回读简介真实内容（发布前自证：乱码/错位/截断都在这里暴露）
                 filled_text = ""
@@ -352,7 +354,10 @@ class DouyinProvider(BaseSocialProvider):
                     filled_text = (caption_editor.inner_text() or "").strip() if editor_ok else ""
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"简介回读失败: {exc}")
-                if filled_text and not _caption_matches(filled_text, full_text):
+                # 话题现在是编辑器里的真节点，innerText 里会多出 "#话题"（带 &nbsp;），
+                # 所以先把话题词剥掉再和正文比，话题是否生效由 topics_ok 单独判定。
+                _body_view = (filled_text or "").split("#")[0]
+                if filled_text and not _caption_matches(_body_view, full_text):
                     logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:120]!r}")
                     browser.close()
                     return {"success": False, "published": False,
@@ -375,6 +380,9 @@ class DouyinProvider(BaseSocialProvider):
                             "status": "STOPPED_BEFORE_PUBLISH",
                             "filled_title": title[:30], "filled_text": filled_text,
                             "topics": topics,
+                            "topics_declared": topics_declared,
+                            "topics_landed": topics_landed,
+                            "topics_ok": topics_ok,
                             "message": "表单已填好（含回读校验），按 stop_before_publish 未点发布"}
 
 
@@ -513,6 +521,9 @@ class DouyinProvider(BaseSocialProvider):
                         "success": True,
                         "draft_id": verified["draft_id"],
                         "verified_title": verified["title"],
+                        "topics_declared": topics_declared,
+                        "topics_landed": topics_landed,
+                        "topics_ok": topics_ok,
                         "message": "已确认私密发布成功：内容管理列表真实回读到该作品"
                     }
 
