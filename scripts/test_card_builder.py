@@ -267,12 +267,11 @@ def test_publish_receipt() -> None:
     walk_tags(card, tags)
     check("回执卡无 Card 1.0 遗留标签", not tags, str(tags))
 
-    # 唯一实现：CLI 不许再自己拼回执/文案
-    src = (PROJ / "scripts/publish_channels.py").read_text(encoding="utf-8")
-    check("publish_channels 不再自带 compose_caption_body",
-          "def compose_caption_body" not in src)
-    check("publish_channels 走 pipeline 的发布实现", "_invoke_provider" in src)
-    check("publish_channels 复用同一张回执卡", "send_publish_receipt" in src)
+    # 发布入口已收口：视频号不再有独立发布脚本（2026-11-15 删除，统一走 runner --publish）
+    check("已无独立视频号发布脚本（收口到流水线）",
+          not (PROJ / "scripts/publish_channels.py").exists())
+    check("视频号只读探针仍在（只探不发）",
+          (PROJ / "scripts/probe_channels.py").exists())
 
 
 def main() -> int:

@@ -13,7 +13,8 @@
 
 探活口径（只做便宜、无副作用的检查，绝不在这里起浏览器）：
     douyin    9333 CDP 探活 + 持久化 profile 目录存在
-    channels  9334 CDP 探活（`channels_session.probe`）+ 登录态快照存在
+    channels  9334 CDP 探活（`channels_session.probe`）+ **后台页真实登录态**（看页面内容，
+              不看 storage_state.json —— 快照与 profile 会脱节，拿它当判据必然误判）
     bilibili  `data/cookies_bilibili.json` 存在且含 SESSDATA
 """
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -62,39 +64,31 @@ def _probe_cdp(url: str, timeout: float = 2.0) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _channels_logged_in(timeout_ms: int = 12000) -> tuple[Optional[bool], str]:
-    """连 9334 打开视频号后台，按**页面内容**判登录态（headless 判不了，视频号必须 headful）。
+def _channels_logged_in(timeout_ms: int = 15000) -> tuple[Optional[bool], str]:
+    """判定视频号登录态：**只认 `channels_session.verify_login()` 这一个实现**。
 
-    返回 (True 已登录 / False 未登录 / None 判不了, 说明)。
-    踩过的坑：未登录时地址栏也可能是 `/platform/post/create`（落地页），
-    只看 URL 会把「未登录」当成「已登录」，这正是本次收口要堵的洞。
+    踩过的坑：
+      · 未登录时地址栏也可能是 `/platform/post/create`（落地页），只看 URL 必误判；
+      · 拿 `storage_state.json` 是否存在当判据 → 快照与 profile 脱节（C2）；
+      · 自己再写一套内容判断 → 两套口径必然对不上，所以这里直接复用 verify_login。
+
+    返回 (True 已登录 / False 未登录 / None 判不出, 说明)。
     """
     try:
-        from playwright.sync_api import sync_playwright
-    except Exception as exc:  # noqa: BLE001 — 没有 playwright 也要说清楚
-        return None, f"playwright 不可用：{type(exc).__name__}"
+        import asyncio
+
+        from src.providers.channels_session import verify_login
+    except Exception as exc:  # noqa: BLE001 — 导不进来只能算判不出，由调用方 fail-closed
+        return None, f"channels_session 不可用：{type(exc).__name__}"
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(CHANNELS_CDP, timeout=timeout_ms)
-            ctx = browser.contexts[0]
-            page = ctx.new_page()
-            try:
-                page.goto(f"{CHANNELS_CDP_HOME}", wait_until="domcontentloaded",
-                          timeout=timeout_ms)
-                page.wait_for_timeout(2500)
-                body = page.inner_text("body")[:1500]
-                url = page.url or ""
-            finally:
-                page.close()
-            if "login" in url.lower():
-                return False, f"跳登录页 {url[:60]}"
-            if any(k in body for k in CHANNELS_LOGGED_OUT_HINTS):
-                return False, "页面含「登录视频号助手/扫码登录」"
-            if any(k in body for k in CHANNELS_LOGGED_IN_HINTS):
-                return True, f"后台可见（{url[:40]}）"
-            return None, "页面特征不明确"
-    except Exception as exc:  # noqa: BLE001 — 探测异常不等于未登录，交给调用方降级
-        return None, f"{type(exc).__name__}: {str(exc)[:60]}"
+        ok, url = asyncio.run(verify_login(CHANNELS_CDP))
+    except Exception as exc:  # noqa: BLE001 — 浏览器异常不等于没登录
+        return None, f"verify_login 异常：{type(exc).__name__}: {str(exc)[:60]}"
+    if ok:
+        return True, f"后台可见（{(url or '')[:40]}）"
+    if "login" in (url or "").lower():
+        return False, f"跳登录页 {(url or '')[:60]}"
+    return None, f"已加载但判不出（{(url or '')[:50]}）"
 
 
 def probe_douyin() -> Dict[str, Any]:
@@ -119,19 +113,36 @@ def probe_channels() -> Dict[str, Any]:
     if not cs_probe():
         return {"platform": "channels", "ok": False, "code": "CHANNELS_CDP_UNAVAILABLE",
                 "detail": f"{CHANNELS_CDP} 无响应（常驻 Chrome 没起）", "fix": FIX_CHANNELS}
-    if not CHANNELS_STATE.exists():
-        return {"platform": "channels", "ok": False, "code": "CHANNELS_LOGIN_MISSING",
-                "detail": f"登录态快照不存在：{CHANNELS_STATE}", "fix": FIX_CHANNELS}
-    logged, detail = _channels_logged_in()
+    # 判登录态：**必须看后台页真实内容**。
+    # ① 不拿 storage_state.json 当判据（快照与 profile 脱节，C2 踩过）；
+    # ② 「判不了」不再放行（旧行为 = 等于没有门禁）：重试 3 次仍判不出 → fail-closed。
+    logged, detail = _channels_logged_in_retry()
     if logged is False:
         return {"platform": "channels", "ok": False, "code": "CHANNELS_NOT_LOGGED_IN",
                 "detail": f"后台页显示未登录（{detail}）", "fix": FIX_CHANNELS}
     if logged is None:
-        # 判不了（Playwright 不可用等）不拦，但要留痕：别把「没检查」伪装成「检查通过」
-        return {"platform": "channels", "ok": True, "code": "CHANNELS_LOGIN_UNKNOWN",
-                "detail": f"CDP ok，登录态无法判定（{detail}）", "fix": ""}
+        return {"platform": "channels", "ok": False, "code": "CHANNELS_LOGIN_UNVERIFIED",
+                "detail": (f"登录态无法验证（重试 3 次仍判不出：{detail}）——"
+                           f"按未登录处理，免得把「没检查」当成「检查通过」"),
+                "fix": FIX_CHANNELS}
     return {"platform": "channels", "ok": True, "code": "",
             "detail": f"CDP ok + 后台页已登录（{detail}）", "fix": ""}
+
+
+def _channels_logged_in_retry(attempts: int = 3, gap: float = 2.0) -> tuple[Optional[bool], str]:
+    """`_channels_logged_in` 的三次重试版：判不出（None）时重试，避免偶发抖动误伤发布。
+
+    只要有一次明确 True 就放行；全部 None → 交回 None，由调用方 fail-closed。
+    """
+    last = "未执行"
+    for i in range(attempts):
+        logged, detail = _channels_logged_in()
+        if logged is not None:
+            return logged, detail
+        last = detail
+        if i + 1 < attempts:
+            time.sleep(gap)
+    return None, f"{last}（已重试 {attempts} 次）"
 
 
 def probe_bilibili() -> Dict[str, Any]:

@@ -131,6 +131,8 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     超时/连接/429/5xx。此处只负责「扩写 → schema 校验 → 落盘」，失败即抛。
     """
     from src.hotspot_extractor import pick_and_convert_hotspot
+    from src.pipeline.material_binding import (MaterialBindingError, apply_binding,
+                                               finish_report, validate_bound)
     from src.schemas import DraftScriptPayload
 
     man = ctx.material or {}
@@ -139,9 +141,33 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
         raise ExecutorError("物料没有可用于扩写的正文")
 
     data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id)
-    payload = DraftScriptPayload(**data)            # schema 校验（失败即抛，不兜底）
-    out = _write_json(ctx.out("draft_script.json"), payload.model_dump())
-    return {"draft_script": str(out)}
+
+    # ---- 物料硬约束（2026-11-15）：title 用物料的，tags 物料在前、生成只补位到 6 个 ----
+    # 物料超限（title>20 / tags>6）→ 直接报错让物料侧改，**不静默截断**：
+    # schemas 的 title validator 会无声截断，截断后就再也看不出「物料标题被改」了。
+    try:
+        bound, audit = apply_binding(man, data)
+    except MaterialBindingError as exc:
+        raise ExecutorError(f"物料硬约束不通过（需改物料，不是改代码）：{exc}") from exc
+
+    payload = DraftScriptPayload(**bound)            # schema 校验（失败即抛，不兜底）
+    final = payload.model_dump()
+
+    # ---- 生成后自证：物料里的 title/tags 一项都不许少 ----
+    codes = validate_bound(man, final)
+    audit = finish_report(audit, final, codes)
+    _write_json(ctx.out("material_binding.json"), audit)
+    if audit["changed"]["title"] or audit["changed"]["tags"]:
+        _added = len(audit["bound"]["tags"]) - len(audit["material"]["tags"])
+        print(f"      · 物料绑定生效：title={audit['bound']['title']!r} "
+              f"tags={audit['bound']['tags']}"
+              f"（物料 {len(audit['material']['tags'])} 个全保留，生成补位 {max(_added, 0)} 个，"
+              f"未用生成 tags：{audit['dropped_generated'] or '无'}）")
+    if codes:
+        raise ExecutorError(f"物料绑定自证失败：{'、'.join(codes)}（见 material_binding.json）")
+
+    out = _write_json(ctx.out("draft_script.json"), final)
+    return {"draft_script": str(out), "material_binding": str(ctx.out("material_binding.json"))}
 
 
 def _load_draft(ctx: StepContext) -> dict[str, Any]:
@@ -470,8 +496,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     forced_aspect = str(params.get("aspect") or "").strip()
 
     db = PipelineDB(str(ctx.db_path))
-    from src.publish_ledger import (PublishBlocked, check_and_claim, record_outcome,
-                                    release as ledger_release)
+    from src.publish_ledger import PublishBlocked, check_and_claim, record_outcome
 
     # 点完按钮到发布结束有 1~3 分钟空窗 —— 立刻把审批卡原地改成「发布中」，
     # 审批人不用盯着聊天等消息。
@@ -539,17 +564,19 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                                      "error": f"缺 {aspect} 封面: {cover.name}"})
             continue
 
+        # ---- 预检（dry_run）：不碰台账、不真发 ----
+        # 顺序很重要：dry_run 必须排在「门禁3 台账」**之前**，否则「已发过的内容」做预检
+        # 会被台账拦成 gate=ledger，看起来像预检失败（2026-11-15 踩过）。
+        if dry_run:
+            report["skipped"].append({"platform": plat, "gate": "dry_run", **_aspect_meta,
+                                      "reason": "dry_run=true，只预检不真发"})
+            continue
+
         # ---- 门禁3：平台发布台账（与飞书 send_ledger 分开，fail-closed）----
         try:
             key, _info = check_and_claim(plat, acct_id, video, str(draft.get("title") or ""))
         except PublishBlocked as exc:
             report["skipped"].append({"platform": plat, "gate": "ledger", "reason": str(exc)})
-            continue
-
-        if dry_run:
-            ledger_release(key)               # 预检不占用台账位
-            report["skipped"].append({"platform": plat, "gate": "dry_run", **_aspect_meta,
-                                      "reason": "dry_run=true，只预检不真发"})
             continue
 
         try:
@@ -594,7 +621,8 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
 
     _title = str(draft.get("title") or "")
     report = _merge_and_finalize(
-        ctx.run_root, report["published"] + report["failed"] + report["skipped"], _title)
+        ctx.run_root, report["published"] + report["failed"] + report["skipped"], _title,
+        update_card=not dry_run)
     if report["failed"]:
         # 汇总/卡片已经写完了，才抛失败：调用方按失败处理，但结论与卡片不会丢
         raise ExecutorError("发布失败: " + ", ".join(

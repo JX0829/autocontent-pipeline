@@ -76,6 +76,7 @@ DISPATCH_MODE=output_only \
 | `body` 或 `source_url` | **二选一必填**（有正文走正文，没正文按 URL 抓） |
 | `account` | 可选，默认 `douyin-tech-main` |
 | `images` | 可选，参考图 |
+| `tags` | 可选，**≤6 个**；写了就一定是「硬约束」，见下节 |
 
 ```json
 {
@@ -90,20 +91,46 @@ DISPATCH_MODE=output_only \
 
 ---
 
+### 3.0.1 物料硬约束：title 硬绑定 / tags ≤6 / 生成后自证（2026-11-15）
+
+**事故**：`material.tags` 从来进不了生成环节——`exec_expand_script` 只把 `title + body` 拼成
+`news_text` 喂 LLM，tags 全是模型现编。于是物料里的「学习方法」被「AI依赖」顶掉，
+狠的一次整组 tags 被换掉（`vibe知识大赏`/`ai学习工具` 全丢）；`title` 也被 LLM 重写，
+品牌前缀直接没了。
+
+**现在的契约**（`src/pipeline/material_binding.py`，唯一实现）：
+
+| 规则 | 行为 |
+|---|---|
+| title | 物料写了就用物料的（覆盖 LLM 重写）；物料没写才用生成的 |
+| tags | `dedupe(物料 tags + 生成 tags)[:6]`，**物料在前全保留**，生成只填空位 |
+| 物料 title >20 字 | ❌ `TITLE_TOO_LONG` → 停住，**要求改物料**（不静默截断） |
+| 物料 tags >6 个 | ❌ `TAGS_OVER_LIMIT` → 停住，要求物料侧裁剪 |
+| 生成后自证 | 物料 tags 少了 → `TAGS_DROPPED`；title 被换 → `TITLE_REWRITTEN` → `ExecutorError` |
+| 审计 | `output/<日期>/<run>/material_binding.json`：物料原值 / 生成原值 / 绑定后 / 最终 / 结论 |
+
+为什么超限要报错而不是截断：`schemas.DraftScriptPayload.title` 的 validator 本来就会**静默截断**
+>20 字，所以「物料标题被改」根本查不出来。硬约束必须在绑定前判，宁可停住让人改物料。
+
+回归：`python3 scripts/test_material_binding.py`（25 断言，含真机 `ai-study-survey-1` 对照），
+已挂 `verify_all.sh --fast`。
+
 ### 3.1 从速报直接转物料（量产链路 A）
 
 速报快照 → 物料 JSON 不用手写：
 
 ```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
 # 看当前快照有哪些条目（编号与飞书速报一致）
-python3 scripts/digest_to_material.py --list
+$PY scripts/digest_to_material.py --list
 
 # 第 3 条 → materials/digest-3-<uid>.json（标题自动重拟到 ≤20 字，非机械截断）
-python3 scripts/digest_to_material.py --index 3
+$PY scripts/digest_to_material.py --index 3
 
 # 按 unique_id / 原文链接精确取
-python3 scripts/digest_to_material.py --unique-id tw_2119746840887537800
-python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
+$PY scripts/digest_to_material.py --unique-id tw_2119746840887537800
+$PY scripts/digest_to_material.py --url https://openai.com/news/xxx
 ```
 
 产出物字段严格对齐 `manifest.schema.json`：`title`（≤20 字）+ `body` + `source_url` + `account`
@@ -119,14 +146,16 @@ python3 scripts/digest_to_material.py --url https://openai.com/news/xxx
 （原先在 `agents_context/xiao-pin/scripts/fetch_trends.py`，现为薄壳转发，两周后删）。
 
 ```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
 # 跑一轮但只看正文、不写去重库/快照（排查口径首选）
-python3 -m src.digest.orchestrator --dry-run
+$PY -m src.digest.orchestrator --dry-run
 
 # 真实落库（写 seen_trends.json + last_digest_snapshot.json，默认指 xiao-pin data/）
-python3 -m src.digest.orchestrator
+$PY -m src.digest.orchestrator
 
 # 推送飞书（cron 用的就是这条；--build-only 只打印正文）
-python3 -m src.digest.push_stream [--build-only]
+$PY -m src.digest.push_stream [--build-only]
 ```
 
 口径全部在 `config/trends.yaml`，改配置不用改代码：
@@ -279,14 +308,16 @@ output/<YYYYMMDD>/<run_id>/
 用脚本，缺一件就拒绝发送：
 
 ```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
 # 先看计划（不发送）
-python3 scripts/send_run_artifacts.py --run-id <run_id> --dry-run
+$PY scripts/send_run_artifacts.py --run-id <run_id> --dry-run
 
 # 真实发送（2 条视频 + 2 张封面大图，回执写 delivery.json）
-python3 scripts/send_run_artifacts.py --run-id <run_id>
+$PY scripts/send_run_artifacts.py --run-id <run_id>
 
 # 只要视频
-python3 scripts/send_run_artifacts.py --run-id <run_id> --videos-only
+$PY scripts/send_run_artifacts.py --run-id <run_id> --videos-only
 ```
 
 `artifacts.txt` 也已按 `[vertical]` / `[landscape]` 分组标注，可直接照着发。
@@ -317,16 +348,25 @@ for f in video.mp4 video_16_9.mp4; do cp "$f" "/tmp/video_$(md5 -q "$f").mp4"; d
 | 平台 | 格式 |
 |---|---|
 | 视频号 | `正文`（provider 内部自己拼 `#标签`，调用方传 `include_tags=False`） |
-| 抖音 | `标题 #标签\n正文`（标题必须在首行，发布器按首行识别） |
+| 抖音 | **标题走「作品标题」独立输入框**，正文只放简介正文、不含标题/话题（2026-11-15 实测：上传页有 `input[placeholder*="作品标题"]` 与正文 `contenteditable` 两个控件；把标题塞进正文会导致手机端标题空白、正文开头重复） |
 | B站 | `正文\n\n#标签`（标题单独走 title 字段） |
 
-用法：
+用法（**发布一律走流水线**，别调单个脚本）：
 
 ```bash
-python3 scripts/publish_channels.py --run-id <run_id>            # 视频号
-python3 scripts/publish_douyin_cdp.py --run-id <run_id>          # 抖音（CDP 9333）
-python3 scripts/bilibili_live_uploader.py --run-id <run_id>      # B站（自动取横版+简介+标签）
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14
+
+# 全平台 / 指定平台发布（真发；仍需审批 approve + 台账门禁）
+$PY -m src.pipeline.runner --material output/<日期>/<run_id>/manifest.json \
+    --run-id <run_id> --resume --publish douyin,bilibili,channels
+
+# 只预检不真发 / 停在发表前（验选择器用）
+$PY -m src.pipeline.runner … --publish channels --publish-dry-run
+$PY -m src.pipeline.runner … --publish channels --stop-before-publish
 ```
+
+> ⚠️ `--publish` **默认就是真发**（`dry_run=False`）。2026-11-15 有人以为是 dry run，
+> 结果真发了一条。要预检必须显式加 `--publish-dry-run`。
 
 ### 5.1.2 作者首评 / 置顶（seed_comment，2026-11-10 补齐的漏字段）
 
@@ -385,6 +425,8 @@ B站发布就 100% 失败。
 唯一可行路径：`connect_over_cdp` 接管**已人工登录的真实 Chrome**。
 
 ```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
 # ① 启动真实 Chrome（headful，端口 9333；勿用 9222，该端口专供 Agent-Reach）
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9333 \
@@ -394,10 +436,10 @@ B站发布就 100% 失败。
 # ② 在该窗口内人工扫码/验证码登录创作者中心（一次即可，会话持久化在 user-data-dir）
 
 # ③ 自检（只校验输入 + CDP 连通 + 回读作品数，不上传不发布）
-python3 scripts/publish_douyin_cdp.py --run-id <run_id> --dry-run
+$PY scripts/publish_douyin_cdp.py --run-id <run_id> --dry-run
 
 # ④ 真实发布（按 accounts.yaml 的 publish_mode，默认「仅自己可见」私密作品）
-python3 scripts/publish_douyin_cdp.py --run-id <run_id>
+$PY scripts/publish_douyin_cdp.py --run-id <run_id> --force
 ```
 
 | 退出码 | 含义 |
@@ -414,6 +456,32 @@ python3 scripts/publish_douyin_cdp.py --run-id <run_id>
 
 **成功判据（只认这两个）**：作品数 `作品 (N)` → `作品 (N+1)`，且列表正文命中标题。
 脚本已内置幂等：标题已在列表中则直接跳过，不会重复发。
+
+#### 5.2.1 抖音标题 / 正文 / 话题（2026-11-15 真机定稿）
+
+上传页有**两个独立控件**（真机枚举）：
+
+```
+[0] input            placeholder='填写作品标题，为作品获得更多流量'   ← 作品标题框
+[1] contenteditable  class='zone-container editor-kit-container'      ← 正文框
+```
+
+规则（`src/utils/video_desc.py::build_desc(platform="douyin")` + `src/providers/douyin.py`）：
+
+| 项 | 规则 | 违反后果 |
+|---|---|---|
+| 标题 | 只填「作品标题」框，≤30 字；填完**3 轮回读自证** | 回读不符 → `TITLE_NOT_LANDED`，**拒绝发布** |
+| 正文 | 只放简介正文，**不含标题、不含话题** | 手机端标题空白、正文开头重复标题（用户原话「看着乱」） |
+| 话题 | 与正文**一次原子插入**（`正文\n\n#标签1 #标签2`），不靠「移光标到末尾再逐字打」 | 逐字打会触发话题联想插入零宽字符，且抖音 React 重渲染会把 caret 复位 → 话题插进正文中间 |
+
+验证（只上传+填充，停在发布前）：
+
+```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
+$PY scripts/test_douyin_caption.py <run_id>
+# 断言 filled_title（标题框）与 filled（正文）两段；回读不一致直接 FAIL
+```
 
 ---
 
@@ -442,28 +510,66 @@ runner 跑完只代表「片子出来了 + 飞书收到了」，要公开发布�
 | B站 | `src/providers/bilibili.py` + `scripts/bilibili_live_uploader.py` | ✅ `public` | ✅ `creation_statement_id=1` | ✅ `original=True` |
 | 视频号 | `src/providers/channels_cdp.py`（Playwright） | ✅ 发表后公开 | ❌ **Web 端无此控件** | ✅ 勾选（fail-closed） |
 
-### 6.1 微信视频号（真机实测 2026-11-10，照着做，别自己摸索）
+### 6.0.1 视频号稳定性三条铁律（2026-11-15 收口）
 
-登录态会过期，过期后所有发布都会返回 `LOGIN_EXPIRED`（不会假装成功）。
+| 场景 | 现在会怎样 | 怎么处理 |
+|---|---|---|
+| profile 被占用（常驻 9334 在跑） | 复用该实例，正常发布；想让脚本**新开**时加 `--no-reuse-cdp` | 新开会返回 `PROFILE_BUSY` + 三条处理建议（**不会**糊 Chromium 原始栈），exit=3 |
+| 扫码后判不出登录 | `channels_login.py` 每 3s 遍历 `ctx.pages`、每 15s 用 `verify_login()` 主页复验，命中即返回 0（不再等满 5 分钟） | 若仍超时，码已过期：重跑 `--qr-out` 抓新码 |
+| 发布前登录态 | `preflight` 只认 `verify_login()`：已登录→放行；跳登录页→`CHANNELS_NOT_LOGGED_IN`；**3 次重试仍判不出→`CHANNELS_LOGIN_UNVERIFIED` 拦截**（旧行为是放行＝等于没门禁） | 告警卡里带扫码命令；被判不出时先 `--check` 看一眼再发 |
+
+两条已删除的旧判据（都是误判源头）：
+- ❌ `storage_state.json` 是否存在 —— 快照与 profile 会脱节（C2）；
+- ❌ `is_logged_in` 里宽松 markers（`视频号`/`助手`）—— 会命中「登录**视频号·助手**」落地页，把未登录判成已登录。
+
+回归：`$PY scripts/test_channels_stability.py`（20 断言，全离线），已挂 `verify_all.sh`。
+
+### 6.1 微信视频号（发布已收回流水线，2026-11-15）
+
+**唯一发布入口**：`runner --publish channels`（独立脚本 `scripts/publish_channels.py` 已删除）。
+浏览器形态、登录态、台账、回执全由流水线管；人工只需要处理**登录**。
+
+登录态会过期（表现：发布回执 `⚠️ …视频号失败：登录态已过期被重定向`）。排查/修复按顺序来：
 
 ```bash
-# ① 检查登录态
-python3 scripts/channels_login.py --check
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 别用裸 python3（指向 conda，缺依赖）
 
-# ② 过期了就重新扫码（打开浏览器；--qr-out 会自动把二维码截成图，方便发给操作人）
-python3 scripts/channels_login.py --qr-out /Users/a1/Downloads/qr/qr.png
+# ① 检查登录态（只看 CDP 端口不算数，必须真访问后台）
+$PY scripts/channels_login.py --check
 
-# ③ 探针：确认登录有效、发布 iframe 可达（不上传不发布）
-python3 scripts/publish_channels.py --probe
+# ② 过期就重抓二维码（--qr-out 会把码截成图，直接发到群里让人手机扫）
+$PY scripts/channels_login.py --qr-out /Users/a1/Downloads/qr/channels_qr.png
+#    码过期（页面出现「二维码已失效」）→ 重新执行本命令即可生成新码
 
-# ④ 只验证到发表前（上传+填文案+勾原创，不产生公开内容）
-python3 scripts/publish_channels.py --run-id <run_id> --stop-before-publish
+# ③ 只读探针：CDP / 是否被误拉成无头 / 登录态 / 发布页控件（不上传、不发布）
+$PY scripts/probe_channels.py
+#    期望：4 项全 ✅ 且结尾 PROBE_OK
 
-# ⑤ 真实发布
-python3 scripts/publish_channels.py --run-id <run_id>
+# ④ 停在发表前（上传+填文案+勾原创，不产生公开内容；会在后台留一条未发表记录）
+$PY -m src.pipeline.runner --material output/<日期>/<run_id>/manifest.json \
+    --run-id <run_id> --resume --publish channels --stop-before-publish
+
+# ⑤ 真实发布（真发！仍需审批 approve + 台账门禁）
+$PY -m src.pipeline.runner --material output/<日期>/<run_id>/manifest.json \
+    --run-id <run_id> --resume --publish channels
+
+# ⑤b 补发/重发（publish 步此前已 DONE，必须显式重置起点，否则整步 SKIP）
+$PY -m src.pipeline.runner --material output/<日期>/<run_id>/manifest.json \
+    --run-id <run_id> --resume --from-step publish --publish channels
+
+# ⑥ 发完核对凭证（视频号的外部 id = post_list 回读到的 objectId，形如 export/UzFf…）
+$PY -m src.publish_ledger --list channels
 ```
 
-**三个必须知道的硬约束（踩过，别重复踩）**：
+**发布结果口径（2026-11-15 修正，别再按老习惯判断）**：
+
+| 台账 status | 含义 | 回执卡显示 |
+|---|---|---|
+| `published` + `post_id=export/…` | 平台 post_list 回读命中，有凭证 | ✅ 已发布 |
+| `unverified` | 点了发表但拿不到可回读凭证 | ⚠️ 已提交但未验证（**不再报 ✅**） |
+| `failed` | 确认没发出去（登录过期/控件找不到/入参错） | ⚠️ …失败：原因 |
+
+**代码侧必知的四个约束（踩过，别重复踩）**：
 
 1. **不能直连发布页**：访问 `/platform/post/create` 会被重定向回 `/platform` 首页，
    必须先点首页的「发表视频」按钮。
@@ -540,18 +646,20 @@ sqlite3 data/pipeline_state.db "select dedupe_key,task_id,feishu_msg_id,sent_at 
 运维命令：
 
 ```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
 # 看台账
-python3 -m src.publish_ledger --list
-python3 -m src.publish_ledger --list bilibili
+$PY -m src.publish_ledger --list
+$PY -m src.publish_ledger --list bilibili
 
 # 去平台核对后：确认没发出去 → 释放占位（claimed / unverified 都能清）
-python3 -m src.publish_ledger --release <publish_key>
+$PY -m src.publish_ledger --release <publish_key>
 
 # 平台上确实删掉了这条 → 标记 deleted，允许以后重发
-python3 -m src.publish_ledger --deleted <publish_key>
+$PY -m src.publish_ledger --deleted <publish_key>
 
 # 「有作品无标题」：先在平台补好标题，再挂 id 结账（2026-11-15 新增 --mark-published）
-python3 -m src.publish_ledger --attach <publish_key> <作品id> --mark-published
+$PY -m src.publish_ledger --attach <publish_key> <作品id> --mark-published
 #   不带 --mark-published → 只挂 id、仍是 unverified（禁止自动重发，等人工补标题）
 #   带   --mark-published → 挂 id 并置 published（人工已在平台补完标题/确认作品正常）
 # 作品 id 怎么拿：抖音后台「内容管理」→ 卡片「编辑作品」→ 地址栏 `mid=`
@@ -563,7 +671,9 @@ python3 -m src.publish_ledger --attach <publish_key> <作品id> --mark-published
 跑测试（已挂 `verify_all.sh --fast`）：
 
 ```bash
-python3 scripts/test_publish_ledger.py   # 19 断言
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
+$PY scripts/test_publish_ledger.py   # 19 断言
 ```
 
 ### 7.2 发布凭证回查（post_id 一直是空）
@@ -573,7 +683,9 @@ python3 scripts/test_publish_ledger.py   # 19 断言
 （稿件刚落库有几秒延迟），查不到返回空串，**不影响发布结论**。
 
 ```bash
-python3 scripts/test_publish_evidence.py   # 7 断言（离线桩，不联网）
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
+$PY scripts/test_publish_evidence.py   # 7 断言（离线桩，不联网）
 ```
 
 ### 7.3 僵尸 RUNNING 收尸
@@ -585,9 +697,11 @@ python3 scripts/test_publish_evidence.py   # 7 断言（离线桩，不联网）
 收尸只改状态为 `ABANDONED`，**不删产物、不动 run_root**，下次同内容重跑仍按「重试」复用原 run_id 与原目录。
 
 ```bash
-python3 scripts/reap_stale_runs.py              # 只列出（dry-run）
-python3 scripts/reap_stale_runs.py --apply      # 真标记为 ABANDONED
-python3 scripts/reap_stale_runs.py --minutes 30 # 换阈值
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
+$PY scripts/reap_stale_runs.py              # 只列出（dry-run）
+$PY scripts/reap_stale_runs.py --apply      # 真标记为 ABANDONED
+$PY scripts/reap_stale_runs.py --minutes 30 # 换阈值
 ```
 
 runner 每次真实运行开始时也会自动收尸一次（阈值取 `STALE_RUN_MINUTES`，默认 15）。
@@ -665,15 +779,16 @@ ls -la data/approvals/
 - 错误码做中文化映射（`LOGIN_EXPIRED`→登录过期、`PUBLISH_SIGNAL_MISSING`→未确认发布…），
   **不会把英文截半**；未知码取中文部分前 8 字
 - 全部被门禁拦下时不发卡（避免噪音）；发送失败只打印，**不改变发布结论**
-- 回执卡唯一实现在 `card_builder`，pipeline（`exec_publish`）和
-  `scripts/publish_channels.py` 都调 `executors.send_publish_receipt()`
+- 回执卡唯一实现在 `card_builder`，流水线（`exec_publish`）与单平台排障 CLI
+  都调 `executors.send_publish_receipt()`
 
 **为什么之前回执很长**：仓库里根本没有回执模板，每次由 agent 现写（网关日志实测
 最长 8701 字）。现在结果落成确定性卡片，agent 不需要再复述。
 
-**发布入口收敛**：`scripts/publish_channels.py` 从 197 行降到 ~150 行，只保留
-`--probe` / `--dry-run` / `--stop-before-publish` / 台账查重，发布与文案都走
-`src/pipeline/executors._invoke_provider`。同时修掉两处历史分叉：
+**发布入口收敛**：视频号的独立发布脚本 `scripts/publish_channels.py` 已于 2026-11-15
+**删除**（发布实现在 `src/pipeline/executors._invoke_provider`，留着就是第二个入口）。
+手工动作只剩下「只读探针」`scripts/probe_channels.py`，它**不含任何发布调用**。
+历史两处分叉也一并修掉了：
 
 | 历史分叉 | 现状 |
 |---|---|
@@ -686,12 +801,18 @@ ls -la data/approvals/
 ### 7.6 一条命令出片+发布（`--publish`，2026-11-13）
 
 ```bash
-python3 -m src.pipeline.runner --material materials/<物料>.json \
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
+$PY -m src.pipeline.runner --material materials/<物料>.json \
         --publish douyin,bilibili,channels
 ```
 
 - `--publish` 只覆盖**本次运行**的 `publish.enabled` 门禁（内存参数，不写回 `pipeline.yaml`）；
   **门禁2 审批 approve 与门禁3 台账照旧生效**，省略则只出片
+- ⚠️ **`--publish` 默认真发**（内部 `dry_run=false`）。要预检必须加 `--publish-dry-run`；
+  要停在发表前验选择器加 `--stop-before-publish`（会在平台留一条未发表记录，需人工清理）
+- **补发/换平台重发**：`publish` 步一旦 DONE 就会被断点跳过，必须加 `--from-step publish`
+  （只重做 publish 及后续，不重跑渲染）
 - 每个平台按自己的方向选片：抖音/视频号 `video.mp4`，B站 `video_16_9.mp4`
   （映射唯一来源 `src/utils/accounts.py::PLATFORM_ASPECT`）
 - ⚠️ `pipeline.yaml::publish.aspect` **必须留空**（`aspect: ""`）。写了值就是强制覆盖，会短路上面的
@@ -703,9 +824,15 @@ python3 -m src.pipeline.runner --material materials/<物料>.json \
 
 > 使用方（小品）只跑这一条命令，不直接调 provider、不改配置；问题写复现交开发。
 
-### 7.7 单平台 CLI 已废弃（默认拒绝）
+### 7.7 单平台 CLI（视频号已无，抖音/B站保留但默认拒绝）
 
-`publish_channels.py` / `publish_douyin_cdp.py` / `bilibili_live_uploader.py` 仍保留，但**不带 `--force` 直接退出 2**：
+| 平台 | 单平台 CLI | 状态 |
+|---|---|---|
+| 视频号 | — | **已删除**（2026-11-15）：只读探针用 `scripts/probe_channels.py`，发布走 runner |
+| 抖音 | `scripts/publish_douyin_cdp.py` | 保留（含扫码/短信验证排障），**不带 `--force` 直接退出 2** |
+| B站 | `scripts/bilibili_live_uploader.py` | 保留，**只认 `--force`** |
+
+不带 `--force` 时的提示：
 
 ```
 ⚠️  单平台发布入口已废弃，统一走流水线一条命令：
@@ -733,10 +860,12 @@ bash scripts/verify_all.sh --full   # 真实渲染，实测约 6–7 分钟（�
 单项：
 
 ```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14     # 必须：裸 python3 会命中 conda，缺项目依赖
+
 bash scripts/gate1.sh    # 声明层/模型契约（8 项）
 bash scripts/gate2.sh    # 台账幂等（4 项）
 bash scripts/gate3.sh    # 端到端不重发（12 项断言）
-python3 scripts/test_task_contracts.py   # 任务契约回归 33 项
+$PY scripts/test_task_contracts.py   # 任务契约回归 33 项
 ```
 
 **改完代码必须跑 `--fast`，动到渲染/发送必须跑 `--full`。**

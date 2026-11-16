@@ -140,7 +140,8 @@ autocontent-pipeline/
 │   ├── send_run_artifacts.py     # 交付契约（4 件缺一即拒绝）
 │   ├── digest_to_material.py     # 速报 → 物料
 │   ├── channels_login.py         # 视频号扫码登录 / 二维码出图
-│   ├── publish_channels.py / publish_douyin_cdp.py / bilibili_live_uploader.py  # 薄壳 CLI（发布实现在 src/pipeline/executors）
+│   ├── probe_channels.py         # 视频号只读探针（只探不发）
+│   ├── publish_douyin_cdp.py / bilibili_live_uploader.py  # 单平台排障 CLI（默认拒绝；发布实现在 src/pipeline/executors）
 │   └── hooks/                    # pipeline.yaml 声明的钩子实现
 └── src/
     ├── approval/                 # 审批 provider 槽位（base / registry / providers / styles）
