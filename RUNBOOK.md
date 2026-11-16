@@ -442,6 +442,20 @@ runner 跑完只代表「片子出来了 + 飞书收到了」，要公开发布�
 | B站 | `src/providers/bilibili.py` + `scripts/bilibili_live_uploader.py` | ✅ `public` | ✅ `creation_statement_id=1` | ✅ `original=True` |
 | 视频号 | `src/providers/channels_cdp.py`（Playwright） | ✅ 发表后公开 | ❌ **Web 端无此控件** | ✅ 勾选（fail-closed） |
 
+### 6.0.1 视频号稳定性三条铁律（2026-11-15 收口）
+
+| 场景 | 现在会怎样 | 怎么处理 |
+|---|---|---|
+| profile 被占用（常驻 9334 在跑） | 复用该实例，正常发布；想让脚本**新开**时加 `--no-reuse-cdp` | 新开会返回 `PROFILE_BUSY` + 三条处理建议（**不会**糊 Chromium 原始栈），exit=3 |
+| 扫码后判不出登录 | `channels_login.py` 每 3s 遍历 `ctx.pages`、每 15s 用 `verify_login()` 主页复验，命中即返回 0（不再等满 5 分钟） | 若仍超时，码已过期：重跑 `--qr-out` 抓新码 |
+| 发布前登录态 | `preflight` 只认 `verify_login()`：已登录→放行；跳登录页→`CHANNELS_NOT_LOGGED_IN`；**3 次重试仍判不出→`CHANNELS_LOGIN_UNVERIFIED` 拦截**（旧行为是放行＝等于没门禁） | 告警卡里带扫码命令；被判不出时先 `--check` 看一眼再发 |
+
+两条已删除的旧判据（都是误判源头）：
+- ❌ `storage_state.json` 是否存在 —— 快照与 profile 会脱节（C2）；
+- ❌ `is_logged_in` 里宽松 markers（`视频号`/`助手`）—— 会命中「登录**视频号·助手**」落地页，把未登录判成已登录。
+
+回归：`python3 scripts/test_channels_stability.py`（20 断言，全离线），已挂 `verify_all.sh`。
+
 ### 6.1 微信视频号（真机实测 2026-11-10，照着做，别自己摸索）
 
 登录态会过期，过期后所有发布都会返回 `LOGIN_EXPIRED`（不会假装成功）。
