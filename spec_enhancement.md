@@ -1809,7 +1809,9 @@ dry_run=true               → skipped: [{gate: dry_run}]，台账行数 0（已
 > - 平台发布走独立 CLI，按 `run_id` 人工触发：
 >   - 抖音：`scripts/publish_douyin_cdp.py --run-id <id>`（`publish_mode=public_publish` 公开 / `private_publish` 私密）
 >   - B站：`scripts/bilibili_live_uploader.py`（`publish_mode=public` → 不传 `--only-self`）
->   - 视频号：`scripts/publish_channels.py --run-id <id>`（公开 + 原创 fail-closed；`--stop-before-publish` 可停在发表前）
+>   - 视频号：`python3 -m src.pipeline.runner --material … --run-id <id> --publish channels`
+>     （2026-11-15 起发布入口收回流水线，独立脚本 `publish_channels.py` 已删除；
+>     只读探针用 `scripts/probe_channels.py`，预检加 `--publish-dry-run`，停发表前加 `--stop-before-publish`）
 > - **不做承诺**：不承诺"一键发三平台"、不承诺 runner 端到端发布。T4.7 的 `output_only` 只解决"出片不发片"，
 >   反过来"发片"仍需独立 CLI。
 > - 台账口径：独立 CLI 发布后需自行 `claim_send_slot` / `mark_sent` 落 `send_ledger`，

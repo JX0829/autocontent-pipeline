@@ -107,7 +107,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
         - **登录态失效要明说**：被重定向到 login.html 时返回 LOGIN_EXPIRED 并提示重新扫码。
 
         注意：本机 2026-11-10 时 storage_state 已过期，页面控件文案未经真机核对，
-        首次使用请先跑 `scripts/publish_channels.py --probe` 打印真实标签再调匹配词。
+        首次使用请先跑 `scripts/probe_channels.py` 打印真实标签再调匹配词。
         """
         import asyncio
 

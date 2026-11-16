@@ -152,8 +152,12 @@ def finalize_cards(run_root: Path, report: dict[str, Any], title: str = "") -> s
 
 # --------------------------------------------------------------------------- 一站式
 def merge_and_finalize(run_root: Path, items: Iterable[dict[str, Any]],
-                       title: str = "") -> dict[str, Any]:
-    """合并本次结果 → 重写 publish.json/明细 → 更新那张唯一的卡。"""
+                       title: str = "", update_card: bool = True) -> dict[str, Any]:
+    """合并本次结果 → 重写 publish.json/明细 → 更新那张唯一的卡。
+
+    `update_card=False`：只落文件、不碰卡片。发布预检（dry_run）用 —— 预检没发任何东西，
+    却把审批卡改成「✅ 已发布 N/N」是骗人的（2026-11-15 踩过）。
+    """
     run_root = Path(run_root)
     items = list(items)
     existing: dict[str, Any] = {}
@@ -165,5 +169,6 @@ def merge_and_finalize(run_root: Path, items: Iterable[dict[str, Any]],
             print(f"  ! 旧 publish.json 损坏，按空报告重写：{exc}")
     report = merge_results(existing, items)
     write_report(run_root, run_root.name, report, title)
-    finalize_cards(run_root, report, title)
+    if update_card:
+        finalize_cards(run_root, report, title)
     return report

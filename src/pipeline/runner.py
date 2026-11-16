@@ -594,7 +594,9 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
               task_id: str, start_index: int = 0, db_path: Path = DEFAULT_DB,
               rerun_done: bool = False, material: dict[str, Any] | None = None,
               account: str = "",
-              publish_platforms: list[str] | None = None) -> int:
+              publish_platforms: list[str] | None = None,
+              publish_dry_run: bool = False,
+              stop_before_publish: bool = False) -> int:
     """真实执行（T2.2 状态流转 + P5 执行体接线 + hook 执行）。
 
     每一步：before_hooks → 执行体 → after_hooks，产物写进 run_root。
@@ -628,9 +630,14 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
         _pub_step["params"] = {**(_pub_step.get("params") or {}),
                                "enabled": True,
                                "platforms": [p.lower() for p in publish_platforms],
-                               "dry_run": False}
+                               # 默认**真发**；只有显式 --publish-dry-run 才只预检。
+                               # （2026-11-15 踩过：以为 --publish 是 dry run，结果真发了）
+                               "dry_run": bool(publish_dry_run),
+                               "stop_before_publish": bool(stop_before_publish)}
         print(f"  发布覆盖: --publish {','.join(publish_platforms)}"
-              f"（仍需审批 approve；台账照旧拦截）")
+              + ("（dry-run：只预检不真发）" if publish_dry_run else "")
+              + ("（停在发表前）" if stop_before_publish else "")
+              + "（仍需审批 approve；台账照旧拦截）")
     pparams = {**((cfg.get("publish") or {})), **(_pub_step.get("params") or {})}
     if not bool(pparams.get("enabled", False)) or not (pparams.get("platforms") or []):
         skip["publish"] = "publish.enabled=false 或 platforms 为空（默认关闭）"
@@ -768,7 +775,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--publish", default=None, metavar="PLATFORMS",
                     help="显式发布到指定平台（逗号分隔，如 douyin,bilibili,channels）。"
                          "只覆盖本次运行的 publish.enabled 门禁，仍需审批 approve；"
-                         "不改写 pipeline.yaml")
+                         "不改写 pipeline.yaml。**注意：这会真发**，预检请加 --publish-dry-run")
+    ap.add_argument("--publish-dry-run", action="store_true",
+                    help="配合 --publish 使用：只做发布预检（选片/文案/预检探活），不真发、不占台账")
+    ap.add_argument("--stop-before-publish", action="store_true",
+                    help="配合 --publish 使用：上传+填文案+勾原创后**停在发表前**（验证选择器用，"
+                         "会在后台留一条未发表记录，需人工清理）")
+    ap.add_argument("--from-step", default=None, metavar="STEP_ID",
+                    help="强制从指定步骤重跑（之前步骤 SKIP）。补发/单项重跑用，"
+                         "如 --from-step publish 只重做发布")
     ap.add_argument("--db", default=str(DEFAULT_DB), help="状态库路径")
     args = ap.parse_args(argv)
 
@@ -899,6 +914,17 @@ def main(argv: list[str] | None = None) -> int:
                   f"  从第 {start_index + 1} 步回退到第 {pulled + 1} 步（{step_ids[pulled]}）重做")
             start_index = pulled
 
+    # 4.1 显式指定重跑起点（补发/单项重跑）：`--from-step publish` 只重做 publish 及其后续。
+    #     没有这个开关时，publish 步一旦 DONE 就再也跑不到 —— 「补发到另一个平台」只能
+    #     靠删库或手搓脚本，实际就是绕开流水线（2026-11-15 收口视频号时发现的死口）。
+    if args.from_step:
+        if args.from_step not in step_ids:
+            print(f"拒绝执行：--from-step {args.from_step} 不在 steps 里（可选：{', '.join(step_ids)}）")
+            return EXIT_CONTRACT
+        forced = step_ids.index(args.from_step)
+        print(f"\n=== 强制重跑 ===\n  从 `{args.from_step}`（第 {forced + 1} 步）开始，之前步骤 SKIP")
+        start_index = forced
+
     # 5. 计划 + 对账
     # ④ 旧实现对 auto_resume 传 upto=None，会把「马上要重做的 render」也算进必须已有产物，
     #    于是必定「拒绝执行：产物对账不通过」—— 无法自愈的死锁。统一只对账已完成的部分。
@@ -928,7 +954,9 @@ def main(argv: list[str] | None = None) -> int:
                      db_path=Path(args.db), rerun_done=False, material=material,
                      account=account,
                      publish_platforms=([p.strip() for p in args.publish.split(",") if p.strip()]
-                                        if args.publish else None))
+                                        if args.publish else None),
+                     publish_dry_run=bool(args.publish_dry_run),
+                     stop_before_publish=bool(args.stop_before_publish))
 
 
 if __name__ == "__main__":

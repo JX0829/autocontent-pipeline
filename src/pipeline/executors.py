@@ -470,8 +470,7 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
     forced_aspect = str(params.get("aspect") or "").strip()
 
     db = PipelineDB(str(ctx.db_path))
-    from src.publish_ledger import (PublishBlocked, check_and_claim, record_outcome,
-                                    release as ledger_release)
+    from src.publish_ledger import PublishBlocked, check_and_claim, record_outcome
 
     # 点完按钮到发布结束有 1~3 分钟空窗 —— 立刻把审批卡原地改成「发布中」，
     # 审批人不用盯着聊天等消息。
@@ -539,17 +538,19 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                                      "error": f"缺 {aspect} 封面: {cover.name}"})
             continue
 
+        # ---- 预检（dry_run）：不碰台账、不真发 ----
+        # 顺序很重要：dry_run 必须排在「门禁3 台账」**之前**，否则「已发过的内容」做预检
+        # 会被台账拦成 gate=ledger，看起来像预检失败（2026-11-15 踩过）。
+        if dry_run:
+            report["skipped"].append({"platform": plat, "gate": "dry_run", **_aspect_meta,
+                                      "reason": "dry_run=true，只预检不真发"})
+            continue
+
         # ---- 门禁3：平台发布台账（与飞书 send_ledger 分开，fail-closed）----
         try:
             key, _info = check_and_claim(plat, acct_id, video, str(draft.get("title") or ""))
         except PublishBlocked as exc:
             report["skipped"].append({"platform": plat, "gate": "ledger", "reason": str(exc)})
-            continue
-
-        if dry_run:
-            ledger_release(key)               # 预检不占用台账位
-            report["skipped"].append({"platform": plat, "gate": "dry_run", **_aspect_meta,
-                                      "reason": "dry_run=true，只预检不真发"})
             continue
 
         try:
@@ -594,7 +595,8 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
 
     _title = str(draft.get("title") or "")
     report = _merge_and_finalize(
-        ctx.run_root, report["published"] + report["failed"] + report["skipped"], _title)
+        ctx.run_root, report["published"] + report["failed"] + report["skipped"], _title,
+        update_card=not dry_run)
     if report["failed"]:
         # 汇总/卡片已经写完了，才抛失败：调用方按失败处理，但结论与卡片不会丢
         raise ExecutorError("发布失败: " + ", ".join(
