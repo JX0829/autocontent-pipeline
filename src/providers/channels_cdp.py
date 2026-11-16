@@ -284,7 +284,13 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 # ⚠️ 视频号的描述编辑器是 `<div contenteditable="" data-placeholder="添加描述" class="input-editor">`
                 #    contenteditable 是**空字符串**，`[contenteditable='true']` 选不到它，
                 #    旧实现于是命中了「商品链接」textarea，文案写进了垃圾桶（2026-11-10 实测）。
-                tag_str = " ".join(f"#{t}" if not str(t).startswith("#") else str(t) for t in topics[:5])
+                # 话题**不能**当纯文本粘贴：2026-11-15 实测，视频号描述框只有在我们
+                # 逐字符敲入 `#关键词` 时，才会把 `#关键词` 包成
+                # `<span class="hl topic" data-type="topic">`（真话题，落地到 desc.topic）。
+                # 用 execCommand('insertText') 一次粘贴 → 纯文本，post_list 回读 topic=false。
+                # 所以：正文照旧粘贴（保排版），话题改成敲入。
+                _topic_list = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()][:5]
+                tag_str = " ".join(f"#{t}" for t in _topic_list)
                 # 按整行截断，绝不把句子/话题砍成半截
                 def _cap_lines(text: str, limit: int = 360) -> str:
                     out, total = [], 0
@@ -295,7 +301,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
                         total += len(line) + 1
                     return "\n".join(out).strip()
 
-                payload = f"{title}\n\n{_cap_lines(content_text)}\n\n{tag_str}"
+                payload = f"{title}\n\n{_cap_lines(content_text)}"
                 fill = await ui.evaluate("""(txt) => {
                     const ed = document.querySelector('.post-desc-box .input-editor')
                         || document.querySelector('.input-editor[data-placeholder]')
@@ -314,6 +320,59 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 }""", payload)
                 filled_text = str((fill or {}).get("text") or "")
                 editor_cls = str((fill or {}).get("cls") or "")
+
+                # 3b. 话题：把光标移到末尾，逐个「#关键词 + 空格」敲进去，让平台生成真话题
+                topics_landed: list[str] = []
+                topics_declared = list(_topic_list)
+                if _topic_list:
+                    try:
+                        await ui.evaluate("""() => {
+                            const ed = document.querySelector('.post-desc-box .input-editor')
+                                || document.querySelector('.input-editor[data-placeholder]');
+                            if (!ed) return false;
+                            ed.focus();
+                            const r = document.createRange();
+                            r.selectNodeContents(ed);
+                            r.collapse(false);
+                            const sel = window.getSelection();
+                            sel.removeAllRanges();
+                            sel.addRange(r);
+                            return true;
+                        }""")
+                        await asyncio.sleep(0.4)
+                        for _tag in _topic_list:
+                            await page.keyboard.type(f"#{_tag} ", delay=110)
+                            await asyncio.sleep(0.6)
+                        landed = await ui.evaluate("""() => {
+                            const ed = document.querySelector('.post-desc-box .input-editor')
+                                || document.querySelector('.input-editor[data-placeholder]');
+                            if (!ed) return [];
+                            return [...ed.querySelectorAll('span.topic, span[data-type=\"topic\"]')]
+                                .map(e => (e.innerText || '').trim().replace(/^#/, ''));
+                        }""")
+                        topics_landed = [t for t in (landed or []) if t]
+                        logger.info(f"[CHANNELS] 话题落地 {len(topics_landed)}/{len(_topic_list)}: {topics_landed}")
+                        if len(topics_landed) < len(_topic_list):
+                            # 重试一次：清掉编辑器末尾重敲（正文已就位，不动前面）
+                            await page.keyboard.type(" ", delay=60)
+                            for _tag in [t for t in _topic_list if t not in topics_landed]:
+                                await page.keyboard.type(f"#{_tag} ", delay=130)
+                                await asyncio.sleep(0.7)
+                            landed2 = await ui.evaluate("""() => {
+                                const ed = document.querySelector('.post-desc-box .input-editor')
+                                    || document.querySelector('.input-editor[data-placeholder]');
+                                if (!ed) return [];
+                                return [...ed.querySelectorAll('span.topic, span[data-type=\"topic\"]')]
+                                    .map(e => (e.innerText || '').trim().replace(/^#/, ''));
+                            }""")
+                            topics_landed = [t for t in (landed2 or []) if t]
+                            logger.warning(f"[CHANNELS] 话题重试后 {len(topics_landed)}/{len(_topic_list)}: {topics_landed}")
+                    except Exception as exc:  # noqa: BLE001 — 话题失败不阻断发布，但必须如实记录
+                        logger.warning(f"[CHANNELS] 话题敲入失败（不阻断发布）: {type(exc).__name__}: {exc}")
+
+                topics_ok = bool(_topic_list) and len(set(topics_landed)) >= len(set(topics_declared))
+                if _topic_list and not topics_ok:
+                    logger.warning(f"[CHANNELS] 话题未全部生效 declared={topics_declared} landed={topics_landed}")
 
                 # 短标题（可选，展示在公众号/发现页）
                 short_title_filled = ""
@@ -387,6 +446,9 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "url": page.url, "declare_original": orig_done,
                             "original_label": orig_txt, "aigc_state": aigc_state,
                             "filled_text": filled_text[:200],
+                            "topics_declared": topics_declared,
+                            "topics_landed": topics_landed,
+                            "topics_ok": topics_ok,
                             "screenshot": str(shot_dir / "before_publish.png"),
                             "message": "已上传、填文案、勾原创，停在发表前（测试档）"}
 
@@ -479,6 +541,10 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     "filled_text": filled_text[:200],
                     "editor_class": editor_cls,
                     "short_title": short_title_filled,
+                    # 话题证据：declared=准备写的，landed=编辑器里真成了话题的
+                    "topics_declared": topics_declared,
+                    "topics_landed": topics_landed,
+                    "topics_ok": topics_ok,
                     "readback": readback,
                     "screenshot": str(shot_dir / "after_publish.png"),
                     "message": ("已发表并取得平台侧证据（含 post_list 回读）" if published

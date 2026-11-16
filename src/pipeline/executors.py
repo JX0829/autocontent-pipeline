@@ -599,8 +599,12 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                          or res.get("post_id") or "")
             state = record_outcome(key, True, external_id=msg_id,
                                    status=str(res.get("status") or ""))
+            # 话题证据跟着一条结论走：declared（准备写的）/ landed（平台真识别成话题的）
+            _topics_meta = {k: res[k] for k in ("topics_declared", "topics_landed", "topics_ok") if k in res}
+            if "readback" in res:
+                _topics_meta["readback_topic"] = bool((res.get("readback") or {}).get("topic"))
             report["published"].append({"platform": plat, "msg_id": msg_id or "(无外部 id)", "ledger": state,
-                                        **_aspect_meta,
+                                        **_aspect_meta, **_topics_meta,
                                         "status": res.get("status") or res.get("distribution") or "ok"})
         else:
             # 失败码优先取 `error`（LOGIN_REQUIRED / CDP_UNAVAILABLE / PUBLISHED_NO_TITLE…），
