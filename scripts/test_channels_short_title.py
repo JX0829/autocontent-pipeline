@@ -60,11 +60,13 @@ def test_codes() -> None:
     check("② 短标题输入框按 placeholder 定位", 'input[placeholder*="短标题"]' in src)
     check("② 保存后回读比对描述（R2）", "DESCRIPTION_CHANGED" in src and "hit.description" in src)
 
-    py = PROJ / "scripts" / "publish_channels.py"
+    # 维护动作已从发布脚本搬到独立文件（publish_channels.py 2026-11-15 删除）
+    py = PROJ / "scripts" / "fix_channels_short_title.py"
     body = py.read_text(encoding="utf-8")
-    check("① CLI 有 --fix-short-title", '"--fix-short-title"' in body)
-    check("① CLI 有 --all-missing", '"--all-missing"' in body)
-    check("① 不带开关时行为不变（走原分支）", "if args.fix_short_title:" in body)
+    check("① CLI 有 --run-id / --all-missing / --match",
+          all(f'"{f}"' in body for f in ("--run-id", "--all-missing", "--match")))
+    check("① 默认 dry-run，--apply 才写", 'dry_run=not args.apply' in body)
+    check("① 已无独立发布入口", not (PROJ / "scripts" / "publish_channels.py").exists())
 
 
 def main() -> int:

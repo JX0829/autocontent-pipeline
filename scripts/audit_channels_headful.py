@@ -36,7 +36,6 @@ TARGETS = [
     "scripts/channels_login.py",
     "scripts/test_channels_session.py",
     "scripts/probe_channels.py",
-    "scripts/publish_channels.py",
 ]
 
 PY_BAD = [

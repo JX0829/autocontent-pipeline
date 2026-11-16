@@ -217,7 +217,8 @@ async def submit_edit(page) -> str:
                 await b.click()
                 await asyncio.sleep(5)
                 return ""
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — 单个按钮点击失败继续试下一个，但要留痕
+            logger.debug("跳过按钮 #%s：%s: %s", i, type(exc).__name__, exc)
             continue
     return MODIFY_PANEL_UNAVAILABLE
 
@@ -234,7 +235,8 @@ def _run_desc_head(run_id: str) -> str:
                 continue
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 — 单个文件坏不影响其它候选，但要留痕
+                logger.debug("跳过 %s：%s: %s", f.name, type(exc).__name__, exc)
                 continue
             draft = data.get("draft") or data
             t = str(draft.get("title") or "").strip()

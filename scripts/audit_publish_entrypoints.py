@@ -11,7 +11,6 @@
     src/pipeline/executors.py                 （runner 的 dispatch 步）
   命令层（RUNBOOK §2③ / §5.1 / §5.2 / §7.1）
     scripts/publish_douyin_cdp.py
-    scripts/publish_channels.py
     scripts/bilibili_live_uploader.py
     scripts/send_run_artifacts.py             （只发飞书素材，不对外发布）
 
@@ -37,7 +36,6 @@ WHITELIST = {
     "src/providers/base.py",
     "src/pipeline/executors.py",
     "scripts/publish_douyin_cdp.py",
-    "scripts/publish_channels.py",
     "scripts/bilibili_live_uploader.py",
     "scripts/send_run_artifacts.py",
 }
