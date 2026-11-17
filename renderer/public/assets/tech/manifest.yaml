@@ -90,3 +90,173 @@ assets:
     duration_s: 160
     loudness_lufs: -19.7
     notes: 音色偏暖，适合产品/人物向选题
+
+  # ================= 2026-11-17 用户上传批次（自动登记）=================
+  - id: open_cleanroom_v1
+    slot: open
+    file: video/open/open_cleanroom_v1.mp4
+    family: cleanroom
+    tags: [开场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: open_neon_profile_v1
+    slot: open
+    file: video/open/open_neon_profile_v1.mp4
+    family: neon_profile
+    tags: [开场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: open_wafer_v2
+    slot: open
+    file: video/open/open_wafer_v2.mp4
+    family: wafer
+    tags: [开场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: bg_circuit_v2
+    slot: bg
+    file: video/bg/bg_circuit_v2.mp4
+    family: circuit
+    tags: [正文背景, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: bg_litho_v1
+    slot: bg
+    file: video/bg/bg_litho_v1.mp4
+    family: litho
+    tags: [正文背景, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: bg_neural_mesh_v1
+    slot: bg
+    file: video/bg/bg_neural_mesh_v1.mp4
+    family: neural_mesh
+    tags: [正文背景, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: bg_server_aisle_v1
+    slot: bg
+    file: video/bg/bg_server_aisle_v1.mp4
+    family: server_aisle
+    tags: [正文背景, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: mid_glitch_v1
+    slot: mid
+    file: video/mid/mid_glitch_v1.mp4
+    family: glitch
+    tags: [转场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 720x1280
+    duration_s: 10.03
+    fps: 24
+
+  - id: mid_iris_v1
+    slot: mid
+    file: video/mid/mid_iris_v1.mp4
+    family: iris
+    tags: [转场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 720x1280
+    duration_s: 10.03
+    fps: 24
+
+  - id: mid_light_sweep_v1
+    slot: mid
+    file: video/mid/mid_light_sweep_v1.mp4
+    family: light_sweep
+    tags: [转场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 720x1280
+    duration_s: 10.03
+    fps: 24
+
+  - id: mid_scanline_v1
+    slot: mid
+    file: video/mid/mid_scanline_v1.mp4
+    family: scanline
+    tags: [转场, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 720x1280
+    duration_s: 10.03
+    fps: 24
+
+  - id: end_wafer_dim_v1
+    slot: end
+    file: video/end/end_wafer_dim_v1.mp4
+    family: wafer_dim
+    tags: [收尾, AI生成, 竖版]
+    license: ai-generated
+    source: 用户生成（已过尺寸校验）
+    resolution: 1080x1920
+    duration_s: 10.03
+    fps: 24
+
+  - id: open_cleanroom_v1
+    slot: cover
+    file: cover/open_cleanroom_v1.jpg
+    resolution: 896x1200
+    license: ai-generated
+    note: 小红书 3:4 图文卡封面（流水线封面是从成片抽帧，此项目前仅手动上传用）
+  - id: open_cleanroom_v1_1080x1440
+    slot: cover
+    file: cover/open_cleanroom_v1_1080x1440.jpg
+    resolution: 1080x1440
+    license: ai-generated
+    note: 小红书 3:4 图文卡封面（流水线封面是从成片抽帧，此项目前仅手动上传用）
+  - id: open_neon_profile_v1
+    slot: cover
+    file: cover/open_neon_profile_v1.jpg
+    resolution: 896x1200
+    license: ai-generated
+    note: 小红书 3:4 图文卡封面（流水线封面是从成片抽帧，此项目前仅手动上传用）
+  - id: open_neon_profile_v1_1080x1440
+    slot: cover
+    file: cover/open_neon_profile_v1_1080x1440.jpg
+    resolution: 1080x1440
+    license: ai-generated
+    note: 小红书 3:4 图文卡封面（流水线封面是从成片抽帧，此项目前仅手动上传用）
+  - id: open_wafer_v2
+    slot: cover
+    file: cover/open_wafer_v2.jpg
+    resolution: 896x1200
+    license: ai-generated
+    note: 小红书 3:4 图文卡封面（流水线封面是从成片抽帧，此项目前仅手动上传用）
+  - id: open_wafer_v2_1080x1440
+    slot: cover
+    file: cover/open_wafer_v2_1080x1440.jpg
+    resolution: 1080x1440
+    license: ai-generated
+    note: 小红书 3:4 图文卡封面（流水线封面是从成片抽帧，此项目前仅手动上传用）
