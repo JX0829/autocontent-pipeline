@@ -38,6 +38,15 @@ const calculateTechMetadata: CalculateMetadataFunction<TechProps> = async ({ pro
   height: 1920,
 });
 
+// SPEC-20261117 §九 R6：横版走**同一个** tech_story 模板（同一组件、同一版式元素），
+// 只换画幅。不再维护第二套科技版式（BilibiliLandscapeVideo 仅保留给老链路）。
+const calculateTechLandscapeMetadata: CalculateMetadataFunction<TechProps> = async ({ props }) => ({
+  durationInFrames: props.total_duration_in_frames || TECH_TOTAL,
+  fps: props.fps || 30,
+  width: 1920,
+  height: 1080,
+});
+
 
 const calculateLandscapeMetadata: CalculateMetadataFunction<AlignedRenderPayload> = async ({
   props,
@@ -496,6 +505,16 @@ export const RemotionRoot: React.FC = () => {
         width={1080}
         height={1920}
         calculateMetadata={calculateTechMetadata}
+      />
+      {/* 同一个 TechStoryVideo 组件的 16:9 画幅（R6）：版式元素同源，不做第二套科技版式 */}
+      <Composition
+        id="TechStoryLandscapeVideo"
+        component={TechStoryVideo}
+        durationInFrames={TECH_TOTAL}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={calculateTechLandscapeMetadata}
       />
       <Composition
         id="GeekShortVideo"
