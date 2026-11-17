@@ -1,0 +1,62 @@
+{
+  "fps": 30,
+  "engine": "edge",
+  "voice": "zh-CN-YunyangNeural",
+  "rate": "-6%",
+  "total": 867,
+  "open": 157,
+  "bodyStart": 175,
+  "body": 582,
+  "outroStart": 766,
+  "outro": 101,
+  "segs": [
+    {
+      "file": "tech/vo/seg0.wav",
+      "text": "DeepSeek 突然收紧长对话，三项限制同时落地。",
+      "slot": "open",
+      "seconds": 4.43,
+      "frames": 133,
+      "start": 0
+    },
+    {
+      "file": "tech/vo/seg1.wav",
+      "text": "单次输入压到四万字左右，长文档贴不进去了。",
+      "slot": "body",
+      "seconds": 4.17,
+      "frames": 125,
+      "start": 175
+    },
+    {
+      "file": "tech/vo/seg2.wav",
+      "text": "七天不活跃的对话不再保留，大半年上下文一次清空。",
+      "slot": "body",
+      "seconds": 4.52,
+      "frames": 136,
+      "start": 310
+    },
+    {
+      "file": "tech/vo/seg3.wav",
+      "text": "每日额度上锁，触顶提示算力不足，有人两小时就用完。",
+      "slot": "body",
+      "seconds": 4.89,
+      "frames": 147,
+      "start": 456
+    },
+    {
+      "file": "tech/vo/seg4.wav",
+      "text": "官方没发公告，十四号前端代码里已经出现额度提示。",
+      "slot": "body",
+      "seconds": 4.46,
+      "frames": 134,
+      "start": 613
+    },
+    {
+      "file": "tech/vo/seg5.wav",
+      "text": "云端 AI 的额度，到底该怎么定。",
+      "slot": "outro",
+      "seconds": 2.76,
+      "frames": 83,
+      "start": 766
+    }
+  ]
+}
