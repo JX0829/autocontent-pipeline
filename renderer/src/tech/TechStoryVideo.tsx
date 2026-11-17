@@ -54,7 +54,9 @@ export type TechProps = {
   bgm_src?: string;
   bgm_volume?: number;
   bgm_duck_volume?: number;
-  assets?: { open?: string | null; bg?: string; open_start_from?: number };
+  assets?: { open?: string | null; bg?: string; open_start_from?: number;
+    /** asset=用素材帧做封面（默认）；typographic=纯排版卡片封面（无实拍画面，R5 回退） */
+    cover_mode?: 'none' | 'asset' | 'typographic' };
   scenes?: Array<{
     scene_index: number;
     segment_narration: string;
@@ -88,6 +90,7 @@ const normalize = (props: TechProps) => {
       subtitle: props.cover_sub_text || '',
       open: props.assets?.open ?? null,
       openStart: props.assets?.open_start_from ?? 40,
+      coverMode: props.assets?.cover_mode ?? 'none',
       bg: props.assets?.bg || DEFAULTS.bg,
       bgm: props.bgm_src || '',
       bgmVolume: props.bgm_volume ?? 0.22,
@@ -110,6 +113,7 @@ const normalize = (props: TechProps) => {
     subtitle: TL.subtitle,
     open: DEFAULTS.open,
     openStart: 40,
+    coverMode: 'none' as 'none' | 'asset' | 'typographic',
     bg: DEFAULTS.bg,
     bgm: DEFAULTS.bgm,
     bgmVolume: 0.22,
@@ -282,6 +286,12 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
     return speaking ? cfg.bgmDuck : cfg.bgmVolume;
   };
 
+  // SPEC-20261117 §八：cover_mode=none → 不插封面海报帧，open 片段也不参与，
+  // 正片从第 0 帧开始（平台封面图由构建侧 ffmpeg 抽 video 第 0 帧，见 executors）。
+  if (cfg.coverMode === 'none') {
+    cfg.open = null;
+  }
+
   return (
     <AbsoluteFill style={{ background: '#04060a' }}>
       {cfg.bgm ? <Audio src={staticFile(cfg.bgm)} loop volume={bgmVolume} /> : null}
@@ -312,6 +322,16 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
             'linear-gradient(to bottom, rgba(3,5,9,0.34) 0%, rgba(3,5,9,0.14) 42%, rgba(3,5,9,0.52) 100%)',
         }}
       />
+
+      {/* R5：无匹配档位素材 → 封面帧回退纯排版卡片（不拿别的档位画面凑）
+          只覆盖前 15 帧（0.5s @30fps），正文背景不受影响 */}
+      {cfg.coverMode === 'typographic' && (
+        <Sequence from={0} durationInFrames={Math.min(15, cfg.total)}>
+          <AbsoluteFill style={{ background: 'linear-gradient(135deg, #04060a 0%, #0b1622 52%, #12304f 100%)' }} />
+          <AbsoluteFill style={{ background: 'radial-gradient(circle at 22% 18%, rgba(93,169,255,0.20), transparent 58%)' }} />
+          <AbsoluteFill style={{ background: 'radial-gradient(circle at 82% 88%, rgba(255,196,86,0.10), transparent 52%)' }} />
+        </Sequence>
+      )}
 
       {cfg.scenes.map((s) => (
         <Sequence key={`${s.index}-${s.start}`} from={s.start} durationInFrames={s.frames}>

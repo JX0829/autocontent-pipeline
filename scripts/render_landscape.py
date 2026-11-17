@@ -69,10 +69,17 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
         f"--props={rel_props}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p",
     ], cwd=str(RENDERER))
 
-    subprocess.check_call([
-        "npx", "remotion", "still", "src/index.ts", COVER_COMPOSITION, str(cover),
-        f"--props={rel_props}", "--image-format=png",
-    ], cwd=str(RENDERER))
+    # SPEC-20261117 §八（A10）：横版封面 = video_16_9.mp4 第 0 帧，不再单独渲封面构图。
+    # 失败必须显式报错（不回落旧 CoverStill、不出空封面）；现场保留 video。
+    _ff = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0)",
+         "-frames:v", "1", str(cover)],
+        capture_output=True, text=True,
+    )
+    if _ff.returncode != 0 or not cover.exists() or cover.stat().st_size == 0:
+        raise LandscapeGuardError(
+            "COVER_FRAME_EXTRACT_FAILED: 横版抽第 0 帧失败 "
+            f"(rc={_ff.returncode}) {( _ff.stderr or '' ).strip().splitlines()[-2:]} | video={video}")
 
     from scripts.landscape_guard import check_landscape
     ok, report = check_landscape(str(video), expect_cover_text, cover_path=str(cover))
