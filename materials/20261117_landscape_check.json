@@ -1,0 +1,17 @@
+{
+  "title": "DeepSeek额度收紧横版验证",
+  "body": "DeepSeek 近期对长对话能力做出三项调整：单次输入上限压到约四万字；七天不活跃的对话不再保留；每日可用额度受限，触顶后提示算力不足。官方未发布独立公告，但有开发者在 11 月 14 日于前端代码中发现额度判断逻辑。多位用户在社区反馈，重度使用不到两小时即触及上限；把对话作为长期项目使用的用户，历史上下文在调整后清空。同类产品中，Claude 免费层按天重置额度，国内多家大模型对免费额度不做公开说明。",
+  "source_url": "https://example.com/deepseek-quota-notice",
+  "source": "科技社区综合",
+  "published_at": "2026-11-17",
+  "target_account_type": "tech",
+  "tags": [
+    "DeepSeek",
+    "大模型",
+    "AI额度",
+    "长上下文"
+  ],
+  "hot_value": 92,
+  "open_asset": "open_cleanroom_v1",
+  "bg_asset": "bg_litho_v1"
+}

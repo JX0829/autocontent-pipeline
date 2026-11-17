@@ -307,8 +307,22 @@ def exec_align_tts(ctx: StepContext) -> dict[str, str]:
 
 
 
+#: 封面抽帧位置（2026-11-18）：模板的标题从第 18–48 帧淡入，第 0 帧几乎无字，
+#: 抽第 0 帧会得到「文字还没出现」的封面。默认 54（1.8s，标题+副标题都已就位），
+#: 可用 COVER_FRAME 覆盖（老模板/课文模板若淡入更久，调大即可）。
+DEFAULT_COVER_FRAME = 54
+
+
+def _cover_frame_no() -> int:
+    raw = os.environ.get("COVER_FRAME")
+    try:
+        return max(0, int(raw)) if raw else DEFAULT_COVER_FRAME
+    except ValueError:
+        return DEFAULT_COVER_FRAME
+
+
 def _extract_first_frame(video: Path | str, out_png: Path | str, *, expect_size: tuple[int, int] | None = None) -> Path:
-    """封面图 = 视频第 0 帧（SPEC-20261117 §八 8.2 #3/#4）。
+    """封面图 = 视频第 COVER_FRAME 帧（默认 54，SPEC-20261117 §八 8.2 #3/#4；原为第 0 帧）。
 
     旧口径「单独渲 CoverStill 海报」自 2026-11-17 起作废：封面帧与正文天然两张皮，
     用户指令改为「封面直接用视频首帧」。
@@ -320,14 +334,15 @@ def _extract_first_frame(video: Path | str, out_png: Path | str, *, expect_size:
     if not video.exists() or video.stat().st_size == 0:
         raise ExecutorError(f"COVER_FRAME_EXTRACT_FAILED: 视频不存在或为空: {video}")
     out_png.parent.mkdir(parents=True, exist_ok=True)
+    frame_no = _cover_frame_no()
     proc = subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", str(video),
-         "-vf", "select=eq(n\\,0)", "-frames:v", "1", str(out_png)],
+         "-vf", f"select=eq(n\\,{frame_no})", "-frames:v", "1", str(out_png)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0 or not out_png.exists() or out_png.stat().st_size == 0:
         tail = (proc.stderr or "").strip().splitlines()[-3:]
-        raise ExecutorError(f"COVER_FRAME_EXTRACT_FAILED: 抽第 0 帧失败 ({video.name}) | "
+        raise ExecutorError(f"COVER_FRAME_EXTRACT_FAILED: 抽第 {frame_no} 帧失败 ({video.name}) | "
                             f"rc={proc.returncode} | {' / '.join(tail)}")
     if expect_size:
         got = _probe_size(out_png)
@@ -390,7 +405,21 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     except Exception as exc:  # noqa: BLE001
         raise ExecutorError(f"横版 props 解析失败: {props}: {exc}") from exc
     tech_landscape = (not textbook) and _composition_for(_pd) == "TechStoryVideo"
-    info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
+
+    # 2026-11-17（方案 B）：横版优先用 `<stem>_landscape.<ext>` 原生 16:9 副本，
+    # 没有副本才回落竖版居中裁切。竖版 props 不动，横版单写一份 props。
+    from src.assets_manager import with_landscape_assets
+    _lp, _lrep = with_landscape_assets(_pd)
+    props_for_render = props
+    if _lrep["used"]:
+        land_props = Path(ctx.run_root) / "props" / "aligned_render_landscape.json"
+        _write_json(land_props, _lp)
+        props_for_render = str(land_props)
+        print(f"[assets] 横版换成原生 16:9 副本: "
+              + ", ".join(f"{s}→{Path(v['to']).name}" for s, v in _lrep["used"].items())
+              + (f"；无横版副本回落竖版裁切: {_lrep['fallback']}" if _lrep["fallback"] else ""))
+
+    info = render_landscape(ctx.task_id, props_json=props_for_render, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""),
                             video_composition=("TextbookLandscapeVideo" if textbook else
                                                "TechStoryLandscapeVideo" if tech_landscape else None),

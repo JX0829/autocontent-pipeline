@@ -11,6 +11,7 @@
 返回 (passed: bool, report: dict)；不通过时调用方应拒绝推送。
 """
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -113,10 +114,24 @@ def text_hit(want: str, got: str, min_ratio: float = 0.70) -> tuple[bool, float]
     return ratio >= min_ratio, ratio
 
 
-def _frame_diff(a: str, b: str) -> float:
-    """两帧灰度平均绝对差（0=完全一致）。用于确认「视频首帧就是那张封面」。"""
+def _cover_frame_ts() -> float:
+    """封面帧对应的时间戳（秒）。
+
+    2026-11-18：封面不再固定取第 0 帧 —— 模板标题从第 18–48 帧才淡入，
+    抽第 0 帧会得到一张没有文字的黑场。默认改抽第 54 帧（1.8s），
+    与 executors.DEFAULT_COVER_FRAME / render_landscape 的 COVER_FRAME 保持一致。
+    """
     try:
-        ra, _wa, _ha = _frame_gray(a, 0.0)
+        frame_no = max(0, int(os.environ.get("COVER_FRAME") or 54))
+    except ValueError:
+        frame_no = 54
+    return frame_no / 30.0
+
+
+def _frame_diff(a: str, b: str) -> float:
+    """两帧灰度平均绝对差（0=完全一致）。用于确认「成片封面帧就是那张封面图」。"""
+    try:
+        ra, _wa, _ha = _frame_gray(a, _cover_frame_ts())
         rb, _wb, _hb = _frame_gray(b, 0.0)
     except Exception:
         return 255.0
@@ -171,8 +186,8 @@ def check_landscape(video: str, expect_text: str = "",
             diff = _frame_diff(video, str(cover_path))
             rep["cover_frame_diff"] = round(diff, 2)
             if diff > MAX_FRAME_DIFF:
-                rep["reason"] = (f"视频首帧与封面静帧不一致（平均差 {diff:.1f} > "
-                                 f"{MAX_FRAME_DIFF}）→ 首帧不是封面海报")
+                rep["reason"] = (f"视频封面帧与封面图不一致（平均差 {diff:.1f} > "
+                                 f"{MAX_FRAME_DIFF}）→ 封面图不是从成片抽的")
                 return False, rep
         if expect_text:
             src = Path(cover_path) if cover_ok else Path(video)
