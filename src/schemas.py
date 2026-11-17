@@ -9,6 +9,11 @@ class SceneItemDraft(BaseModel):
     media_asset_url: Optional[str] = None
     stat_items: Optional[List[dict]] = None
     highlight_text: str = Field(..., max_length=40)
+    creator_take: Optional[str] = Field(
+        default=None,
+        max_length=60,
+        description="二次创作：我们自己对这件事的判断/观点，20~40字；只给判断不复述事实",
+    )
     sfx_cue: Literal["whoosh", "typing", "ding", "glitch", "none"]
 
 class DraftScriptPayload(BaseModel):
@@ -87,6 +92,7 @@ class AlignedSceneItem(BaseModel):
     visual_type: str
     segment_narration: str
     highlight_text: str
+    creator_take: Optional[str] = None
     code_snippet: Optional[str] = None
     media_asset_url: Optional[str] = None
     stat_items: Optional[List[dict]] = None

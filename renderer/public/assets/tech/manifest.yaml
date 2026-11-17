@@ -1,0 +1,92 @@
+# 科技类素材库清单（manifest）
+#
+# 命名规范（新增素材必须遵守，程序按此解析）：
+#   <slot>_<family>_v<N>[_<derived>].<ext>
+#   slot     : open | bg | mid | end | bgm | sfx
+#   family   : 小写下划线，描述素材内容（wafer / circuit / calm / warm）
+#   v<N>     : 同一 family 的版本号，从 1 开始
+#   derived  : 衍生版本标记，如 _loop（无缝循环）、_cropped（裁切）
+#
+# 新增素材步骤：
+#   1. 按规范命名，放进对应 slot 目录
+#   2. 在下面 assets 追加一条（id 与文件名主干一致）
+#   3. 跑 `python3 scripts/verify_assets.py` 校验（规格/时长/文字残留）
+#   不需要改任何代码。
+version: 1
+library: tech_story
+updated: 2026-11-17
+
+assets:
+  # ---------------------------------------------------------------- 开场
+  - id: open_wafer_v1
+    slot: open
+    file: video/open/open_wafer_v1.mp4
+    family: wafer
+    tags: [晶圆, 开场, 冷色, AI生成]
+    license: ai-generated
+    source: Gemini（用户生成，已过校验）
+    resolution: 1080x1920
+    duration_s: 10.0
+    fps: 24
+    start_from: 40          # 前 1.5s 是黑场引入，从第 40 帧起用
+    notes: 原生竖版，前 1.5s 为黑场引入，取用需 startFrom≥40
+
+  # ---------------------------------------------------------------- 正文背景
+  - id: bg_circuit_v1
+    slot: bg
+    file: video/bg/bg_circuit_v1.mp4
+    family: circuit
+    tags: [电路, 微距, 暗场, AI生成]
+    license: ai-generated
+    source: Gemini（用户生成，已过校验）
+    resolution: 1080x1920
+    duration_s: 10.0
+    fps: 24
+    notes: 原始 720 放大到 1080，慢速运镜
+
+  - id: bg_circuit_v1_loop
+    slot: bg
+    file: video/bg/bg_circuit_v1_loop.mp4
+    family: circuit
+    derived_from: bg_circuit_v1
+    tags: [电路, 无缝循环, 暗场]
+    license: ai-generated
+    resolution: 1080x1920
+    duration_s: 36.4
+    fps: 24
+    notes: 4 段交叉淡化拼接（1.2s xfade），循环无接缝；正文背景优先用这条
+
+  # ---------------------------------------------------------------- 背景音
+  - id: bgm_calm_v1
+    slot: bgm
+    file: bgm/bgm_calm_v1.mp3
+    family: calm
+    tags: [舒缓, 纯音乐, 无鼓点]
+    license: CC0-1.0
+    source: archive.org / WinAAA BGM (CC0)
+    duration_s: 183
+    loudness_lufs: -17.6
+    notes: 50ms 窗打击检测 0 次，最平缓；口播首选
+    filters: highpass=90  # 入库前已去低频
+
+  - id: bgm_calm_v2
+    slot: bgm
+    file: bgm/bgm_calm_v2.mp3
+    family: calm
+    tags: [舒缓, 纯音乐]
+    license: CC0-1.0
+    source: archive.org / WinAAA BGM (CC0)
+    duration_s: 202
+    loudness_lufs: -19.8
+    notes: 打击 8 次，略比 v1 有起伏
+
+  - id: bgm_warm_v1
+    slot: bgm
+    file: bgm/bgm_warm_v1.mp3
+    family: warm
+    tags: [舒缓, 偏暖, 纯音乐]
+    license: CC0-1.0
+    source: archive.org / WinAAA BGM (CC0)
+    duration_s: 160
+    loudness_lufs: -19.7
+    notes: 音色偏暖，适合产品/人物向选题

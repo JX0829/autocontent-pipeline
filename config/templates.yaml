@@ -14,13 +14,25 @@ round_robin_sequence:
   - "linear_obsidian"  # T5 · Linear 钛黑流光风
 
 # 当 template_id 为 "auto" 且未开启轮换时，根据 DraftScriptPayload.theme 自动匹配最贴合的模板
+# 【2026-11-17 切换】科技类改用全屏 AI 视频模板 tech_story。
+# 回滚：把下面三行还原成注释里的旧映射即可（editorial_news / cupertino_glass / notion_craft）
 theme_mapping:
-  breaking-news: "editorial_news"
-  ai-product: "cupertino_glass"
-  tech-github: "notion_craft"
+  breaking-news: "tech_story"
+  ai-product: "tech_story"
+  tech-github: "tech_story"
+  # breaking-news: "editorial_news"
+  # ai-product: "cupertino_glass"
+  # tech-github: "notion_craft"
 
 # 内置 5 套默认视觉模板元数据（供 CLI、飞书审批卡片下拉菜单及校验器读取）
 templates:
+  tech_story:
+    name: "T6 · 科技全屏视频（AI 素材 + 口播）"
+    description: "全屏 AI 视频素材铺底 + 顶部标题/关键词 + 底部字幕 + 舒缓 BGM；文字不遮画面中部"
+    recommended_themes: ["breaking-news", "ai-product", "tech-github"]
+    enabled: true
+    composition: "TechStoryVideo"
+
   editorial_news:
     name: "T1 · 瑞士先锋报刊风 (Editorial Paper)"
     description: "暖米白羊皮纸底色 + 国际朱砂红重点色 + 粗黑社论衬线标题 + 3px 严谨网格线"
