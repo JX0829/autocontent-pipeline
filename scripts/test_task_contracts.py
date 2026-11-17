@@ -129,10 +129,29 @@ def test_t41() -> None:
         ok("audio_src 走 runs/<run_id>/", audio)
     else:
         bad("audio_src 走 runs/<run_id>/", f"实际 {audio!r}")
-    if data.get("bgm_src") == "sfx/bgm_loop.wav":
-        ok("bgm_src 仍指向 public 根")
+    # v1.4（2026-11-17）：BGM 改由素材库提供（RUNBOOK 5.5.3），契约随之更新。
+    # tech_story 必须来自 assets/<library>/bgm/ 且文件真实存在；
+    # 老模板（card 类）仍用固定 sfx/bgm_loop.wav。
+    tid = (data.get("template_id") or "").strip()
+    bgm = data.get("bgm_src") or ""
+    if tid == "tech_story":
+        if bgm.startswith("assets/") and (PROJ / "renderer" / "public" / bgm).exists():
+            ok("bgm_src 来自素材库", bgm)
+        else:
+            bad("bgm_src 来自素材库", f"实际 {bgm!r}（应在 assets/<library>/bgm/ 且文件存在）")
+        binding = run_root / "asset_binding.json"
+        if binding.exists():
+            sel = json.loads(binding.read_text(encoding="utf-8"))
+            pick = (sel.get("bgm") or {}).get("id") if isinstance(sel.get("bgm"), dict) else None
+            if pick and pick in bgm:
+                ok("asset_binding 与 bgm_src 对得上", pick)
+            else:
+                bad("asset_binding 与 bgm_src 对得上", f"binding={pick!r} bgm={bgm!r}")
     else:
-        bad("bgm_src 仍指向 public 根", f"实际 {data.get('bgm_src')!r}")
+        if bgm == "sfx/bgm_loop.wav":
+            ok("老模板 bgm_src 仍指向固定音", bgm)
+        else:
+            bad("老模板 bgm_src 仍指向固定音", f"实际 {bgm!r}")
 
     link = PROJ / "renderer" / "public" / "runs" / rid
     if link.is_symlink() and link.resolve() == (run_root / "props").resolve():
