@@ -3,7 +3,11 @@
 # 支持通过 CLI (--template)、Payload 字段 (template_id)、账号配置或按 round_robin 轮换
 # ============================================================================
 
-default_template: "round_robin"
+# 【2026-11-17】必须写成具体模板名，不能留 round_robin：
+# resolve_template_id() 里 round_robin 分支优先于 theme_mapping，
+# 留 round_robin 会导致 theme_mapping 里的 tech_story 永远不生效（实测踩过）。
+# 回滚轮换：改回 "round_robin"（此时以 round_robin_sequence 为准，tech_story 不参与）
+default_template: "tech_story"
 
 # 轮换执行队列顺序（T1 -> T2 -> T3 -> T4 -> T5 -> T1 ...）
 round_robin_sequence:

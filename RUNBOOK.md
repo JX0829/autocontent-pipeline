@@ -528,13 +528,16 @@ templates:
 其余模板（editorial_news / cupertino_glass / neo_brutalism / notion_craft / linear_obsidian）
 **继续走 `GeekShortVideo`，组件和 5 套 preset 一行没删**。
 
-**回滚（30 秒）**：把 `config/templates.yaml` 的 `theme_mapping` 三行改回注释里的旧映射：
+**⚠️ 必读的坑**：`default_template` 必须写成具体模板名（现在是 `tech_story`）。
+留成 `round_robin` 会让 `theme_mapping` **整体失效**——因为
+`resolve_template_id()` 里 `round_robin` 分支排在 `theme_mapping` 前面。
+本次改造第一版就踩了这个坑：配置改了、`is_valid_template` 也通过，
+但真实解析出来还是 `editorial_news`。回归测试：`$PY scripts/test_template_routing.py`
+
+**回滚（30 秒）**：把 `config/templates.yaml` 改回轮换模式：
 
 ```yaml
-theme_mapping:
-  breaking-news: "editorial_news"
-  ai-product: "cupertino_glass"
-  tech-github: "notion_craft"
+default_template: "round_robin"   # 轮换池见 round_robin_sequence（5 套旧模板）
 ```
 
 **单条对照渲染（不改全局配置）**：在物料 JSON 里把 `template_id` 写成旧模板即可，
