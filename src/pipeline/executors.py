@@ -95,11 +95,15 @@ def _remotion(*args: str, timeout: int = 900) -> None:
 # 新增模板只需在这里加一行；回滚只需把 config/templates.yaml 的 theme_mapping 改回去。
 COMPOSITION_BY_TEMPLATE = {
     "tech_story": "TechStoryVideo",
+    "textbook_story": "TextbookStoryVideo",
 }
 DEFAULT_VERTICAL_COMPOSITION = "GeekShortVideo"
 
 
 def _composition_for(props_data: dict[str, Any]) -> str:
+    # 课文物料以 content_type 为准（template_id 可能仍是 tech 默认值）
+    if str(props_data.get("content_type") or "") == "textbook_story":
+        return "TextbookStoryVideo"
     return COMPOSITION_BY_TEMPLATE.get(str(props_data.get("template_id")), DEFAULT_VERTICAL_COMPOSITION)
 
 
@@ -188,7 +192,8 @@ def exec_expand_script(ctx: StepContext) -> dict[str, str]:
     if not news_text.strip():
         raise ExecutorError("物料没有可用于扩写的正文")
 
-    data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id)
+    # material 透传：content_type=textbook_story 时走课文分支（镜数预算 + target_duration 注入）
+    data = pick_and_convert_hotspot(news_text, task_id=ctx.task_id, material=man)
 
     # ---- 物料硬约束（2026-11-15）：title 用物料的，tags 物料在前、生成只补位到 6 个 ----
     # 物料超限（title>20 / tags>6）→ 直接报错让物料侧改，**不静默截断**：
@@ -253,6 +258,8 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
                                 + "\n  ".join(_take_errors))
 
     # T4.5：音色/语速一律来自 pipeline.yaml 的 tts.* 槽位（缺配置即 MissingConfig）
+    # edu（课文故事）复用「讲述向」的 tts.news 槽位：M1 不新增 required_env 键，
+    # 否则缺 TTS_VOICE_EDU 会让整条链路 fail-fast；M2 若需要专属讲述音色再开 tts.edu。
     slot = "tts.tech" if str(draft.get("target_account_type") or "tech") == "tech" else "tts.news"
     aligner = TTSAligner.from_slot(slot)
 
@@ -279,6 +286,13 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     # 新模板（tech_story）需要按素材库选 open/bg/bgm；老模板不注入，行为不变
     if _composition_for(props_data) == "TechStoryVideo":
         _attach_assets(ctx, props_data)
+
+    # F-2026-11-12 M2：课文物料把 textbook/compliance 透传给渲染层 ——
+    # 竖排原文取 full_text，片尾固定标注教材版本（spec F7）。科技物料不带这两块，行为不变。
+    if str((ctx.material or {}).get("content_type") or "") == "textbook_story":
+        props_data["content_type"] = "textbook_story"
+        props_data["textbook"] = (ctx.material or {}).get("textbook") or {}
+        props_data["compliance"] = (ctx.material or {}).get("compliance") or {}
     _write_json(props_path, props_data)
     return props_path
 
@@ -368,8 +382,11 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     if not Path(props).exists():
         raise ExecutorError(f"横版 props 不存在: {props}（align_tts 未产出）")
 
+    textbook = str((ctx.material or {}).get("content_type") or "") == "textbook_story"
     info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
-                            expect_cover_text=str(draft.get("cover_main_text") or ""))
+                            expect_cover_text=str(draft.get("cover_main_text") or ""),
+                            video_composition="TextbookLandscapeVideo" if textbook else None,
+                            cover_composition="TextbookLandscapeCoverStill" if textbook else None)
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
     _assert_has_audio(video)   # 横版同样不许出无声片
@@ -656,7 +673,10 @@ def exec_publish(ctx: StepContext) -> dict[str, str]:
                                 ", ".join(f["platform"] for f in fails))
 
     for plat in platforms:
-        account = for_platform(plat)          # 无启用账号 → AccountConfigError（不静默跳过）
+        # 账号按「平台 + 账号类型」双重解析：edu 课文故事与 tech 速报各走各的号，
+        # 杜绝「加了教育号，科技内容被发到教育号」的串号（F-2026-11-12 §11.3 缺口4）。
+        # 该平台没有对应类型的启用账号 → AccountConfigError（fail-closed，不静默降级）。
+        account = for_platform(plat, str(draft.get("target_account_type") or "tech"))
         acct_id = str(account.get("id") or "")
 
         # 每个平台用自己的成片方向：竖版平台发 video.mp4，B站发 video_16_9.mp4
