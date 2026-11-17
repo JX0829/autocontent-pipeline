@@ -289,6 +289,7 @@ output/<YYYYMMDD>/<run_id>/
 ├── approval.json        审批裁决（谁批的/证据 msg_id）
 ├── audit.jsonl          逐 hook 审计日志
 ├── dispatch.json        发送结果
+├── asset_binding.json   本次成片用了哪些素材（素材库/ID/种子/被排除项/告警）
 ├── props/               aligned_render.json + scene_N.mp3（Remotion 输入）
 └── artifacts.txt        仅 output_only 模式：产物绝对路径清单
 ```
@@ -496,6 +497,154 @@ ls -d output/2026*/ | awk -F/ '$2 < "'$(date -v-2d +%Y%m%d)'"' | xargs trash
 
 2026-11-10 执行结果：931MB → 170MB，只剩 `20261108 / 20261109 / 20261110`。
 无日期的历史演示目录（demo_* / template_* / catwu_spotlight 等）一并清掉。
+
+## 5.5 视觉模板与素材库（2026-11-17 起默认 tech_story）
+
+### 5.5.1 当前默认模板
+
+科技类选题默认走 **`tech_story`** → Remotion composition **`TechStoryVideo`**：
+全屏 AI 视频素材铺底 + 顶部标题/关键词 + 底部字幕 + 分镜「锐评」+ 舒缓 BGM。
+
+| 区域 | 内容 |
+|---|---|
+| y 0–148 | 状态条：`AI 辅助生成` / 栏目标签 / 进度条 |
+| y 190–760 | 首镜：栏目 + 大标题 + 副标题；其余镜：编号 + 关键词 + 锐评 |
+| y 760–1500 | **素材裸露区，不叠任何文字** |
+| y 1500–1780 | 字幕（锐评在字幕上方） |
+
+模板路由（`config/templates.yaml`）：
+
+```yaml
+theme_mapping:            # 回滚开关就在这里
+  breaking-news: "tech_story"
+  ai-product: "tech_story"
+  tech-github: "tech_story"
+templates:
+  tech_story:
+    composition: "TechStoryVideo"
+```
+
+`src/pipeline/executors.py` 里 `COMPOSITION_BY_TEMPLATE` 把 `tech_story` 映射到 `TechStoryVideo`，
+其余模板（editorial_news / cupertino_glass / neo_brutalism / notion_craft / linear_obsidian）
+**继续走 `GeekShortVideo`，组件和 5 套 preset 一行没删**。
+
+**回滚（30 秒）**：把 `config/templates.yaml` 的 `theme_mapping` 三行改回注释里的旧映射：
+
+```yaml
+theme_mapping:
+  breaking-news: "editorial_news"
+  ai-product: "cupertino_glass"
+  tech-github: "notion_craft"
+```
+
+**单条对照渲染（不改全局配置）**：在物料 JSON 里把 `template_id` 写成旧模板即可，
+`resolve_template_id()` 的优先级是 CLI > payload > 账号 > 全局，payload 非 `auto` 就会生效：
+
+```bash
+$PY - <<'EOF'
+import json
+m = json.load(open("materials/xxx.json", encoding="utf-8"))
+m["template_id"] = "editorial_news"      # 想对照哪套旧模板就写哪套
+json.dump(m, open("materials/xxx_legacy.json", "w", encoding="utf-8"), ensure_ascii=False)
+EOF
+$PY -m src.pipeline.runner --material materials/xxx_legacy.json --stop-before-publish
+```
+
+### 5.5.2 素材库规范（新增素材不改代码）
+
+目录：`renderer/public/assets/<library>/`
+
+```
+assets/tech/
+├── manifest.yaml            # 素材清单（唯一事实来源）
+├── video/open/open_wafer_v1.mp4
+├── video/bg/bg_circuit_v1.mp4
+├── video/bg/bg_circuit_v1_loop.mp4
+└── bgm/bgm_calm_v1.mp3 ...
+```
+
+**命名规范（程序按此解析，别乱起名）**：
+
+```
+<slot>_<family>_v<N>[_<derived>].<ext>
+
+slot    : open | bg | mid | end | bgm | sfx
+family  : 小写下划线，描述内容（wafer / circuit / calm / warm）
+v<N>    : 同 family 版本号，从 1 开始
+derived : 衍生标记，_loop（无缝循环）/ _cropped（裁切）
+```
+
+**新增素材三步**：
+
+```bash
+# 1. 按规范命名后放进对应 slot 目录
+cp ~/Downloads/新素材.mp4 renderer/public/assets/tech/video/bg/bg_server_v1.mp4
+
+# 2. 在 renderer/public/assets/tech/manifest.yaml 追加一条
+#    （id 与文件名主干一致；license 必填：AI 生成写 ai-generated，外部写 SPDX 标识）
+
+# 3. 出厂校验
+$PY scripts/verify_assets.py
+```
+
+校验项：文件存在、分辨率一致、时长一致（±10%）、license 必填、必需 slot 非空。
+**校验不过不许出片**。
+
+**新增素材库（换风格/换品类）**：在 `config/assets.yaml` 加一段 `libraries.<name>`
+（root + manifest + slots 策略），再建对应目录和 manifest 即可，渲染代码零改动。
+
+### 5.5.3 BGM 选取与音量（口播永远主导）
+
+`config/assets.yaml` 的策略：
+
+| 参数 | 值 | 含义 |
+|---|---|---|
+| `pick` | `random_seeded` | 种子 = `sha256(run_id)`，同一 run 重渲染必得同一首 |
+| `no_repeat_window` | `3` | 最近 3 条成片用过的 BGM 不再选（池子小于窗口时自动缩小窗口） |
+| `volume` | `0.22` | BGM 基准 ≈ **-34 dB** |
+| `duck_volume` | `0.12` | 口播在场时 BGM ≈ **-42 dB** |
+| 口播电平 | `loudnorm I=-16 LUFS` | 在 `src/tts/aligner.py` 里对每段 mp3 做完再落盘 |
+
+**硬验收：口播窗比 BGM 空档至少高 6 dB。** 实测 deepseek-quota-1 为 -19.3 dB vs -35.0 dB（**差 15.7 dB**）。
+
+选取结果写进 `output/<日期>/<run_id>/asset_binding.json`：
+
+```json
+{
+  "library": "tech_story",
+  "seed": 123456789,
+  "open": {"id": "open_wafer_v1", "src": "assets/tech/video/open/open_wafer_v1.mp4"},
+  "bg":   {"id": "bg_circuit_v1_loop", "src": "assets/tech/video/bg/bg_circuit_v1_loop.mp4"},
+  "bgm":  {"id": "bgm_calm_v1", "src": "assets/tech/bgm/bgm_calm_v1.mp3"},
+  "volume": 0.22, "duck_volume": 0.12,
+  "rejected": ["bgm_calm_v2", "bgm_warm_v1"],
+  "warnings": []
+}
+```
+
+### 5.5.4 分镜「锐评」（creator_take）
+
+`draft_script.json` 每个分镜新增可选字段 `creator_take`（20–40 字，我们自己的判断）：
+
+- 生成：`src/hotspot_extractor.py` 提示词已要求输出；校验只给判断、不复述事实、禁绝对化/煽动/站外引导
+- 透传：`src/schemas.py`（Draft + Aligned）→ `src/tts/aligner.py` → `aligned_render.json`
+- 渲染：`TechStoryVideo` 关键词下方一行小字（青色左边框）；`GeekShortVideo` 在字幕上方
+- 缺省：不写就不渲染，不影响出片
+
+### 5.5.5 出片后自查（科技类）
+
+```bash
+RUN=output/20261117/<run_id>
+# 1. 素材审计
+cat $RUN/asset_binding.json | python3 -m json.tool | head -20
+# 2. 口播 vs BGM 分离度（口播窗取 1.5–3.5s，空档取段尾）
+ffmpeg -ss 1.5 -t 2   -i $RUN/video.mp4 -af volumedetect -f null - 2>&1 | grep mean_volume
+ffmpeg -ss 7.2 -t 0.3 -i $RUN/video.mp4 -af volumedetect -f null - 2>&1 | grep mean_volume
+# 3. 有无静音片
+ffmpeg -i $RUN/video.mp4 -af volumedetect -f null - 2>&1 | grep max_volume
+```
+
+判据：口播窗 − 空档 ≥ 6 dB、`max_volume` > -20 dB（非静音）、画面 1080×1920。
 
 ## 6. 三平台发布（现状必须分清）
 
@@ -899,6 +1048,18 @@ $PY scripts/test_task_contracts.py   # 任务契约回归 33 项
 ---
 
 ## 11. 文件地图
+
+### 11.0 视觉模板 / 素材库（2026-11-17 新增）
+
+```
+config/assets.yaml                    素材库注册与选取策略
+renderer/public/assets/tech/          科技类素材库（manifest + video + bgm）
+src/assets_manager.py                 素材选取（可复现 + 防同质化 + 审计）
+scripts/verify_assets.py              素材出厂校验（不过不许出片）
+renderer/src/tech/TechStoryVideo.tsx  新模板（props 驱动，全屏视频）
+data/asset_history.json               最近 20 条成片的素材选取记录（自动生成）
+```
+
 
 | 路径 | 作用 |
 |---|---|

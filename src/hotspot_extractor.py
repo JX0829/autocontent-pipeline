@@ -61,6 +61,10 @@ SYSTEM_PROMPT = """你是一名资深科技短视频架构师与极客爆款创�
      * 【敏感拦截词过滤】：严禁在代码或台词中出现任何敏感拦截词汇或变体，包括：'api_key'、'apikey'、'sk-'、'token'、'password'、'prompt injection'、'prompt注入'、'越狱'、'jailbreak'、'system prompt'、'系统提示' 等（哪怕在注释或模拟输出中也会100%触发本地DFA安全检查报错中断！），展示客户端初始化必须写 `client = OpenAI()`，安全检测可使用“恶意指令”、“指令投毒”、“安全漏洞”代替！
    - stat_items: 当 visual_type 为 ui_card 或 stat_chart 时提供 2~3 个结构化指标 [{"label": "...", "value": "..."}]（其余类型设为 null）
    - highlight_text: 分镜顶部醒目的短标题徽章（不超过16字）
+   - creator_take: 二次创作——我们自己对这件事的判断（20~40字）。要求：
+       · 只给判断/立场，不复述事实、不重复 segment_narration
+       · 必须基于分镜里的事实，可比较、可归因、可点出影响
+       · 禁绝对化（最/第一/唯一/绝对/百分百）、禁煽动（震惊/炸了/封杀/内幕）、禁站外引导
    - sfx_cue: 关键帧音效，必须是 "typing" / "whoosh" / "ding" / "glitch" 之一
 10. tags: 4~6 个精准科技话题标签列表
 11. target_account_type: "tech"

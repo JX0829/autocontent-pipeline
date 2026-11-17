@@ -2,6 +2,7 @@ import os
 import re
 import math
 import asyncio
+import subprocess
 import logging
 import edge_tts
 from mutagen.mp3 import MP3
@@ -138,6 +139,19 @@ class TTSAligner:
             if not saved:
                 raise RuntimeError(f"Failed to generate TTS after 4 retries for scene {idx}")
 
+            # 统一响度：口播 -16 LUFS / TP -1.5dB。BGM 侧按 -34dB 铺底，
+            # 两者差 ≥10dB，保证口播始终主导（改这里要同步 config/assets.yaml 的 volume）
+            norm_tmp = mp3_abs_path + ".norm.mp3"
+            _proc = subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", mp3_abs_path,
+                 "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                 "-c:a", "libmp3lame", "-b:a", "192k", norm_tmp],
+                capture_output=True, text=True)
+            if _proc.returncode == 0 and os.path.exists(norm_tmp):
+                os.replace(norm_tmp, mp3_abs_path)
+            else:
+                logger.warning(f"[TTSAligner] loudnorm 失败，保留原始音量: {_proc.stderr[-200:]}")
+
             # mutagen 获取精确时长
             audio = MP3(mp3_abs_path)
             raw_duration = audio.info.length
@@ -154,6 +168,7 @@ class TTSAligner:
                 visual_type=scene.visual_type,
                 segment_narration=clean_narration,
                 highlight_text=scene.highlight_text,
+                creator_take=getattr(scene, 'creator_take', None),
                 code_snippet=scene.code_snippet,
                 media_asset_url=scene.media_asset_url,
                 stat_items=scene.stat_items,
