@@ -721,6 +721,92 @@ ffmpeg -i $RUN/video.mp4 -af volumedetect -f null - 2>&1 | grep max_volume
 
 判据：口播窗 − 空档 ≥ 6 dB、`max_volume` > -20 dB（非静音）、画面 1080×1920。
 
+## 5.6 课文古风模板（textbook_story，2026-11-17 并入主干）
+
+和科技类是**两条独立链路**：同一套 runner，靠物料里的 `content_type` 分流。
+
+### 5.6.1 触发方式
+
+物料 JSON 里写 `"content_type": "textbook_story"` 即走课文链路；缺省（或不写）视为 `tech_news`，走科技链路。
+
+```bash
+DISPATCH_MODE=output_only \
+  $PY -m src.pipeline.runner \
+  --material materials/20261112_textbook_mvp1_shier.json --run-id tb-1
+```
+
+### 5.6.2 课文物料必填字段
+
+| 字段 | 要求 | 示例 |
+|---|---|---|
+| `content_type` | 固定 `textbook_story` | — |
+| `title` | ≤20 字（物料硬约束照旧）| 85岁临终前，他写下最后28个字 |
+| `textbook` | 必填：`poem_title` / `dynasty` / `author` / `grade` / `volume` / `edition` / `full_text` | 示儿 / 南宋 / 陆游 / 五年级 / 上册 / 人教版 / 死去元知万事空… |
+| `facts` | **≥3 条**，每条必须带 `source`（教材版本/文献）| 见 `materials/20261112_textbook_mvp*.json` |
+| `storyboard_hint.target_duration_sec` | 目标时长（默认 90）| 90 |
+| `target_account_type` | `edu`（走教育号路由）| edu |
+| `compliance` | 可选，片尾标注用 | — |
+
+现成样例 5 条：`materials/20261112_textbook_mvp1_shier.json` ～ `mvp5_yuanri.json`（示儿/问官军/出塞/石灰吟/元日）。
+
+### 5.6.3 渲染合成
+
+| 用途 | composition | 说明 |
+|---|---|---|
+| 竖版成片 | `TextbookStoryVideo` | 古风宣纸底 + 竖排原文 + 释义 + 落款 |
+| 横版成片 | `TextbookLandscapeVideo` | B站/西瓜用 |
+
+**封面同样是抽成片第 0 帧**（和科技类一致），所以开场前 1.7 秒内必须有完整构图，不能是黑场。
+
+### 5.6.4 时长闸门（硬）
+
+`hook.textbook_duration_guard` 在渲染后断言成片时长：
+
+```
+下限 = max(90, target × 0.70)     # TEXTBOOK_MIN_SEC 可覆盖
+上限 = min(150, target × 1.30)    # TEXTBOOK_MAX_SEC 可覆盖
+```
+
+超出窗口直接失败，不静默放过。做 30 秒样片时临时放宽：
+
+```bash
+TEXTBOOK_MIN_SEC=0 $PY -m src.pipeline.runner --material materials/xxx.json --run-id tb-demo
+```
+
+### 5.6.5 水墨素材与校验
+
+素材在 `renderer/public/ink/`：`ink_drop_bloom.mp4`（开场墨滴）、`ink_misty_mountains.mp4`（山水云雾）、`ink_splash_transition.mp4`（泼墨转场）。
+
+新素材必须过 6 项判据：
+
+```bash
+$PY tools/ink_asset_check.py /path/to/新素材.mp4
+```
+
+判据：9:16 且 ≥4s 且 ≥24fps · OCR 有字直接 FAIL · 墨色中位饱和 ≤25 · 帧差 ≥1.0 · 无黑边 · 循环首末相似 ≥0.6。
+提示词全套见 `renderer/public/assets/tech/PROMPTS.md` 的姊妹篇（`docs/ink_prompts.md`）。
+
+### 5.6.6 教育号账号（默认关闭）
+
+`config/accounts.yaml` 里 `channels-edu-textbook` / `douyin-edu-textbook` 默认 `enabled: false`，
+浏览器 profile 与平台资质就绪后才打开；未打开时 `for_platform()` 不会选到它们，科技链路行为不变。
+
+### 5.6.7 自检与真实产物
+
+```bash
+$PY scripts/test_textbook_story.py     # 76 条断言：物料校验/镜数预算/时长窗口/主题/排版
+bash scripts/verify_all.sh --fast      # 全量门禁
+```
+
+真实成片（合并前产出，链路可用性证据）：
+
+| 产物 | 规格 |
+|---|---|
+| `output/20261112/m1-shier-120s-full/video.mp4` | 1080×1920 / **118.3s** |
+| `output/20261112/shier-demo/video.mp4` | 1080×1920 / 29.2s（样片，`TEXTBOOK_MIN_SEC=0`）|
+
+---
+
 ## 6. 三平台发布（现状必须分清）
 
 **发布入口现在收口在 pipeline 内**：`deliver → approval → publish`（`publish.enabled` 默认 false）。
