@@ -292,6 +292,49 @@ def exec_align_tts(ctx: StepContext) -> dict[str, str]:
     return {"props": str(_prepare_props(ctx, draft))}
 
 
+
+def _extract_first_frame(video: Path | str, out_png: Path | str, *, expect_size: tuple[int, int] | None = None) -> Path:
+    """封面图 = 视频第 0 帧（SPEC-20261117 §八 8.2 #3/#4）。
+
+    旧口径「单独渲 CoverStill 海报」自 2026-11-17 起作废：封面帧与正文天然两张皮，
+    用户指令改为「封面直接用视频首帧」。
+
+    A9 失败态：抽帧失败（视频损坏 / 0 帧 / 空文件）**必须显式报错并保留现场**，
+    不回落旧 CoverStill、不产出空封面 → 上层 publish 拿不到文件自然不发。
+    """
+    video, out_png = Path(video), Path(out_png)
+    if not video.exists() or video.stat().st_size == 0:
+        raise ExecutorError(f"COVER_FRAME_EXTRACT_FAILED: 视频不存在或为空: {video}")
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(video),
+         "-vf", "select=eq(n\\,0)", "-frames:v", "1", str(out_png)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not out_png.exists() or out_png.stat().st_size == 0:
+        tail = (proc.stderr or "").strip().splitlines()[-3:]
+        raise ExecutorError(f"COVER_FRAME_EXTRACT_FAILED: 抽第 0 帧失败 ({video.name}) | "
+                            f"rc={proc.returncode} | {' / '.join(tail)}")
+    if expect_size:
+        got = _probe_size(out_png)
+        if got != expect_size:
+            raise ExecutorError(f"COVER_FRAME_EXTRACT_FAILED: 封面尺寸 {got} ≠ 期望 {expect_size}（{out_png.name}）")
+    return out_png
+
+
+def _probe_size(path: Path) -> tuple[int, int]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    try:
+        w, h = out.split(",")[:2]
+        return int(w), int(h)
+    except Exception:  # noqa: BLE001
+        return (0, 0)
+
+
 def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
     """竖版渲染（只渲染，不碰 TTS —— props 由 align_tts 产出）。"""
     props = ctx.artifacts.get("props") or str(ctx.run_root / "props" / "aligned_render.json")
@@ -308,8 +351,8 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
     _remotion("render", "src/index.ts", composition, str(video),
               f"--props={Path(props).resolve()}", "--codec=h264", "--crf=18",
               "--pixel-format=yuv420p")
-    _remotion("still", "src/index.ts", "CoverStill", str(cover),
-              f"--props={Path(props).resolve()}", "--image-format=png")
+    # 封面图 = 视频第 0 帧（§八）；不再渲 CoverStill 海报
+    _extract_first_frame(video, cover)
     _assert_has_audio(video)   # 无声片零容忍
     return {"video": str(video), "cover": str(cover)}
 

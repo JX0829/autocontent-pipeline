@@ -56,7 +56,7 @@ export type TechProps = {
   bgm_duck_volume?: number;
   assets?: { open?: string | null; bg?: string; open_start_from?: number;
     /** asset=用素材帧做封面（默认）；typographic=纯排版卡片封面（无实拍画面，R5 回退） */
-    cover_mode?: 'asset' | 'typographic' };
+    cover_mode?: 'none' | 'asset' | 'typographic' };
   scenes?: Array<{
     scene_index: number;
     segment_narration: string;
@@ -90,7 +90,7 @@ const normalize = (props: TechProps) => {
       subtitle: props.cover_sub_text || '',
       open: props.assets?.open ?? null,
       openStart: props.assets?.open_start_from ?? 40,
-      coverMode: props.assets?.cover_mode ?? 'asset',
+      coverMode: props.assets?.cover_mode ?? 'none',
       bg: props.assets?.bg || DEFAULTS.bg,
       bgm: props.bgm_src || '',
       bgmVolume: props.bgm_volume ?? 0.22,
@@ -113,7 +113,7 @@ const normalize = (props: TechProps) => {
     subtitle: TL.subtitle,
     open: DEFAULTS.open,
     openStart: 40,
-    coverMode: 'asset' as 'asset' | 'typographic',
+    coverMode: 'none' as 'none' | 'asset' | 'typographic',
     bg: DEFAULTS.bg,
     bgm: DEFAULTS.bgm,
     bgmVolume: 0.22,
@@ -285,6 +285,12 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
     const speaking = voiceRanges.some(([a, b]) => f >= a && f < b);
     return speaking ? cfg.bgmDuck : cfg.bgmVolume;
   };
+
+  // SPEC-20261117 §八：cover_mode=none → 不插封面海报帧，open 片段也不参与，
+  // 正片从第 0 帧开始（平台封面图由构建侧 ffmpeg 抽 video 第 0 帧，见 executors）。
+  if (cfg.coverMode === 'none') {
+    cfg.open = null;
+  }
 
   return (
     <AbsoluteFill style={{ background: '#04060a' }}>

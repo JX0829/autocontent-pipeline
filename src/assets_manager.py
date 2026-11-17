@@ -105,8 +105,9 @@ class Selection:
     duck_volume: float = 0.12
     rejected: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    #: 封面形态：asset=用素材帧（默认） | typographic=纯排版卡片（R5 回退）
-    cover_mode: str = "asset"
+    #: 封面形态（SPEC-20261117 §八）：none=不插封面海报帧，平台封面图由视频第 0 帧抽
+    #: typographic=纯排版卡片（旧 R5 回退口径，默认不再走，保留代码以备回滚）
+    cover_mode: str = "none"
     #: 选题语义档位（R2）
     domain: Optional[str] = None
 
@@ -251,7 +252,7 @@ class AssetManager:
         _scenes = _d.get("scenes") or []
         _narration = " ".join(str(x.get("segment_narration") or "") for x in _scenes[:2] if isinstance(x, dict))
         domain = resolve_domain(_d.get("title"), " ".join(map(str, _d.get("tags") or [])), _narration)
-        cover_mode = "asset"
+        cover_mode = "none"
 
         # 语义筛池：只对画面位（open/bg）过滤；bgm 与语义无关
         by_domain: dict[str, list[dict]] = {"open": assets, "bg": assets, "bgm": assets}
@@ -266,11 +267,11 @@ class AssetManager:
                 warnings.append(f"{NO_MATCHING_ASSET_FALLBACK}: 素材池无「{domain}」档（现有: "
                                 f"{sorted({asset_domain(a) or '未标注' for a in assets})}）")
                 by_domain["open"] = []
-                cover_mode = "typographic"
+                cover_mode = "none"
         else:
             warnings.append(f"{NO_DOMAIN_SIGNAL}: 选题判不出语义档位，封面回退纯排版")
             by_domain["open"] = []
-            cover_mode = "typographic"
+            cover_mode = "none"
 
         picked: dict[str, Optional[AssetChoice]] = {}
         for slot in ("open", "bg", "bgm"):
