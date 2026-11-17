@@ -119,6 +119,37 @@ def test_cover_is_first_frame() -> None:
     check("§八 none 模式抹掉 open 片段", "cfg.coverMode === 'none'" in tsx and "cfg.open = null" in tsx)
 
 
+def test_guard_ocr_is_advisory() -> None:
+    """§十 R10/R11/R12：OCR 无文字只记 advisory；像素判据仍硬拦。"""
+    import subprocess
+    from scripts.landscape_guard import check_landscape
+
+    run = PROJ / "output" / "20261118" / "qwen-safety-1"
+    vid, cov = run / "video_16_9.mp4", run / "cover_16_9.png"
+    if not vid.exists() or not cov.exists():
+        print("SKIP  §十 guard 用例（本机无 qwen-safety-1 产物）")
+        return
+    ok, rep = check_landscape(str(vid), "自立门户？查无实据", cover_path=str(cov))
+    check("§十 OCR 无文字不再硬拦（ok=true）", ok is True, str(rep.get("reason")))
+    check("§十 记 text_check=advisory_no_text",
+          rep.get("text_check") in ("advisory_no_text", "hit", "advisory_miss"), str(rep.get("text_check")))
+    check("§十 首帧=封面仍硬判（diff=0）", rep.get("cover_frame_diff") == 0.0, str(rep.get("cover_frame_diff")))
+    check("§十 覆盖率判据仍在", rep.get("coverage") == 1.0, str(rep.get("coverage")))
+
+    # R12 反向：竖版塞横屏必须仍被拦
+    bad = pathlib.Path(tempfile.mkdtemp()) / "pillarbox.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(run / "video.mp4"),
+                    "-vf", "scale=-2:1080,pad=1920:1080:(ow-iw)/2:0", "-t", "5", str(bad)], check=True)
+    ok2, rep2 = check_landscape(str(bad), "自立门户？查无实据")
+    check("§十 R12 竖版塞横屏仍拦截", ok2 is False, str(rep2.get("reason"))[:60])
+
+    src = (PROJ / "scripts" / "landscape_guard.py").read_text(encoding="utf-8")
+    check("§十 无文字硬拦代码已移除",
+          'rep["reason"] = "封面 OCR 未识别到任何文字' not in src)
+    rl = (PROJ / "scripts" / "render_landscape.py").read_text(encoding="utf-8")
+    check("§十 R11 props 文案断言仍在（唯一硬判据）", "LandscapeGuardError" in rl and "_cover_text" in rl)
+
+
 def test_signals_are_readonly() -> None:
     src = (PROJ / "src" / "assets_manager.py").read_text(encoding="utf-8")
     check("R2 语义只读产物（不调 LLM）", "LLMClient" not in src and "openai" not in src)
@@ -134,6 +165,7 @@ def main() -> int:
     test_r2_unknown_signal()
     test_r3_material_lock()
     test_cover_is_first_frame()
+    test_guard_ocr_is_advisory()
     test_signals_are_readonly()
     print(f"\n{'PASS' if not FAILED else 'FAIL'} {len(FAILED)} 项失败" + (f": {FAILED}" if FAILED else ""))
     return 0 if not FAILED else 1
