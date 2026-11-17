@@ -120,3 +120,7 @@ data/approvals/
 
 # 运行时锁（CDP 会话占用标记，进程级临时文件，不入库）
 data/locks/
+
+# 素材库：竖版主素材入库（出片要用），横版衍生副本本机留存（体积大、渲染暂不消费）
+renderer/public/assets/*/video/**/*_landscape.mp4
+renderer/public/assets/*/video/**/*_cropped.mp4
