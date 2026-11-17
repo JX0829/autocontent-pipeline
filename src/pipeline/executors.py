@@ -104,15 +104,37 @@ def _composition_for(props_data: dict[str, Any]) -> str:
 
 
 def _attach_assets(ctx: StepContext, props_data: dict[str, Any]) -> None:
-    """按素材库配置选素材，注入 props 并落 asset_binding.json 审计。"""
+    """按素材库配置选素材，注入 props 并落 asset_binding.json 审计。
+
+    2026-11-17（SPEC-20261117 R2/R3/R5）：
+      · 传 draft 语义给选材（title / tags / 首场景旁白）→ 判档位，不再「池里唯一那个」；
+      · 物料里写 `open_asset` / `bg_asset` / `cover_asset` 就直接锁死（R3）；
+      · 无匹配档位 → 不借用别的档位，回退纯排版封面 + NO_MATCHING_ASSET_FALLBACK（R5）。
+    """
     from src.assets_manager import AssetManager
-    sel = AssetManager().select(run_id=ctx.run_id)
+
+    draft: dict[str, Any] = {}
+    draft_path = ctx.artifacts.get("draft_script") or str(ctx.run_root / "draft_script.json")
+    try:
+        raw = json.loads(Path(draft_path).read_text(encoding="utf-8"))
+        draft = raw.get("draft") or raw
+    except Exception as exc:  # noqa: BLE001 — 读不到就当无语义信号，走 R5 回退
+        print(f"[assets] WARN 读不到 draft_script（{type(exc).__name__}），语义选材跳过")
+
+    man = ctx.material or {}
+    locked = {slot: str(man[key]) for slot, key in
+              (("open", "open_asset"), ("bg", "bg_asset"), ("cover", "cover_asset"))
+              if man.get(key)}
+
+    sel = AssetManager().select(run_id=ctx.run_id, draft=draft, locked=locked)
     props_data.update(sel.to_render_props())
     audit = sel.to_audit()
     props_data["asset_binding"] = audit
     _write_json(ctx.run_root / "asset_binding.json", audit)
     for w in sel.warnings:
         print(f"[assets] WARN {w}")
+    print(f"[assets] 档位={sel.domain or '未判定'} 封面形态={sel.cover_mode} "
+          f"open={sel.open.id if sel.open else '（无）'} bg={sel.bg.id}")
 
 
 # ---------------------------------------------------------------- 执行体
