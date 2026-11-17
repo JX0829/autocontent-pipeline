@@ -196,17 +196,24 @@ def check_landscape(video: str, expect_text: str = "",
             joined = "\n".join(texts)
             rep["ocr_head"] = " ".join(joined.split())[:120]
             rep["ocr_source"] = "cover_still" if cover_ok else "video_frames"
+            # SPEC-20261117 §十 R10：tesseract 读不出字**不是**缺陷判据。
+            # 2026-11-18 事故：封面改成「视频第 0 帧」后，首帧是 HookOverlay 描边大字，
+            # OCR 恒为空 → 这条硬拦把所有 tech_story 横版打成 EXIT=64（版式与封面全对）。
+            # 口径与 text_hit_ratio 统一为 advisory；文案真值由 render_landscape 的
+            # props 断言（expect_cover_text vs props.cover_main_text）做**唯一硬判据**（R11）。
             if not texts:
-                rep["reason"] = "封面 OCR 未识别到任何文字（无法验证主文案）"
-                return False, rep
-            want = C.normalize_text(expect_text)
-            got = C.normalize_text(joined)
-            hit, ratio = text_hit(want, got)
-            rep["text_hit_ratio"] = round(ratio, 3)
-            # 非阻断：OCR 对描边大号标题的识别率不稳定（实测同一版式下会整行漏读），
-            # 阻断判据改为确定性来源校验（见 render_landscape 的 props 断言）。
-            # 这里保留命中率作为人工复核证据。
-            rep["text_check"] = "hit" if hit else "advisory_miss"
+                rep["text_check"] = "advisory_no_text"
+                rep["text_check_note"] = ("OCR 未识别到文字，已降级为 advisory；"
+                                          "文案一致性以 props 断言为准（R11）")
+            else:
+                want = C.normalize_text(expect_text)
+                got = C.normalize_text(joined)
+                hit, ratio = text_hit(want, got)
+                rep["text_hit_ratio"] = round(ratio, 3)
+                # 非阻断：OCR 对描边大号标题的识别率不稳定（实测同一版式下会整行漏读），
+                # 阻断判据改为确定性来源校验（见 render_landscape 的 props 断言）。
+                # 这里保留命中率作为人工复核证据。
+                rep["text_check"] = "hit" if hit else "advisory_miss"
 
     rep["ok"] = True
     return True, rep
