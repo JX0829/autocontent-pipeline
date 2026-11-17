@@ -383,13 +383,28 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
         raise ExecutorError(f"横版 props 不存在: {props}（align_tts 未产出）")
 
     textbook = str((ctx.material or {}).get("content_type") or "") == "textbook_story"
+    # SPEC-20261117 §九 R6：科技类横版走**同一个 tech_story 模板**（TechStoryLandscapeVideo），
+    # 不再用 BilibiliLandscapeVideo 这套独立版式；课文本链路保持不变。
+    try:
+        _pd = json.loads(Path(props).read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ExecutorError(f"横版 props 解析失败: {props}: {exc}") from exc
+    tech_landscape = (not textbook) and _composition_for(_pd) == "TechStoryVideo"
     info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""),
-                            video_composition="TextbookLandscapeVideo" if textbook else None,
+                            video_composition=("TextbookLandscapeVideo" if textbook else
+                                               "TechStoryLandscapeVideo" if tech_landscape else None),
                             cover_composition="TextbookLandscapeCoverStill" if textbook else None)
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
     _assert_has_audio(video)   # 横版同样不许出无声片
+    # R9：横版也打一行，方便回归时与竖版一眼对齐（素材来自同一份 Selection：props 里已注入）
+    _a = (_pd.get("asset_binding") or {})
+    _op, _bg = (_a.get("open") or {}), (_a.get("bg") or {})
+    print(f"[assets] aspect=landscape 档位={_a.get('domain') or '未判定'} "
+          f"封面形态={_a.get('cover_mode') or 'none'} 封面=首帧 "
+          f"open={_op.get('id') or '（无）'} bg={_bg.get('id') or '（无）'} "
+          f"模板={'TechStoryLandscapeVideo' if tech_landscape else ('TextbookLandscapeVideo' if textbook else '旧横版')}")
     return {"video_16_9": str(video), "cover_16_9": str(cover)}
 
 
