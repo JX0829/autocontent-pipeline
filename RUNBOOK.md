@@ -622,14 +622,48 @@ $PY scripts/verify_assets.py
 }
 ```
 
-### 5.5.4 分镜「锐评」（creator_take）
+### 5.5.4 分镜「锐评」（creator_take）——**必填，有门禁**
 
-`draft_script.json` 每个分镜新增可选字段 `creator_take`（20–40 字，我们自己的判断）：
+`draft_script.json` 每个分镜必须有 `creator_take`：**往外扩，不是复述原文**。
 
-- 生成：`src/hotspot_extractor.py` 提示词已要求输出；校验只给判断、不复述事实、禁绝对化/煽动/站外引导
-- 透传：`src/schemas.py`（Draft + Aligned）→ `src/tts/aligner.py` → `aligned_render.json`
-- 渲染：`TechStoryVideo` 关键词下方一行小字（青色左边框）；`GeekShortVideo` 在字幕上方
-- 缺省：不写就不渲染，不影响出片
+**四种扩展手法（每镜至少用一种，提示词已按此约束）**
+
+| 手法 | 说明 | 例子（DeepSeek 限额） |
+|---|---|---|
+| 类比同类 | 拉到同类产品或同代技术上比 | 同类产品里谁最能让你天天白用？评论区点个名 |
+| 量化换算 | 抽象数字换成能感知的等价物 | 四万字大概是一份合同塞得下、一份财报塞不下 |
+| 猜测动因 | 大胆猜原因，但必须用「我猜/可能/是不是」的假设口气，列 2–3 种 | 如果是算力顶不住，价格可能还得动；如果是给新模型腾地方，说明有东西要发 |
+| 抛出问题 | 把争议点变成问题丢给评论区 | 你觉得是成本压力，还是策略收紧？ |
+
+**硬门禁**（`src/utils/creator_take_guard.py`，在 `_prepare_props` 里跑，不过直接 BLOCKED）：
+
+| 判据 | 阈值 | 不通过的后果 |
+|---|---|---|
+| 完整性 | 每镜必须有 | BLOCKED（不再渲染，省掉一次 TTS + 出片） |
+| 长度 | 15–60 字 | BLOCKED |
+| 不抄 | 与 `segment_narration + fact_summary_150` 的 4-gram 重合 **< 40%** | BLOCKED |
+| 非空话 | 禁「值得关注/意义重大/影响深远/引人深思」等 | BLOCKED |
+| 合规 | 禁绝对化 / 煽动 / 站外引流 | BLOCKED |
+
+自查：
+
+```bash
+$PY scripts/test_creator_take_guard.py      # 10 个正负例，应全绿
+```
+
+**历史 run 重渲染逃生阀**：旧物料没 `creator_take`，重渲会被门禁拦住。
+只在这种场景下允许绕过（会在 stdout 打 WARN）：
+
+```bash
+ALLOW_LEGACY_NO_TAKE=1 $PY -m src.pipeline.runner --material materials/旧物料.json --from-step render
+```
+
+新内容一律不许绕过——绕过等于又回到「事实搬运」。
+
+链路：`src/hotspot_extractor.py`（提示词）→ `src/schemas.py`（Draft + Aligned）
+→ `src/utils/creator_take_guard.py`（门禁）→ `src/tts/aligner.py`（透传）
+→ `aligned_render.json` → `TechStoryVideo` 关键词下方一行（青色左边框）/ `GeekShortVideo` 字幕上方
+→ `asset_binding.json` 之外还会在 stdout 打 `[creator_take] {统计}`。
 
 ### 5.5.5 出片后自查（科技类）
 

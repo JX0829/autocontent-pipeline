@@ -216,6 +216,20 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     from src.tts.aligner import TTSAligner
 
     payload = DraftScriptPayload(**draft)
+
+    # 分镜二次创作门禁：不达标立刻 BLOCKED，不浪费一次 TTS + 渲染
+    from src.utils.creator_take_guard import check_creator_takes, summarize
+    _take_errors = check_creator_takes(
+        [sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)
+    print(f"[creator_take] {summarize([sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)}")
+    if _take_errors:
+        # 历史 run 重渲染用逃生阀（旧物料没有 creator_take），新内容一律不许绕过
+        if os.environ.get("ALLOW_LEGACY_NO_TAKE") == "1":
+            print("[creator_take] WARN 门禁被 ALLOW_LEGACY_NO_TAKE=1 绕过（仅限历史 run 重渲染）")
+        else:
+            raise ExecutorError("creator_take 门禁未通过（分镜缺二次创作或在复述原文）:\n  "
+                                + "\n  ".join(_take_errors))
+
     # T4.5：音色/语速一律来自 pipeline.yaml 的 tts.* 槽位（缺配置即 MissingConfig）
     slot = "tts.tech" if str(draft.get("target_account_type") or "tech") == "tech" else "tts.news"
     aligner = TTSAligner.from_slot(slot)
