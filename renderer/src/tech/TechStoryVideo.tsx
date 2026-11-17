@@ -127,8 +127,8 @@ const normalize = (props: TechProps) => {
 };
 
 /* ── 首镜标题 ── */
-const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string }> = ({
-  title, subtitle, kicker,
+const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; take?: string | null }> = ({
+  title, subtitle, kicker, take,
 }) => {
   const frame = useCurrentFrame();
   const t = (a: number, b: number) =>
@@ -161,6 +161,18 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string }>
           }}
         >
           {subtitle}
+        </div>
+      ) : null}
+      {take ? (
+        <div
+          style={{
+            marginTop: 30, paddingLeft: 18, borderLeft: `4px solid ${ACCENT}`,
+            fontFamily: FONT, fontSize: 30, lineHeight: 1.45, color: '#CFE6F5',
+            opacity: t(66, 92), textShadow: '0 4px 20px rgba(0,0,0,0.85)',
+          }}
+        >
+          <span style={{ color: ACCENT, fontWeight: 800 }}>锐评 </span>
+          {take}
         </div>
       ) : null}
     </div>
@@ -304,7 +316,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
       {cfg.scenes.map((s) => (
         <Sequence key={`${s.index}-${s.start}`} from={s.start} durationInFrames={s.frames}>
           {s.index === 0 ? (
-            <HookOverlay title={cfg.title} subtitle={cfg.subtitle} kicker={cfg.kicker} />
+            <HookOverlay title={cfg.title} subtitle={cfg.subtitle} kicker={cfg.kicker} take={s.take} />
           ) : (
             <SceneTag scene={s} />
           )}
