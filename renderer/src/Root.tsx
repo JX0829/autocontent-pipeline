@@ -21,6 +21,14 @@ import { MediaShowcaseView } from './components/MediaShowcaseView';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { TechStoryVideo, TECH_TOTAL } from './tech/TechStoryVideo';
 import type { TechProps } from './tech/TechStoryVideo';
+import { InkDropIntro } from './demo/InkDropIntro';
+import { InkStoryVideo } from './ink/InkStoryVideo';
+import {
+  TextbookStoryVideo,
+  TextbookLandscapeVideo,
+  TextbookCoverStill,
+  TextbookLandscapeCover,
+} from './textbook/TextbookVideo';
 
 // 新模板：时长/尺寸全部由 props 决定（流水线 props 里带），无 props 时用 demo 时间轴
 const calculateTechMetadata: CalculateMetadataFunction<TechProps> = async ({ props }) => ({
@@ -412,9 +420,63 @@ const BilibiliCoverWrapper: React.FC<AlignedRenderPayload> = (props) => {
   );
 };
 
+const INK_DEMO_PROPS = {
+  title: '示儿',
+  byline: '南宋 · 陆游',
+  lines: [
+    { text: '死去元知万事空', gloss: '本来就知道万事皆空' },
+    { text: '但悲不见九州同', gloss: '只悲国家未统一' },
+    { text: '王师北定中原日', gloss: '宋军北上定中原' },
+    { text: '家祭无忘告乃翁', gloss: '家祭别忘告诉父亲' },
+  ],
+  colophon: '临终绝笔，八字家国',
+  seal: '示儿',
+  assets: {
+    drop: 'ink/ink_drop_bloom.mp4',
+    mountains: 'ink/ink_misty_mountains.mp4',
+    splash: 'ink/ink_splash_transition.mp4',
+  },
+};
+
 export const RemotionRoot: React.FC = () => {
   return (
     <>
+      {/* ── 水墨片（2026-11-16）：动效版，替代 textbook/InkScenes 的静态版 ── */}
+      <Composition
+        id="InkStoryVideo"
+        component={InkStoryVideo}
+        durationInFrames={480}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={INK_DEMO_PROPS}
+      />
+      {/* 纯文字版：不带 AI 素材，用于量度文字边界框、检查竖排与截断 */}
+      <Composition
+        id="InkTextLayout"
+        component={InkStoryVideo}
+        durationInFrames={480}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{ ...INK_DEMO_PROPS, assets: { drop: null, mountains: null, splash: null } }}
+      />
+      {/* 开场原语 demo：墨滴落纸 → 晕染 → 涟漪 → 纸面展开 → 标题 */}
+      <Composition
+        id="InkDropIntro"
+        component={InkDropIntro}
+        durationInFrames={150}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{
+          kicker: '课文背后的故事',
+          title: '《背影》里没说出口的那句话',
+          paperColor: '#EFE6D4',
+          inkColor: '#1C1A17',
+          accentColor: '#A6261F',
+        }}
+      />
             <Composition
         id="BilibiliLandscapeVideo"
         component={BilibiliLandscapeVideo}
@@ -483,6 +545,44 @@ export const RemotionRoot: React.FC = () => {
           width: 1920,
           height: 1080,
         }}
+      />
+
+      {/* ---------------------------------------------------------------- 课文故事（古风，F-2026-11-12 M2）
+          与上面四个科技合成并列新增：科技链路仍渲染 GeekShortVideo / BilibiliLandscapeVideo，
+          本组合只有 content_type=textbook_story 的物料才会被 executors 选中。 */}
+      <Composition
+        id="TextbookStoryVideo"
+        component={TextbookStoryVideo}
+        durationInFrames={2700}
+        fps={30}
+        width={1080}
+        height={1920}
+        calculateMetadata={calculateVideoMetadata}
+        defaultProps={defaultMockProps}
+      />
+      <Composition
+        id="TextbookLandscapeVideo"
+        component={TextbookLandscapeVideo}
+        durationInFrames={2700}
+        fps={30}
+        width={1920}
+        height={1080}
+        calculateMetadata={calculateLandscapeMetadata}
+        defaultProps={defaultMockProps}
+      />
+      <Still
+        id="TextbookCoverStill"
+        component={TextbookCoverStill}
+        width={1080}
+        height={1920}
+        defaultProps={defaultMockProps}
+      />
+      <Still
+        id="TextbookLandscapeCoverStill"
+        component={TextbookLandscapeCover}
+        width={1920}
+        height={1080}
+        defaultProps={defaultMockProps}
       />
     </>
   );

@@ -8,7 +8,7 @@
 | 状态 | Draft → Demo 验证中 |
 | 分支 | `feature/textbook-story` |
 | 依赖 | autocontent-pipeline（渲染/TTS/发布链路） |
-| 关联文档 | `docs/requirements/20261112-textbook-story-video.md`（需求梳理） |
+| 关联文档 | `docs/requirements/20261112-textbook-story-video.md`（需求梳理）· `docs/design/20261112-textbook-visual-spec.md`（M2 古风视觉规格）· `docs/content/20261112-textbook-story-mvp-5.md`（MVP 5 篇考据卡） |
 
 ---
 
@@ -190,7 +190,7 @@
 
 | # | 事项 | 决策人 | 状态 |
 |---|---|---|---|
-| 1 | 新开教育号 or 混发科技号 | 用户 | 待定（PM 建议新号） |
+| 1 | 新开教育号 or 混发科技号 | 用户 | **已定（2026-11-12）：新开教育号，视频号 + 抖音双号**；账号配置 `channels-edu-textbook` / `douyin-edu-textbook` 已落 `config/accounts.yaml`，当前 `enabled: false` 待开号扫码；发布链路已按「平台 + 账号类型」双解析，杜绝串号 |
 | 2 | 时长 90s or 150s | 用户 | 待定（MVP 取 90~120s） |
 | 3 | 事实核对终审人 | 用户 | 待定（建议 小品 + 小果双签） |
 | 4 | MVP 5 篇篇目 | 用户 | 待定（建议《示儿》《闻官军收河南河北》《出塞》《石灰吟》《七步诗》） |
