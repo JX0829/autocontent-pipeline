@@ -615,6 +615,21 @@ $PY scripts/verify_assets.py
 校验项：文件存在、分辨率一致、时长一致（±10%）、license 必填、必需 slot 非空。
 **校验不过不许出片**。
 
+**横版素材优先（2026-11-18，方案 B）**
+
+渲染横版时，如果竖版素材存在同名 `_landscape` 副本，**优先用它**，不再把竖版中心裁成 16:9：
+
+```
+open_cleanroom_v1.mp4            ← 竖版 1080×1920（竖版成片用）
+open_cleanroom_v1_landscape.mp4  ← 横版 1920×1080（横版成片优先用）
+```
+
+- 探测逻辑：`src/assets_manager.py::with_landscape_assets`（纯按文件名约定，不改 manifest）
+- 有副本 → 横版 props 单写一份 `props/aligned_render_landscape.json`，open/bg 换成横版路径；
+  竖版 props 不动（两路是并行的），`asset_binding.landscape` 里记 used/fallback 审计
+- 没副本 → 回落竖版居中裁切（行为与改造前一致，不炸）
+- 日志：`[assets] 横版换成原生 16:9 副本: open→open_cleanroom_v1_landscape.mp4 …`
+
 **尺寸标准（上传前对照）**
 
 | 类型 | 标准 | 可用下限 | 比例 | 备注 |
@@ -633,6 +648,28 @@ $PY scripts/verify_assets.py
 
 **新增素材库（换风格/换品类）**：在 `config/assets.yaml` 加一段 `libraries.<name>`
 （root + manifest + slots 策略），再建对应目录和 manifest 即可，渲染代码零改动。
+
+### 5.5.2b 封面抽帧（COVER_FRAME，2026-11-18 修）
+
+**封面 = 成片第 `COVER_FRAME` 帧，默认第 54 帧（1.8s）**，不是第 0 帧。
+
+原因：模板的标题从第 18–48 帧才淡入、副标题 54–80 帧淡入。抽第 0 帧拿到的是**文字还没出现的黑场**，
+封面等于空图（实测：第 0 帧 OCR 无字 → 横版出厂校验直接 FAIL「封面 OCR 未识别到任何文字」）。
+
+```bash
+COVER_FRAME=54    # 默认值；老模板/淡入更慢的模板可调大
+COVER_FRAME=0     # 旧口径（抽首帧），仅用于对照历史产物
+```
+
+涉及三处，改一处不够（已统一读同一个变量）：
+
+| 位置 | 作用 |
+|---|---|
+| `src/pipeline/executors.py::_cover_frame_no` | 竖版封面抽帧 |
+| `scripts/render_landscape.py` | 横版封面抽帧 |
+| `scripts/landscape_guard.py::_cover_frame_ts` | 横版出厂校验「封面图 == 成片该帧」的比对位置 |
+
+所以**开场素材要保证第 1.8 秒处构图完整**（不是第 0 帧），否则封面还是糊的。
 
 ### 5.5.3 BGM 选取与音量（口播永远主导）
 

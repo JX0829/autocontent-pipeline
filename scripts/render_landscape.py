@@ -13,6 +13,7 @@
   · 渲染后强制过 landscape_guard 出厂校验，不通过直接抛 RuntimeError，绝不产出可推送的错版
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -41,7 +42,9 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
     缺省仍由本文件顶部常量决定 —— 科技链路的调用方一个字都不用改。
     """
     props_json = Path(props_json) if props_json else PROJ / "renderer/public/tasks" / task_id / "aligned_render.json"
-    out_dir = Path(out_dir) if out_dir else PROJ / "output" / task_id
+    # 一律绝对路径：remotion 以 renderer/ 为 cwd，相对路径会把产物写歪，随后 ffmpeg 又找不到
+    out_dir = (Path(out_dir) if out_dir else PROJ / "output" / task_id).resolve()
+    props_json = props_json.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not props_json.exists():
@@ -80,16 +83,21 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
         f"--props={rel_props}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p",
     ], cwd=str(RENDERER))
 
-    # SPEC-20261117 §八（A10）：横版封面 = video_16_9.mp4 第 0 帧，不再单独渲封面构图。
+    # SPEC-20261117 §八（A10）：横版封面 = video_16_9.mp4 的 COVER_FRAME 帧（默认第 54 帧）。
+    # 2026-11-18 修正：模板标题从第 18–48 帧才淡入，抽第 0 帧会得到没有文字的封面。
     # 失败必须显式报错（不回落旧 CoverStill、不出空封面）；现场保留 video。
+    try:
+        _cover_frame = max(0, int(os.environ.get("COVER_FRAME") or 54))
+    except ValueError:
+        _cover_frame = 54
     _ff = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0)",
+        ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"select=eq(n\\,{_cover_frame})",
          "-frames:v", "1", str(cover)],
         capture_output=True, text=True,
     )
     if _ff.returncode != 0 or not cover.exists() or cover.stat().st_size == 0:
         raise LandscapeGuardError(
-            "COVER_FRAME_EXTRACT_FAILED: 横版抽第 0 帧失败 "
+            f"COVER_FRAME_EXTRACT_FAILED: 横版抽第 {_cover_frame} 帧失败 "
             f"(rc={_ff.returncode}) {( _ff.stderr or '' ).strip().splitlines()[-2:]} | video={video}")
 
     from scripts.landscape_guard import check_landscape

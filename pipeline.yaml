@@ -85,6 +85,7 @@ contract:
       - FEISHU_DEFAULT_CHAT_ID
       # 分镜二次创作门禁逃生阀：=1 时允许历史 run（无 creator_take）重渲染，新内容禁用
       - ALLOW_LEGACY_NO_TAKE
+      - COVER_FRAME                      # 封面抽帧位置（默认 54 = 1.8s，标题淡入完成之后；0=旧口径抽首帧）
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py
     enforce_on_start: true

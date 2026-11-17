@@ -130,6 +130,61 @@ class Selection:
         }
 
 
+# ── 横版衍生副本（2026-11-17，方案 B）────────────────────────────────────────
+#: 命名规范（RUNBOOK 5.5.2）：<stem>_landscape.<ext>
+LANDSCAPE_SUFFIX = "_landscape"
+PUBLIC_DIR = PROJ / "renderer" / "public"
+
+
+def landscape_variant_src(src: str, public_dir: Path | None = None) -> Optional[str]:
+    """按命名规范给竖版 src 找横版衍生副本，存在才返回。
+
+    src 是 renderer/public 相对路径（如 ``assets/tech/video/open/open_cleanroom_v1.mp4``）；
+    命中返回 ``assets/tech/video/open/open_cleanroom_v1_landscape.mp4``，未命中返回 None。
+    副本不入 manifest、不入库（体积大），纯按文件系统约定探测。
+    """
+    if not src:
+        return None
+    root = Path(public_dir) if public_dir else PUBLIC_DIR
+    rel = Path(src)
+    cand_rel = rel.with_name(f"{rel.stem}{LANDSCAPE_SUFFIX}{rel.suffix}")
+    if (root / cand_rel).exists():
+        return str(cand_rel).replace("\\", "/")
+    return None
+
+
+def with_landscape_assets(props: dict[str, Any],
+                          public_dir: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """把 props 里的 open/bg 换成横版衍生副本，返回 (新 props, 报告)。
+
+    · 有 ``_landscape`` 副本 → 换掉，横版用原生 16:9 素材，不再中心裁切竖版；
+    · 没有副本 → 原样保留（回落竖版裁切，行为与改造前一致），报告里记 fallback；
+    · 只替换路径，不动 open_start_from / bgm / 文案，竖版 props 不受影响（入参是深拷贝）。
+    """
+    import copy
+
+    lp = copy.deepcopy(props)
+    assets = lp.get("assets") or {}
+    report: dict[str, Any] = {"aspect": "landscape", "used": {}, "fallback": []}
+    for slot in ("open", "bg"):
+        cur = assets.get(slot)
+        if not cur:
+            continue
+        hit = landscape_variant_src(cur, public_dir)
+        if hit:
+            assets[slot] = hit
+            report["used"][slot] = {"from": cur, "to": hit}
+        else:
+            report["fallback"].append(slot)
+    assets["aspect"] = "landscape"
+    lp["assets"] = assets
+    binding = lp.get("asset_binding") or {}
+    if binding:
+        binding["landscape"] = report
+        lp["asset_binding"] = binding
+    return lp, report
+
+
 def _seed_of(run_id: str) -> int:
     return int(hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12], 16)
 

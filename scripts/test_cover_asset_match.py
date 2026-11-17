@@ -94,10 +94,14 @@ def test_cover_is_first_frame() -> None:
         check(f"§八 {name} 封面尺寸 {size}", _probe_size(out) == size, str(_probe_size(out)))
         raw_cover = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-f", "rawvideo",
                                     "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
-        raw_frame0 = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0)",
-                                     "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                                    capture_output=True).stdout
-        check(f"§八 {name} 封面与第 0 帧逐像素一致（A7/A10）", raw_cover == raw_frame0 and len(raw_cover) > 0)
+        # 2026-11-18：封面改抽第 COVER_FRAME 帧（默认 54），标题淡入完成后才有字
+        from src.pipeline.executors import _cover_frame_no
+        _fn = _cover_frame_no()
+        raw_ref = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video),
+                                  "-vf", f"select=eq(n\\,{_fn})",
+                                  "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                 capture_output=True).stdout
+        check(f"§八 {name} 封面与第 {_fn} 帧逐像素一致（A7/A10）", raw_cover == raw_ref and len(raw_cover) > 0)
 
     broken = pathlib.Path(tempfile.mkdtemp()) / "broken.mp4"
     broken.write_bytes(b"not a video")
