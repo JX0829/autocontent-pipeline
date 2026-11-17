@@ -12,6 +12,8 @@ export interface AlignedSceneItem {
   code_snippet?: string;
   media_asset_url?: string;
   stat_items?: Array<{ label: string; value: string }>;
+  /** 二次创作：作者观点，渲染成场景下方「锐评」条 */
+  creator_take?: string | null;
   sfx_cue: string;
   sfx_src: string;
   audio_src: string;

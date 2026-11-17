@@ -1,0 +1,38 @@
+# ============================================================================
+# 素材库注册与选取策略
+# ----------------------------------------------------------------------------
+# 素材库可以多个并存：换/加一个素材库 = 加一段 library + 一个 manifest 文件，
+# 不需要改渲染代码。渲染器只认「选出来的文件路径」，不认具体素材。
+#
+# 选取策略：
+#   seed           : run_id（同一 run 重渲染得到同一素材，可复现）
+#   no_repeat_window: 最近 N 条成片用过的素材不再选（防同质化）
+#   volume         : BGM 基准音量（口播 loudnorm -16 LUFS，BGM 压到 -34 dB 左右）
+#   duck_volume    : 口播在场时的 BGM 音量
+# ============================================================================
+version: 1
+
+# 默认使用的素材库（按选题类型路由，后续可扩展 ai_product / textbook 等）
+default_library: tech_story
+
+libraries:
+  tech_story:
+    name: "科技类 · AI 视频素材库"
+    root: "renderer/public/assets/tech"
+    manifest: "renderer/public/assets/tech/manifest.yaml"
+    enabled: true
+    slots:
+      open:
+        required: false      # 缺素材时回落：正文背景铺满全片
+        pick: random_seeded
+      bg:
+        required: true       # 正文背景必须有，否则该库不可用于出片
+        pick: random_seeded
+        prefer_derived: "_loop"   # 有 _loop 版优先用（无接缝）
+      bgm:
+        required: false      # 缺 BGM 时出静音底片，但会记 warning
+        pick: random_seeded
+        no_repeat_window: 3
+        volume: 0.22         # ≈ BGM -34 dB，口播 -16 LUFS 之上
+        duck_volume: 0.12    # 口播在场时 ≈ -42 dB
+        max_duration_shortfall_s: 0    # BGM 短于成片时需要 loop，记 warning

@@ -1,0 +1,50 @@
+{
+  "fps": 30,
+  "total": 1140,
+  "run_id": "deepseek-quota-1",
+  "title": "DeepSeek限额了",
+  "subtitle": "长对话被砍，额度缩水",
+  "kicker": "科技快讯",
+  "scenes": [
+    {
+      "index": 0,
+      "narration": "DeepSeek突然收紧长对话，三项限制同时落地，重度用户直接被打了个措手不及。",
+      "label": "三项同时收紧",
+      "visual_type": "stat_chart",
+      "audio": "runs/deepseek-quota-1/tech_scene_0.mp3",
+      "start": 0,
+      "frames": 241,
+      "seconds": 7.58
+    },
+    {
+      "index": 1,
+      "narration": "其实在14号，就有人在前端代码里看到了额度已达上限的逻辑，官方公告却迟迟没来。",
+      "label": "额度提示提前泄露",
+      "visual_type": "terminal_code",
+      "audio": "runs/deepseek-quota-1/tech_scene_1.mp3",
+      "start": 241,
+      "frames": 248,
+      "seconds": 7.83
+    },
+    {
+      "index": 2,
+      "narration": "具体变化就三条：七天不活跃的对话不再保留，单次输入压到约四万字，每日额度也上了锁。",
+      "label": "三项调整落地",
+      "visual_type": "ui_card",
+      "audio": "runs/deepseek-quota-1/tech_scene_2.mp3",
+      "start": 489,
+      "frames": 260,
+      "seconds": 8.22
+    },
+    {
+      "index": 3,
+      "narration": "有人不到两小时就用完额度，把对话当长期陪伴的用户更难受，聊了大半年的上下文一次更新全没了。欢迎在评论区交流讨论～",
+      "label": "用户反弹明显",
+      "visual_type": "media_showcase",
+      "audio": "runs/deepseek-quota-1/tech_scene_3.mp3",
+      "start": 749,
+      "frames": 361,
+      "seconds": 11.58
+    }
+  ]
+}

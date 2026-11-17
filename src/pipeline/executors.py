@@ -89,6 +89,32 @@ def _remotion(*args: str, timeout: int = 900) -> None:
         raise ExecutorError(f"remotion 渲染失败（exit={proc.returncode}）: {tail}")
 
 
+
+# ---------------------------------------------------------------- 模板/素材
+# template_id -> Remotion composition。老模板全部继续走 GeekShortVideo（归档不删），
+# 新增模板只需在这里加一行；回滚只需把 config/templates.yaml 的 theme_mapping 改回去。
+COMPOSITION_BY_TEMPLATE = {
+    "tech_story": "TechStoryVideo",
+}
+DEFAULT_VERTICAL_COMPOSITION = "GeekShortVideo"
+
+
+def _composition_for(props_data: dict[str, Any]) -> str:
+    return COMPOSITION_BY_TEMPLATE.get(str(props_data.get("template_id")), DEFAULT_VERTICAL_COMPOSITION)
+
+
+def _attach_assets(ctx: StepContext, props_data: dict[str, Any]) -> None:
+    """按素材库配置选素材，注入 props 并落 asset_binding.json 审计。"""
+    from src.assets_manager import AssetManager
+    sel = AssetManager().select(run_id=ctx.run_id)
+    props_data.update(sel.to_render_props())
+    audit = sel.to_audit()
+    props_data["asset_binding"] = audit
+    _write_json(ctx.run_root / "asset_binding.json", audit)
+    for w in sel.warnings:
+        print(f"[assets] WARN {w}")
+
+
 # ---------------------------------------------------------------- 执行体
 
 def exec_intake(ctx: StepContext) -> dict[str, str]:
@@ -190,6 +216,20 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     from src.tts.aligner import TTSAligner
 
     payload = DraftScriptPayload(**draft)
+
+    # 分镜二次创作门禁：不达标立刻 BLOCKED，不浪费一次 TTS + 渲染
+    from src.utils.creator_take_guard import check_creator_takes, summarize
+    _take_errors = check_creator_takes(
+        [sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)
+    print(f"[creator_take] {summarize([sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)}")
+    if _take_errors:
+        # 历史 run 重渲染用逃生阀（旧物料没有 creator_take），新内容一律不许绕过
+        if os.environ.get("ALLOW_LEGACY_NO_TAKE") == "1":
+            print("[creator_take] WARN 门禁被 ALLOW_LEGACY_NO_TAKE=1 绕过（仅限历史 run 重渲染）")
+        else:
+            raise ExecutorError("creator_take 门禁未通过（分镜缺二次创作或在复述原文）:\n  "
+                                + "\n  ".join(_take_errors))
+
     # T4.5：音色/语速一律来自 pipeline.yaml 的 tts.* 槽位（缺配置即 MissingConfig）
     slot = "tts.tech" if str(draft.get("target_account_type") or "tech") == "tech" else "tts.news"
     aligner = TTSAligner.from_slot(slot)
@@ -214,6 +254,9 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     from src.pipeline.contracts import load_pipeline
     props_data["cover_card_source"] = (
         (load_pipeline().get("cover") or {}).get("card_source") or [0, 1, 3])
+    # 新模板（tech_story）需要按素材库选 open/bg/bgm；老模板不注入，行为不变
+    if _composition_for(props_data) == "TechStoryVideo":
+        _attach_assets(ctx, props_data)
     _write_json(props_path, props_data)
     return props_path
 
@@ -235,7 +278,12 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
 
     video = ctx.out("video.mp4")
     cover = ctx.out("cover.png")
-    _remotion("render", "src/index.ts", "GeekShortVideo", str(video),
+    try:
+        _props_data = json.loads(Path(props).read_text(encoding="utf-8"))
+    except Exception as exc:  # props 坏了必须显式失败，不静默回落老模板
+        raise ExecutorError(f"props 解析失败: {props}: {exc}") from exc
+    composition = _composition_for(_props_data)
+    _remotion("render", "src/index.ts", composition, str(video),
               f"--props={Path(props).resolve()}", "--codec=h264", "--crf=18",
               "--pixel-format=yuv420p")
     _remotion("still", "src/index.ts", "CoverStill", str(cover),

@@ -5,6 +5,8 @@ import { useTemplate } from '../templates/context';
 export interface SafeAreaContainerProps {
   children: React.ReactNode;
   showDebugBorder?: boolean;
+  /** AI 视频素材背景层；传入时容器底色透明，由素材承载画面 */
+  backdrop?: React.ReactNode;
 }
 
 /**
@@ -14,6 +16,7 @@ export interface SafeAreaContainerProps {
 export const SafeAreaContainer: React.FC<SafeAreaContainerProps> = ({
   children,
   showDebugBorder = false,
+  backdrop,
 }) => {
   const { id, tokens } = useTemplate();
   const { width, height } = useVideoConfig();
@@ -38,13 +41,26 @@ export const SafeAreaContainer: React.FC<SafeAreaContainerProps> = ({
   return (
     <AbsoluteFill
       style={{
-        background: tokens.canvasBg,
+        background: backdrop ? 'transparent' : tokens.canvasBg,
         color: tokens.textPrimary,
         fontFamily: "'Inter', 'Noto Sans SC', 'PingFang SC', sans-serif",
         overflow: 'hidden',
         ...getPatternStyle(),
       }}
     >
+      {/* AI 视频素材背景（素材存在时才渲染，否则回落模板底色） */}
+      {backdrop ? (
+        <>
+          {backdrop}
+          <div
+            style={{
+              position: 'absolute', inset: 0,
+              background: 'linear-gradient(to bottom, rgba(3,5,9,0.72) 0%, rgba(3,5,9,0.42) 42%, rgba(3,5,9,0.86) 100%)',
+            }}
+          />
+        </>
+      ) : null}
+
       {/* 模板专属环境光装饰 */}
       {tokens.ambientGlowPrimary && (
         <div

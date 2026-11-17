@@ -6,6 +6,8 @@ import {
   Still,
   Sequence,
   Audio,
+  AbsoluteFill,
+  OffthreadVideo,
   staticFile,
   CalculateMetadataFunction,
 } from 'remotion';
@@ -17,6 +19,16 @@ import { UiCardView } from './components/UiCardView';
 import { StatChartView } from './components/StatChartView';
 import { MediaShowcaseView } from './components/MediaShowcaseView';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
+import { TechStoryVideo, TECH_TOTAL } from './tech/TechStoryVideo';
+import type { TechProps } from './tech/TechStoryVideo';
+
+// 新模板：时长/尺寸全部由 props 决定（流水线 props 里带），无 props 时用 demo 时间轴
+const calculateTechMetadata: CalculateMetadataFunction<TechProps> = async ({ props }) => ({
+  durationInFrames: props.total_duration_in_frames || TECH_TOTAL,
+  fps: props.fps || 30,
+  width: 1080,
+  height: 1920,
+});
 
 
 const calculateLandscapeMetadata: CalculateMetadataFunction<AlignedRenderPayload> = async ({
@@ -41,6 +53,43 @@ const calculateVideoMetadata: CalculateMetadataFunction<AlignedRenderPayload> = 
   };
 };
 
+/**
+ * 素材背景层：仅在 props.assets 存在时渲染（tech_story 走 TechStoryVideo，
+ * 其余归档模板不进这条分支，画面与改造前完全一致）。
+ */
+const StoryBackdrop: React.FC<AlignedRenderPayload> = (props) => {
+  const assets = (props as unknown as { assets?: { open?: string; bg?: string; open_start_from?: number } }).assets;
+  const first = props.scenes[0];
+  if (!first || !assets?.bg) return null;
+  const openFrames = first.duration_frames;
+  const restFrames = Math.max(0, props.total_duration_in_frames - openFrames);
+  return (
+    <AbsoluteFill>
+      <Sequence from={0} durationInFrames={openFrames}>
+        <OffthreadVideo
+          src={staticFile(assets.open || assets.bg)}
+          startFrom={assets.open_start_from || 45}
+          muted
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      </Sequence>
+      <Sequence from={openFrames} durationInFrames={restFrames}>
+        <OffthreadVideo
+          src={staticFile(assets.bg)}
+          muted
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      </Sequence>
+      <AbsoluteFill
+        style={{
+          background:
+            'linear-gradient(to bottom, rgba(3,5,9,0.34) 0%, rgba(3,5,9,0.14) 42%, rgba(3,5,9,0.52) 100%)',
+        }}
+      />
+    </AbsoluteFill>
+  );
+};
+
 const VideoSceneContent: React.FC<{
   scene: AlignedSceneItem;
   totalScenes: number;
@@ -48,9 +97,13 @@ const VideoSceneContent: React.FC<{
   resourceKeyword?: string;
   fps: number;
   footer_callout?: string;
-}> = ({ scene, totalScenes, entityKey, resourceKeyword, fps, footer_callout }) => {
+  hasBackdrop?: boolean;
+}> = ({ scene, totalScenes, entityKey, resourceKeyword, fps, footer_callout, hasBackdrop }) => {
   return (
-    <SafeAreaContainer showDebugBorder={false}>
+    <SafeAreaContainer
+      showDebugBorder={false}
+      backdrop={hasBackdrop ? <></> : undefined}
+    >
       {/* 上方核心视觉容器 */}
       <div style={{ width: '100%', marginTop: 20 }}>
         {scene.visual_type === 'terminal_code' && (
@@ -97,6 +150,29 @@ const VideoSceneContent: React.FC<{
         )}
       </div>
 
+      {/* 二次创作：作者观点条 */}
+      {scene.creator_take ? (
+        <div
+          style={{
+            position: 'absolute',
+            left: 96,
+            right: 96,
+            bottom: 168,
+            padding: '18px 24px',
+            borderLeft: '6px solid #5ED8FF',
+            background: 'rgba(3,6,10,0.62)',
+            borderRadius: 10,
+            color: '#E6EEF6',
+            fontSize: 30,
+            lineHeight: 1.5,
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ color: '#5ED8FF', fontWeight: 800 }}>锐评 </span>
+          {scene.creator_take}
+        </div>
+      ) : null}
+
       {/* 下方安全区动态字幕 */}
       <SubtitleOverlay subtitles={scene.subtitles} />
 
@@ -111,10 +187,13 @@ export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
   return (
     <TemplateProvider templateId={props.template_id} theme={props.theme}>
       <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
-        {/* 背景循环音乐 (-24dB 极客环境底噪) */}
+        {/* 背景音乐：母带已 loudnorm 到 -28 LUFS，0.55 为人声之下的铺底 */}
         {props.bgm_src && (
-          <Audio src={staticFile(props.bgm_src)} volume={0.06} loop />
+          <Audio src={staticFile(props.bgm_src)} volume={0.7} loop />
         )}
+
+        {/* AI 视频素材背景（开场晶圆 / 正文电路） */}
+        <StoryBackdrop {...props} />
 
         {/* 视频正文各分镜 */}
         {props.scenes.map((scene) => (
@@ -130,6 +209,7 @@ export const GeekShortVideo: React.FC<AlignedRenderPayload> = (props) => {
               resourceKeyword={props.resource_keyword}
               fps={props.fps}
               footer_callout={props.footer_callout}
+              hasBackdrop={Boolean((props as unknown as { assets?: { bg?: string } }).assets?.bg)}
             />
           </Sequence>
         ))}
@@ -344,6 +424,16 @@ export const RemotionRoot: React.FC = () => {
         height={1080}
         calculateMetadata={calculateLandscapeMetadata}
         defaultProps={defaultMockProps}
+      />
+      {/* 科技类短片：开场晶圆 → 正文电路微距 + 要点逐条 → 收尾；含 BGM 与落点音效 */}
+      <Composition
+        id="TechStoryVideo"
+        component={TechStoryVideo}
+        durationInFrames={TECH_TOTAL}
+        fps={30}
+        width={1080}
+        height={1920}
+        calculateMetadata={calculateTechMetadata}
       />
       <Composition
         id="GeekShortVideo"
