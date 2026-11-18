@@ -364,6 +364,32 @@ class DouyinProvider(BaseSocialProvider):
                             "error": "CAPTION_MISMATCH",
                             "expected": full_text[:200], "filled": filled_text[:200],
                             "message": "简介回读与预期不符（乱码/话题错位/被重排），拒绝发布"}
+                # 3e. 话题终态（SPEC-20261118 R8）：真话题数 == 声明数 且 尾部无游离文本
+                if topics_declared and (_tp.get("stray") or not topics_ok):
+                    _why = ("尾部残留游离文本 " + repr(_tp.get("stray"))) if _tp.get("stray") \
+                        else f"真话题 {_tp.get('count')}/{len(topics_declared)}"
+                    logger.error(f"TOPIC_TAIL_RESIDUE: {_why}")
+                    browser.close()
+                    return {"success": False, "published": False,
+                            "error": "TOPIC_TAIL_RESIDUE" if _tp.get("stray") else "TOPIC_COUNT_MISMATCH",
+                            "expected": topics_declared, "filled": _tp,
+                            "message": f"话题终态不合格（{_why}），拒绝发布"}
+
+                # 3e-2. 封面上传（SPEC-20261118 R1~R3）：显式上传 + 回读，失败即阻断
+                try:
+                    from src.providers import douyin_form as _df
+                    _cover = _df.set_cover(page, cover_path or "", log_obj=logger)
+                except Exception as exc:  # noqa: BLE001
+                    _cover = {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                              "detail": f"{type(exc).__name__}: {exc}"}
+                if not _cover.get("ok"):
+                    logger.error(f"COVER_UPLOAD_FAILED: {_cover.get('detail')}")
+                    browser.close()
+                    return {"success": False, "published": False,
+                            "error": "COVER_UPLOAD_FAILED",
+                            "expected": str(cover_path or ""), "filled": _cover,
+                            "message": f"封面没上传成功（{_cover.get('detail')}），拒绝发布"}
+
                 time.sleep(2)
 
                 if stop_before_publish:

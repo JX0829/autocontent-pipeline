@@ -137,6 +137,105 @@ class ChannelsCDPProvider(BaseSocialProvider):
             dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
             stop_before_publish=stop_before_publish, cdp_url=cdp_url))
 
+
+    async def _upload_cover_async(self, ui, page, cover_path: str) -> Dict[str, Any]:
+        """上传自定义封面并回读（SPEC-20261118 R9）。
+
+        视频号发布表单在 wujie iframe 里：元素只能用 frame.evaluate 找，
+        上传必须用「JS 点隐藏 input + expect_file_chooser 接管」。
+        失败 → {"ok": False, "code": "COVER_UPLOAD_FAILED"}，上层阻断发布。
+        """
+        import asyncio
+        import os
+        import tempfile
+
+        path = str(cover_path or "")
+        if not path or not os.path.exists(path):
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": f"封面文件不存在: {path!r}"}
+
+        opened = await ui.evaluate("""(texts) => {
+            const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+            const all = [...document.querySelectorAll('div,span,button,label,a,p')];
+            for (const t of texts) {
+                const el = all.find(e => vis(e) && (e.innerText || '').trim() === t);
+                if (el) { el.click(); return t; }
+            }
+            for (const t of texts) {
+                const el = all.find(e => vis(e) && (e.innerText || '').includes(t)
+                                          && (e.innerText || '').trim().length <= t.length + 6);
+                if (el) { el.click(); return t; }
+            }
+            return '';
+        }""", ["更换封面", "编辑封面", "上传封面", "选择封面", "设置封面"])
+        if not opened:
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                    "detail": "发布表单里找不到封面入口（更换封面/编辑封面）"}
+        logger.info(f"[CHANNELS] 已点击封面入口：{opened}")
+        await asyncio.sleep(1.2)
+
+        # 隐藏 input 坐标 0x0，直接 set_input_files 在 wujie 里不稳 → 用 file_chooser 接管
+        has_input = await ui.evaluate("""() => {
+            const ins = [...document.querySelectorAll('input[type=file]')]
+                .filter(i => /image/.test(i.accept || '') || (i.accept || '') === '');
+            if (!ins.length) return false;
+            ins[ins.length - 1].click();
+            return true;
+        }""")
+        if not has_input:
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": "封面弹层里没有图片上传 input"}
+        try:
+            async with page.expect_file_chooser(timeout=15000) as fc_info:
+                pass
+            chooser = await fc_info.value
+            await chooser.set_files(os.path.abspath(path))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                    "detail": f"封面文件选择失败: {type(exc).__name__}: {exc}"}
+        logger.info(f"[CHANNELS] 封面上传已注入：{path}")
+
+        preview = None
+        for _ in range(40):
+            await asyncio.sleep(0.5)
+            preview = await ui.evaluate("""() => {
+                const vis = e => !!(e && e.offsetWidth && e.offsetHeight);
+                const imgs = [...document.querySelectorAll('img')].filter(i => vis(i) && i.naturalWidth > 60);
+                if (!imgs.length) return null;
+                const i = imgs[imgs.length - 1];
+                const r = i.getBoundingClientRect();
+                return {x: r.x, y: r.y, w: r.width, h: r.height};
+            }""")
+            if preview:
+                break
+        if not preview:
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": "上传后 20s 内没出现封面预览"}
+
+        await ui.evaluate("""(texts) => {
+            const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+            const btns = [...document.querySelectorAll('button,div[role=button],span')].filter(vis);
+            for (const t of texts) {
+                const b = btns.find(e => (e.innerText || '').trim() === t);
+                if (b) { b.click(); return t; }
+            }
+            return '';
+        }""", ["确定", "完成", "确认", "保存"])
+        await asyncio.sleep(1.5)
+
+        from src.providers.douyin_form import _dh_dist, _dh_window
+        try:
+            shot = os.path.join(tempfile.mkdtemp(), "ch_cover.png")
+            await page.screenshot(path=shot, clip={"x": preview["x"], "y": preview["y"],
+                                                  "width": max(8, preview["w"]),
+                                                  "height": max(8, preview["h"])})
+            dist = _dh_dist(_dh_window(shot), _dh_window(path))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                    "detail": f"封面回读失败（截图比对异常）: {exc}"}
+        if dist > 14:
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                    "detail": f"封面回读不一致（dHash 距离 {dist} > 14）", "dist": dist}
+        logger.info(f"[CHANNELS] 封面已上传并回读通过（dHash 距离 {dist}）")
+        return {"ok": True, "code": "", "detail": f"dHash 距离 {dist}", "dist": dist}
+
     async def _publish_live_async(self, video_path: str, cover_path: str, title: str,
                                   content_text: str, topics: list[str],
                                   declare_original: bool, declare_aigc: bool,
@@ -439,6 +538,22 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     else:
                         logger.warning("[CHANNELS] 视频号 Web 无 AI 声明控件（需手机端补勾）")
 
+                # 5b. 封面上传（SPEC-20261118 R9）：显式上传 + 回读，失败即阻断
+                cover_info: Dict[str, Any] = {}
+                try:
+                    cover_info = await self._upload_cover_async(ui, page, cover_path)
+                except Exception as exc:  # noqa: BLE001
+                    cover_info = {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                                  "detail": f"{type(exc).__name__}: {exc}"}
+                if not cover_info.get("ok"):
+                    logger.error(f"[CHANNELS] COVER_UPLOAD_FAILED: {cover_info.get('detail')}")
+                    await page.screenshot(path=str(shot_dir / "cover_failed.png"), full_page=True)
+                    return {"success": False, "published": False,
+                            "error": "COVER_UPLOAD_FAILED",
+                            "expected": str(cover_path or ""), "filled": cover_info,
+                            "screenshot": str(shot_dir / "cover_failed.png"),
+                            "message": f"视频号封面没上传成功（{cover_info.get('detail')}），拒绝发布"}
+
                 await page.screenshot(path=str(shot_dir / "before_publish.png"), full_page=True)
 
                 if stop_before_publish:
@@ -449,6 +564,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "topics_declared": topics_declared,
                             "topics_landed": topics_landed,
                             "topics_ok": topics_ok,
+                            "cover": cover_info,
                             "screenshot": str(shot_dir / "before_publish.png"),
                             "message": "已上传、填文案、勾原创，停在发表前（测试档）"}
 

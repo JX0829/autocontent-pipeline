@@ -62,6 +62,9 @@ SAFE_RETRY_SIGNALS = (
     "UPLOAD_PAGE_NOT_READY",
     "DRAFT_BUTTON_NOT_FOUND",    # 找不到草稿按钮，安全策略主动拦停
     "TITLE_NOT_LANDED",          # 2026-11-15：标题没落进「作品标题」框 → 未点发布，可重试
+    "COVER_UPLOAD_FAILED",       # 2026-11-18：封面没上传成功 → 未点发布，可重试
+    "TOPIC_TAIL_RESIDUE",        # 2026-11-18：话题尾部残渣 → 未点发布，可重试
+    "TOPIC_COUNT_MISMATCH",      # 2026-11-18：真话题数不符 → 未点发布，可重试
     "CAPTION_MISMATCH",          # 正文回读与预期不符 → 未点发布，可重试
     "SUBMIT_BLOCKED",            # 2026-11-15：点发布前自证不过（标题/正文读回为空）
     "CAPTION_NOT_LANDED",        # CLI：正文没落上，未点发布

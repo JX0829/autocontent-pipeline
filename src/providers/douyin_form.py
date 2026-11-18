@@ -110,13 +110,22 @@ def fill_caption(page, text: str) -> bool:
               const ZW = /[\u200b\u200c\u200d\ufeff]/g;
               const norm = s => String(s || '').replace(ZW, '').replace(/\u00a0/g, ' ').replace(/\s+/g, '');
               const flat = ed.innerText || '';
-              const lines = [...ed.querySelectorAll('.ace-line')]
-                  .map(e => (e.innerText || '').replace(ZW, '').trim()).filter(Boolean);
-              const wantLines = String(exp).split(/\n{2,}/).filter(x => x.trim()).length;
+              // 2026-11-18 事故：`.ace-line` 在现版编辑器里 0 命中 → lines 恒 0 → 判据恒红。
+              // 现在按「块级子节点数」判分段（div/p/li 各算一段，退化用 innerText 换行数），
+              // wantLines 按**任何换行**切（/
++/），与写入侧 split_paragraphs 口径一致。
+              const blocks = [...ed.children].filter(e => {
+                const t = (e.innerText || '').replace(ZW, '').trim();
+                return t.length > 0 || e.querySelector('br,img,[data-mention]');
+              }).length;
+              const innerLines = flat.split(/\n+/).filter(x => x.trim()).length;
+              const lines = Math.max(blocks, blocks === 0 ? innerLines : blocks);
+              const wantLines = String(exp).split(/\n+/).filter(x => x.trim()).length;
               const want = norm(exp);
               const gotNorm = norm(flat);
-              return {ok: gotNorm === want && lines.length >= wantLines,
-                      textOk: gotNorm === want, lines: lines.length, wantLines,
+              return {ok: gotNorm === want && lines >= wantLines,
+                      textOk: gotNorm === want, lines, blocks, innerLines, wantLines,
+                      linesSource: blocks ? 'block_children' : 'inner_text',
                       gotLen: gotNorm.length, wantLen: want.length};
             }""",
             body,
@@ -233,8 +242,73 @@ def fill_topics(page, topics, log_obj=None) -> dict:
             page.keyboard.type(f"#{tag} ", delay=60)
             log.warning(f"[douyin] 话题 #{tag} 未成为真话题（两次都没匹配）")
 
-    ok = len(landed) >= len(declared)
-    return {"declared": declared, "landed": landed, "ok": ok, "problems": problems}
+    # ── R7：清尾部游离文本（联想项只吃掉 `#`+首字符，余下如「据隐私」「wen4」残留）──
+    repaired = _repair_tail(page, want, log)
+
+    # ── R8：终态校验 —— 真话题数 == 声明数，且尾部无游离文本 ──
+    final_count = _count()
+    tail = _editor_tail(page)
+    stray = _stray_tail(tail, want)
+    if final_count < len(declared):
+        problems.append(f"真话题节点 {final_count} != 声明 {len(declared)}")
+    if stray:
+        problems.append(f"描述尾部残留游离文本 {stray!r}")
+    ok = final_count >= len(declared) and not stray
+    if not ok:
+        log.error(f"[douyin] 话题终态不合格：count={final_count}/{len(declared)} tail={tail!r} stray={stray!r}")
+    return {"declared": declared, "landed": landed, "ok": ok, "problems": problems,
+            "count": final_count, "tail": tail, "tail_repaired": repaired, "stray": stray}
+
+
+def _editor_tail(page, n: int = 24) -> str:
+    """描述编辑器末尾 n 个字符（去零宽），用于查游离文本。"""
+    try:
+        return str(page.evaluate(
+            """(n) => {
+              const ed = document.querySelector('div[contenteditable="true"]');
+              if (!ed) return '';
+              const t = (ed.innerText || '').replace(/[\u200b\u200c\u200d\ufeff]/g, '');
+              return t.slice(-n);
+            }""", n) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _stray_tail(tail: str, tags) -> str:
+    """尾部游离文本判定：末尾（去掉空格）等于某 tag 的后缀（如 数据隐私→据隐私、Qwen4→wen4）。"""
+    t = (tail or "").rstrip()
+    if not t:
+        return ""
+    for tag in tags:
+        for cut in (1, 2):
+            suf = str(tag)[cut:]
+            if len(suf) >= 3 and t.endswith(suf):
+                return suf
+        if t.endswith(str(tag)):          # 整个 tag 都在（含 # 被吃掉的情况）
+            return str(tag)
+    return ""
+
+
+def _repair_tail(page, tags, log) -> list:
+    """用真实按键退掉尾部游离文本（不改 DOM，React 状态同步）。"""
+    fixed = []
+    for _ in range(6):
+        tail = _editor_tail(page)
+        stray = _stray_tail(tail, tags)
+        if not stray:
+            break
+        try:
+            page.keyboard.press("End")
+            for _ in range(len(stray)):
+                page.keyboard.press("Backspace")
+            page.keyboard.press("Backspace")     # 连带吃掉前缀空格
+            page.wait_for_timeout(180)
+            fixed.append(stray)
+            log.warning(f"[douyin] 清掉话题尾部游离文本 {stray!r}")
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"[douyin] 清理尾部残渣失败：{type(exc).__name__}: {exc}")
+            break
+    return fixed
 
 
 def count_topics(page) -> int:
@@ -297,3 +371,141 @@ def assert_form_ready(page, title: str, caption: str) -> tuple[bool, dict]:
     else:
         logger.info(f"表单自证通过: title={detail['title_got']!r} caption_len={len(got_cap)}")
     return ok, detail
+
+
+# ── 封面（SPEC-20261118 R1~R3）───────────────────────────────────────────────
+COVER_ENTRY_TEXTS = ("选择封面", "编辑封面", "更换封面", "设置封面", "上传封面")
+COVER_DONE_TEXTS = ("确定", "完成", "确认", "保存")
+
+
+def _dh_window(png_path) -> list:
+    """像素指纹：缩到 9x8 灰度后取横向差分（dHash），用来比「预览图 vs cover.png」。"""
+    from PIL import Image
+    with Image.open(png_path) as im:
+        g = im.convert("L").resize((9, 8), Image.LANCZOS)
+        px = list(g.getdata())
+    bits = []
+    for y in range(8):
+        row = px[y * 9:(y + 1) * 9]
+        bits.extend(1 if row[x] > row[x + 1] else 0 for x in range(8))
+    return bits
+
+
+def _dh_dist(a, b) -> int:
+    return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> dict:
+    """上传自定义封面并回读校验（SPEC-20261118 R1~R3）。
+
+    返回 {"ok": bool, "code": str, "detail": str, "dist": int|None}
+    · 找不到入口 / 上传超时 / 回读不通过 → ok=False，code=COVER_UPLOAD_FAILED
+    上层必须据此阻断发布（不许静默回落系统抽帧）。
+    """
+    import os
+    import tempfile
+
+    log = log_obj or logger
+    path = str(cover_path or "")
+    if not path or not os.path.exists(path):
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": f"封面文件不存在: {path!r}"}
+
+    opened = page.evaluate(
+        """(texts) => {
+          const vis = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+          const cands = [...document.querySelectorAll('div,span,button,label,a,p')];
+          for (const t of texts) {
+            const el = cands.find(e => vis(e) && (e.innerText || '').trim() === t);
+            if (el) { el.click(); return t; }
+          }
+          // 退一步：包含关键字且足够短的节点（如「选择封面」按钮里带图标）
+          for (const t of texts) {
+            const el = cands.find(e => vis(e) && (e.innerText || '').includes(t)
+                                       && (e.innerText || '').trim().length <= t.length + 6);
+            if (el) { el.click(); return t; }
+          }
+          return '';
+        }""",
+        list(COVER_ENTRY_TEXTS),
+    )
+    if not opened:
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                "detail": "页面找不到封面入口（选择封面/编辑封面）"}
+
+    log.info(f"[douyin] 已点击封面入口：{opened}")
+    page.wait_for_timeout(1500)
+
+    # 上传：优先弹窗里的图片 input
+    try:
+        inputs = page.locator('input[type="file"]')
+        idx = None
+        for i in range(inputs.count()):
+            acc = (inputs.nth(i).get_attribute("accept") or "")
+            if "image" in acc or acc == "":
+                idx = i
+                break
+        if idx is None:
+            return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": "封面弹窗里没有图片上传 input"}
+        inputs.nth(idx).set_input_files(os.path.abspath(path))
+        log.info(f"[douyin] 封面上传已注入：{path}")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                "detail": f"封面 set_input_files 失败: {type(exc).__name__}: {exc}"}
+
+    # 等预览出现
+    preview = None
+    for _ in range(40):
+        page.wait_for_timeout(500)
+        preview = page.evaluate(
+            """() => {
+              const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+              const imgs = [...document.querySelectorAll('img')].filter(i => vis(i)
+                  && i.naturalWidth > 60 && /blob:|douyinpic|byteimg/.test(i.currentSrc || i.src || ''));
+              if (!imgs.length) return null;
+              const i = imgs[imgs.length - 1];
+              const r = i.getBoundingClientRect();
+              return {src: (i.currentSrc || i.src || '').slice(0, 80), x: r.x, y: r.y, w: r.width, h: r.height};
+            }"""
+        )
+        if preview:
+            break
+    if not preview:
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": "上传后 20s 内没出现封面预览"}
+
+    # 点确定/完成
+    done = page.evaluate(
+        """(texts) => {
+          const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+          const btns = [...document.querySelectorAll('button,div[role=button],span')].filter(vis);
+          for (const t of texts) {
+            const b = btns.find(e => (e.innerText || '').trim() === t);
+            if (b) { b.click(); return t; }
+          }
+          return '';
+        }""",
+        list(COVER_DONE_TEXTS),
+    )
+    page.wait_for_timeout(1800)
+    log.info(f"[douyin] 封面确认按钮：{done or '（未找到，视为弹窗自动关闭）'}")
+
+    if not verify:
+        return {"ok": True, "code": "", "detail": "已上传（未做回读）", "dist": None}
+
+    # 回读校验：截当前封面缩略图区域 → dHash 与 cover.png 比
+    dist = None
+    try:
+        shot = os.path.join(tempfile.mkdtemp(), "cover_preview.png")
+        page.screenshot(path=shot, clip={"x": preview["x"], "y": preview["y"],
+                                         "width": max(8, preview["w"]), "height": max(8, preview["h"])})
+        dist = _dh_dist(_dh_window(shot), _dh_window(path))
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[douyin] 封面回读截图失败：{type(exc).__name__}: {exc}")
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                "detail": f"封面回读失败（无法截图比对）: {exc}"}
+
+    ok = dist is not None and dist <= 14
+    if not ok:
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                "detail": f"封面回读不一致（dHash 距离 {dist} > 14）", "dist": dist}
+    log.info(f"[douyin] 封面已上传并回读通过（dHash 距离 {dist}）")
+    return {"ok": True, "code": "", "detail": f"dHash 距离 {dist}", "dist": dist}

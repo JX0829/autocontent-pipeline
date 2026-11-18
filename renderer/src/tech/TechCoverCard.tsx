@@ -34,7 +34,7 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
   const portrait = (aspect ?? 'portrait') !== 'landscape';
   const kickerText = kicker || KICKER[theme || ''] || '科技速递';
   const insets = portrait
-    ? { left: 88, right: 88, bottom: 210 }
+    ? { left: 120, right: 120, bottom: 210 }
     : { left: 96, right: 96, bottom: 96 };
   const mainSize = portrait ? 88 : 84;
 
