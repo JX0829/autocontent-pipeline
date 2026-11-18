@@ -168,8 +168,15 @@ class ChannelsCDPProvider(BaseSocialProvider):
             return '';
         }""", ["更换封面", "编辑封面", "上传封面", "选择封面", "设置封面"])
         if not opened:
-            return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                    "detail": "发布表单里找不到封面入口（更换封面/编辑封面）"}
+            # 2026-11-18 真机实测（9334，编辑态 + 发布态两处都试过）：
+            # 视频号 Web 端发布表单**没有封面控件** —— 可见 label 只有
+            # 视频管理/视频描述/短标题/位置/合集/链接/活动/定时发表/声明原创/视频标注，
+            # 全页唯一命中「封面」的是「红包封面」（无关，且 w=h=0）。
+            # 因此这里不再当失败阻断（会把整条片卡死），而是如实记「Web 端不支持」，
+            # 交上层决定（片头烧帧方案 / 手机端手动设置）。
+            return {"ok": True, "code": "COVER_NOT_SUPPORTED_ON_WEB",
+                    "detail": "视频号 Web 端无封面控件（真机实测），已跳过；"
+                              "封面由平台抽帧决定，需片头帧方案或手机端手动设置"}
         logger.info(f"[CHANNELS] 已点击封面入口：{opened}")
         await asyncio.sleep(1.2)
 
@@ -545,7 +552,9 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 except Exception as exc:  # noqa: BLE001
                     cover_info = {"ok": False, "code": "COVER_UPLOAD_FAILED",
                                   "detail": f"{type(exc).__name__}: {exc}"}
-                if not cover_info.get("ok"):
+                if cover_info.get("code") == "COVER_NOT_SUPPORTED_ON_WEB":
+                    logger.warning(f"[CHANNELS] {cover_info.get('detail')}")
+                elif not cover_info.get("ok"):
                     logger.error(f"[CHANNELS] COVER_UPLOAD_FAILED: {cover_info.get('detail')}")
                     await page.screenshot(path=str(shot_dir / "cover_failed.png"), full_page=True)
                     return {"success": False, "published": False,

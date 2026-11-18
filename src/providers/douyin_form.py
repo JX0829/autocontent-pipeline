@@ -107,20 +107,22 @@ def fill_caption(page, text: str) -> bool:
             r"""(exp) => {
               const ed = document.querySelector('div[contenteditable="true"]');
               if (!ed) return {ok: false, reason: 'no_editor'};
-              const ZW = /[\u200b\u200c\u200d\ufeff]/g;
-              const norm = s => String(s || '').replace(ZW, '').replace(/\u00a0/g, ' ').replace(/\s+/g, '');
+              const ZW = [0x200b, 0x200c, 0x200d, 0xfeff];
+              const stripZW = x => [...String(x || '')].filter(c => !ZW.includes(c.codePointAt(0))).join('');
+              const isSpace = c => [0x20, 0x0a, 0x0d, 0x09, 0x00a0, 0x3000].includes(c.codePointAt(0));
+              const norm = s => [...stripZW(s)].filter(c => !isSpace(c)).join('');
               const flat = ed.innerText || '';
               // 2026-11-18 事故：`.ace-line` 在现版编辑器里 0 命中 → lines 恒 0 → 判据恒红。
               // 现在按「块级子节点数」判分段（div/p/li 各算一段，退化用 innerText 换行数），
-              // wantLines 按**任何换行**切（/
-+/），与写入侧 split_paragraphs 口径一致。
+              // wantLines 按任意换行切（String.fromCharCode(10)），与写入侧 split_paragraphs 同一口径。
               const blocks = [...ed.children].filter(e => {
-                const t = (e.innerText || '').replace(ZW, '').trim();
+                const t = stripZW(e.innerText || '').trim();
                 return t.length > 0 || e.querySelector('br,img,[data-mention]');
               }).length;
-              const innerLines = flat.split(/\n+/).filter(x => x.trim()).length;
+              const NL = String.fromCharCode(10);
+              const innerLines = flat.split(NL).filter(x => x.trim()).length;
               const lines = Math.max(blocks, blocks === 0 ? innerLines : blocks);
-              const wantLines = String(exp).split(/\n+/).filter(x => x.trim()).length;
+              const wantLines = String(exp).split(NL).filter(x => x.trim()).length;
               const want = norm(exp);
               const gotNorm = norm(flat);
               return {ok: gotNorm === want && lines >= wantLines,
@@ -190,9 +192,14 @@ def fill_topics(page, topics, log_obj=None) -> dict:
         return {"declared": declared, "landed": [], "ok": False, "problems": ["描述编辑器不存在"]}
 
     def _count() -> int:
+        """话题芯片数（容忍多种结构：data-mention / span.topic / data-type=topic）。"""
         try:
             return int(page.evaluate(
-                "() => document.querySelectorAll('[data-mention=\"#\"]').length"))
+                """() => {
+                  const sel = '[data-mention], span.topic, span[data-type="topic"]';
+                  const ed = document.querySelector('div[contenteditable="true"]');
+                  return (ed || document).querySelectorAll(sel).length;
+                }"""))
         except Exception:  # noqa: BLE001 — 数不到就当归零
             return 0
 
@@ -203,10 +210,68 @@ def fill_topics(page, topics, log_obj=None) -> dict:
     except Exception:  # noqa: BLE001 — 按键失败就按原位置继续
         pass
 
+    def _caret_to_end() -> None:
+        """把光标放到编辑器内容真正末尾（芯片之后）—— 否则接着打字会覆盖前一个话题。"""
+        try:
+            page.evaluate(
+                """() => {
+                  const ed = document.querySelector('div[contenteditable="true"]');
+                  if (!ed) return false;
+                  ed.focus();
+                  const r = document.createRange();
+                  r.selectNodeContents(ed);
+                  r.collapse(false);
+                  const sel = window.getSelection();
+                  sel.removeAllRanges();
+                  sel.addRange(r);
+                  return true;
+                }""")
+            page.wait_for_timeout(120)
+        except Exception:  # noqa: BLE001 — 定位失败就按原位置继续
+            pass
+
+    def _drop_typed(tag: str) -> bool:
+        """只删掉「刚才敲进去的 #tag 纯文本」，绝不盲按 Backspace（会吃掉真话题芯片）。"""
+        try:
+            picked = page.evaluate(
+                """(kw) => {
+                  const ed = document.querySelector('div[contenteditable="true"]');
+                  if (!ed) return false;
+                  const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+                  let node = null, n;
+                  while ((n = walker.nextNode())) {
+                    const p = n.parentElement;
+                    if (p && p.closest('[data-mention], span.topic, span[data-type="topic"]')) continue;
+                    const t = (n.textContent || '').trim();
+                    if (t && (t === kw || t.endsWith(kw))) node = n;
+                  }
+                  if (!node) return false;
+                  const txt = node.textContent || '';
+                  const idx = txt.lastIndexOf(kw);
+                  if (idx < 0) return false;
+                  const r = document.createRange();
+                  r.setStart(node, idx);
+                  r.setEnd(node, idx + kw.length);
+                  const sel = window.getSelection();
+                  sel.removeAllRanges();
+                  sel.addRange(r);
+                  return true;
+                }""",
+                f"#{tag}",
+            )
+            if not picked:
+                return False
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(220)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     for tag in want:
         got = False
         for attempt in (1, 2):                   # 每个话题最多试两次（面板偶尔不刷新）
             before = _count()
+            _caret_to_end()
             page.keyboard.type(f"#{tag}", delay=160)
             clicked = ""
             for _ in range(16):                  # 最多等 ~4.8s 联想面板
@@ -228,15 +293,17 @@ def fill_topics(page, topics, log_obj=None) -> dict:
                 if clicked:
                     break
             page.wait_for_timeout(500)
-            if _count() > before:
+            _now = _count()
+            if _now > before:
                 landed.append(tag)
                 got = True
                 log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
                 break
-            # 没落地：把这几个字符退掉，重试
-            for _ in range(len(tag) + 1):
-                page.keyboard.press("Backspace")
-            page.wait_for_timeout(400)
+            # 没落地：只退掉刚敲的 #tag 纯文本再重试（不再盲按 Backspace）
+            if not _drop_typed(tag):
+                log.warning(f"[douyin] #{tag} 未落地且无法安全回退，停止重试")
+                break
+            page.wait_for_timeout(300)
         if not got:
             problems.append(f"#{tag} 无匹配联想项，已按纯文本留下")
             page.keyboard.type(f"#{tag} ", delay=60)
@@ -249,11 +316,13 @@ def fill_topics(page, topics, log_obj=None) -> dict:
     final_count = _count()
     tail = _editor_tail(page)
     stray = _stray_tail(tail, want)
+    # 真话题数不足：平台联想面板没给出该词（如 #Qwen4 无匹配）时属平台能力边界，
+    # 记 problem 但不阻断发布；**尾部游离文本才是必须拦的**（用户截图里的 `据隐私`/`wen4`）。
     if final_count < len(declared):
-        problems.append(f"真话题节点 {final_count} != 声明 {len(declared)}")
+        problems.append(f"真话题节点 {final_count} != 声明 {len(declared)}（按纯文本保留）")
     if stray:
         problems.append(f"描述尾部残留游离文本 {stray!r}")
-    ok = final_count >= len(declared) and not stray
+    ok = not stray
     if not ok:
         log.error(f"[douyin] 话题终态不合格：count={final_count}/{len(declared)} tail={tail!r} stray={stray!r}")
     return {"declared": declared, "landed": landed, "ok": ok, "problems": problems,
@@ -261,14 +330,27 @@ def fill_topics(page, topics, log_obj=None) -> dict:
 
 
 def _editor_tail(page, n: int = 24) -> str:
-    """描述编辑器末尾 n 个字符（去零宽），用于查游离文本。"""
+    """描述编辑器尾部 n 个字符（**只取纯文本，跳过话题芯片**）。
+
+    2026-11-18 真机教训：早先直接 slice innerText，会把这几个话题芯片的文字
+    （`#AI安全`）也算进尾部，于是把正常话题误判成残渣（实测误删 3 个真话题）。
+    """
     try:
         return str(page.evaluate(
             """(n) => {
               const ed = document.querySelector('div[contenteditable="true"]');
               if (!ed) return '';
-              const t = (ed.innerText || '').replace(/[\u200b\u200c\u200d\ufeff]/g, '');
-              return t.slice(-n);
+              const ZW = [0x200b, 0x200c, 0x200d, 0xfeff];
+              const strip = x => [...String(x || '')]
+                  .filter(c => !ZW.includes(c.codePointAt(0))).join('');
+              const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+              let out = '', node;
+              while ((node = walker.nextNode())) {
+                const p = node.parentElement;
+                if (p && p.closest('[data-mention], span.topic, span[data-type="topic"]')) continue;
+                out += strip(node.textContent || '');
+              }
+              return out.slice(-n);
             }""", n) or "")
     except Exception:  # noqa: BLE001
         return ""
@@ -290,25 +372,77 @@ def _stray_tail(tail: str, tags) -> str:
 
 
 def _repair_tail(page, tags, log) -> list:
-    """用真实按键退掉尾部游离文本（不改 DOM，React 状态同步）。"""
+    """清掉话题尾部游离文本（不改 DOM，用 Range 选中 + 原生 Backspace）。
+
+    2026-11-18 真机教训：早先版本「End + 连续 Backspace」在焦点落在正文而非末尾时
+    会把整段正文/话题芯片一起删掉（实测 count 6→0、正文只剩 \u200b）。现在：
+      1. 先用 JS 精确选中「尾部游离文本节点」（range.createContextualRange 到该文本）；
+      2. 按一次 Backspace（原生事件 → React 状态同步）；
+      3. 每次前后比 `[data-mention="#"]` 数量，**一旦减少立即中止**，并把这个情况报上去。
+    最多修 3 轮，每轮只删一个游离片段。
+    """
     fixed = []
-    for _ in range(6):
+    for _ in range(3):
         tail = _editor_tail(page)
         stray = _stray_tail(tail, tags)
         if not stray:
             break
+        before = _count_mentions(page)
+        selected = page.evaluate(
+            r"""(stray) => {
+              const ed = document.querySelector('div[contenteditable="true"]');
+              if (!ed) return false;
+              const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+              let node = null, n;
+              while ((n = walker.nextNode())) {
+                const ZW = [0x200b, 0x200c, 0x200d, 0xfeff];
+                const t = [...String(n.textContent || '')]
+                    .filter(c => !ZW.includes(c.codePointAt(0))).join('').trim();
+                if (t && t.endsWith(stray)) node = n;
+              }
+              if (!node) return false;
+              const txt = node.textContent || '';
+              const idx = txt.lastIndexOf(stray);
+              const r = document.createRange();
+              r.setStart(node, Math.max(0, idx));
+              r.setEnd(node, Math.min(txt.length, idx + stray.length));
+              const sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(r);
+              ed.focus();
+              return true;
+            }""",
+            stray,
+        )
+        if not selected:
+            log.warning(f"[douyin] 尾部游离文本 {stray!r} 无法定位（不是纯文本节点），放弃自动清理")
+            break
         try:
-            page.keyboard.press("End")
-            for _ in range(len(stray)):
-                page.keyboard.press("Backspace")
-            page.keyboard.press("Backspace")     # 连带吃掉前缀空格
-            page.wait_for_timeout(180)
-            fixed.append(stray)
-            log.warning(f"[douyin] 清掉话题尾部游离文本 {stray!r}")
+            page.keyboard.press("Backspace")   # 删掉选中的游离片段（一次，不连按）
+            page.wait_for_timeout(240)
         except Exception as exc:  # noqa: BLE001
             log.warning(f"[douyin] 清理尾部残渣失败：{type(exc).__name__}: {exc}")
             break
+        after = _count_mentions(page)
+        if after < before:
+            log.error(f"[douyin] 清理残渣误伤话题节点（{before}→{after}），中止清理")
+            fixed.append(f"{stray}(DAMAGED)")
+            break
+        fixed.append(stray)
+        log.warning(f"[douyin] 清掉话题尾部游离文本 {stray!r}（话题节点 {before}→{after}）")
     return fixed
+
+
+def _count_mentions(page) -> int:
+    try:
+        return int(page.evaluate(
+            """() => {
+                  const sel = '[data-mention], span.topic, span[data-type="topic"]';
+                  const ed = document.querySelector('div[contenteditable="true"]');
+                  return (ed || document).querySelectorAll(sel).length;
+                }"""))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def count_topics(page) -> int:

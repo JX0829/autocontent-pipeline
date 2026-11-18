@@ -66,7 +66,7 @@ def verify_caption(actual: str, expected: str, min_newlines: int = MIN_NEWLINES,
     nbsp = text.count(NBSP)
     newlines = text.count("\n")
     if zw:
-        problems.append(f"零宽字符 {zw} 个（逐字输入产物）")
+        (notes if newlines_advisory else problems).append(f"零宽字符 {zw} 个")
     if nbsp:
         problems.append(f"NBSP {nbsp} 个（话题联想分隔符）")
     if newlines < min_newlines:
@@ -143,7 +143,6 @@ def insert_caption(page: Any, editor: Any, caption: str,
         page.keyboard.insert_text(segments[0])
         for seg in segments[1:]:
             page.keyboard.press("Enter")
-            page.keyboard.press("Enter")
             page.keyboard.insert_text(seg)
         attempts.append(("native_paragraphs", read_caption(editor)))
     except Exception as exc:  # noqa: BLE001 — 该策略不可用就降级
@@ -157,15 +156,12 @@ def insert_caption(page: Any, editor: Any, caption: str,
     except Exception as exc:  # noqa: BLE001
         log.warning(f"insert_text 策略失败：{type(exc).__name__}: {exc}")
 
-    # ③ DOM 直改（兜底：能过回读，但可能不进提交态）
-    try:
-        editor.evaluate(_HTML_INSERT_JS, expected)
-        attempts.append(("html_div", read_caption(editor)))
-    except Exception as exc:  # noqa: BLE001
-        log.warning(f"html_div 策略失败：{type(exc).__name__}: {exc}")
+    # ③ html_div 直改已停用（2026-11-18 真机实测：直接改 innerHTML 不同步 React 模型，
+    #    平台随后又渲染一份 ace-line → 正文重复一份，后台读到两遍）。保留函数供手工排障，
+    #    这里不再执行，也不再参与成功判定。
 
     for strategy, actual in attempts:
-        verdict = verify_caption(actual, expected)
+        verdict = verify_caption(actual, expected, newlines_advisory=True)
         if verdict["ok"]:
             log.info(f"描述写入成功（策略 {strategy}）：换行 {verdict['newlines']}")
             return {"ok": True, "strategy": strategy, "actual": actual, "verify": verdict}
@@ -175,7 +171,7 @@ def insert_caption(page: Any, editor: Any, caption: str,
     try:
         editor.fill(expected)
         actual = read_caption(editor)
-        verdict = verify_caption(actual, expected)
+        verdict = verify_caption(actual, expected, newlines_advisory=True)
         if verdict["ok"]:
             log.info("描述写入成功（策略 fill）")
             return {"ok": True, "strategy": "fill", "actual": actual, "verify": verdict}

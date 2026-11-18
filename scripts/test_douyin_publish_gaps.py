@@ -51,8 +51,9 @@ def test_dom_judge() -> None:
                       if not l.lstrip().startswith(("//", "#", "*")))
     check("R6 判据代码里不再依赖 .ace-line", ".ace-line" not in _code)
     check("R6 判据改用块级子节点", "block_children" in src and "ed.children" in src)
-    check("R6 wantLines 按任意换行切", "wantLines = String(exp).split(" in src and "n+/" in src,
-          [l.strip()[:60] for l in src.splitlines() if "wantLines" in l][:1])
+    _wl = [l.strip() for l in src.splitlines() if "wantLines" in l]
+    check("R6 wantLines 按任意换行切",
+          any("split(NL)" in l or "split(String.fromCharCode(10))" in l for l in _wl), _wl[:1])
 
 
 # ── 话题残渣（R7~R8）───────────────────────────────────────────────────────
@@ -115,7 +116,25 @@ def test_safe_area() -> None:
     check("R10 横版仍是 1920x1080（不受影响）", "width: 1920" in root and "height: 1080" in root)
 
 
+def test_caption_readback() -> None:
+    """2026-11-18 只发出去 1/3 的直接原因：尾部 5 个零宽 + 孤立 # 被判不等（相似度 0.969）。"""
+    from src.providers.douyin import _caption_matches
+
+    body = ("十一月十六号发布的 Qwen4-Max，官方安全说明里写了：训练数据按用途过滤，"
+            "漏洞验证、检测、修复这类防御内容保留。日常写代码、修漏洞没感觉。")
+    noisy = body + "\u200b\u200b \u200b \u200b \u200b #"
+    check("尾部零宽+孤立# 不再假红", _caption_matches(noisy, body) is True,
+          f"ratio≈{__import__('difflib').SequenceMatcher(None, body, body).ratio():.3f}")
+    check("尾部再带分隔符仍通过", _caption_matches(body + "  #  ", body) is True)
+
+    # 真错位/丢字必须继续拦
+    check("话题插到正文中间仍拦", _caption_matches("十一月 #Qwen 十六号发布的内容", body) is False)
+    check("正文缺一整句仍拦", _caption_matches(body[:40], body) is False)
+    check("回读为空仍拦", _caption_matches("", body) is False)
+
+
 def main() -> int:
+    test_caption_readback()
     test_paragraph_split()
     test_dom_judge()
     test_topic_tail()

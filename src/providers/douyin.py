@@ -26,16 +26,57 @@ def _normalize_caption(text: str) -> str:
     return " ".join(s.split())
 
 
-def _caption_matches(actual: str, expected: str) -> bool:
-    """回读文本是否与期望一致（忽略零宽字符/空白差异）。
+_TAIL_NOISE = " #＃、,;；·.。\u3000\t\r\n"
 
-    用途：发布前自证。话题被插进正文中间时，归一化后的字符串顺序不同 → 判 False，
-    宁可拒绝发布也不能把「错位的简介」发出去。
+
+def _strip_tail_noise(s: str) -> str:
+    """去掉尾部纯噪声：零宽已在上一步删掉，这里清掉「孤立 #」与分隔符。"""
+    out = s
+    while out and out[-1] in _TAIL_NOISE:
+        out = out[:-1]
+    return out
+
+
+def _caption_matches(actual: str, expected: str) -> bool:
+    """回读文本是否与期望一致。
+
+    2026-11-18 事故（只发出去 1/3 的直接原因）：
+      写入本身是对的，但话题芯片插入后正文尾部会留 5 个零宽空格 + 一个孤立 `#`，
+      严格相等判等 → `CAPTION_MISMATCH` 假红，整条片被拦下不发布。
+
+    现在的判据（既要拦住真错位，又不能被尾部噪声骗）：
+      1. 归一化（删零宽/NBSP、压空白）后**严格相等** → 通过；
+      2. 否则算相似度，要求 ≥ 0.95 **且** 所有差异字符都落在末尾 12 个字符内、
+         且差异字符只可能是 `#` / 分隔符 / 空白 —— 这正是「芯片尾噪声」的形状；
+      3. 其余一律不通过（正文被重排、话题错位、丢字仍然拦）。
     """
     a, e = _normalize_caption(actual), _normalize_caption(expected)
     if not a:
         return False
-    return a == e
+    if a == e:
+        return True
+
+    a2, e2 = _strip_tail_noise(a), _strip_tail_noise(e)
+    if a2 == e2:
+        return True
+
+    import difflib
+
+    ratio = difflib.SequenceMatcher(None, a2, e2).ratio()
+    if ratio < 0.95:
+        return False
+    # 差异必须全部落在尾部 12 个字符内，且只可能是分隔/噪声字符
+    sm = difflib.SequenceMatcher(None, a2, e2)
+    tail_start = max(0, len(e2) - 12)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        extra = (a2[i1:i2] + e2[j1:j2])
+        if min(i1, j1) < tail_start:
+            return False
+        if any(ch not in _TAIL_NOISE for ch in extra):
+            return False
+    return True
 
 # 可见性目标：publish_mode → (中文标签名, 候选选择器)。
 # 选择器全落空时 fail-closed —— 绝不"找不到就按默认发"，
@@ -354,9 +395,27 @@ class DouyinProvider(BaseSocialProvider):
                     filled_text = (caption_editor.inner_text() or "").strip() if editor_ok else ""
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"简介回读失败: {exc}")
-                # 话题现在是编辑器里的真节点，innerText 里会多出 "#话题"（带 &nbsp;），
-                # 所以先把话题词剥掉再和正文比，话题是否生效由 topics_ok 单独判定。
-                _body_view = (filled_text or "").split("#")[0]
+                # 2026-11-18：话题已是编辑器里的真节点，innerText 会把它一起带出来，
+                # 原先 `split("#")[0]` 在「芯片不以 # 开头」时会漏字 → CAPTION_MISMATCH 假红。
+                # 现在只取「芯片之外的文本节点」拼回正文再比；话题是否生效由 topics_ok 单独判。
+                _body_view = filled_text or ""
+                if editor_ok:
+                    try:
+                        _body_view = str(page.evaluate(
+                            """() => {
+                              const ed = document.querySelector('div[contenteditable="true"]');
+                              if (!ed) return '';
+                              const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+                              let out = '', node;
+                              while ((node = walker.nextNode())) {
+                                const p = node.parentElement;
+                                if (p && p.closest('[data-mention], span.topic, span[data-type="topic"]')) continue;
+                                out += node.textContent || '';
+                              }
+                              return out;
+                            }""") or "").strip()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"正文（去芯片）回读失败，退回 innerText: {exc}")
                 if filled_text and not _caption_matches(_body_view, full_text):
                     logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:120]!r}")
                     browser.close()
