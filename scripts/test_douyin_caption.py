@@ -121,33 +121,41 @@ def test_verify() -> None:
     flat = cap.replace("\n\n", " ")
     check("反向：换行被吞 → 不合格", verify_caption(flat, cap)["ok"] is False)
 
+    # 2026-11-18 真机：零宽/NBSP 是**平台自己塞的**（空编辑器占位、话题分隔），
+    # 只要去掉后正文一致就不能判失败；但「塞进来的字符替换了正文」仍然不合格。
     dirty = cap.replace("#英伟达", "\u200b\xa0#英伟达\xa0")
-    check("反向：夹带零宽/NBSP → 不合格", verify_caption(dirty, cap)["ok"] is False)
+    d = verify_caption(dirty, cap)
+    check("容忍平台注入的零宽/NBSP（仅记录计数）", d["ok"] is True and d["zw"] > 0, str(d))
+    replaced = cap.replace("辞去", "\xa0\u200b去")
+    check("反向：零宽/NBSP 顶掉正文字符 → 不合格", verify_caption(replaced, cap)["ok"] is False)
 
     check("反向：正文被改字 → 不合格", verify_caption(cap.replace("辞去", "卸任"), cap)["ok"] is False)
 
 
 def test_insert() -> None:
     cap = build_caption(TITLE, DESC, TAGS)
+    segs = [s for s in cap.split("\n") if s.strip()]
 
-    # ① 原生造段正常（首选策略）
+    # ① 原生造段正常（首选策略）：段间**单 Enter**（R4 真机结论：单 Enter 就保留分段，
+    #    双 Enter 会多占一行，而抖音展示区只露 2~3 行）
     ed = FakeEditor({"insert_text": lambda v: v, "press": True, "append": True})
     r = insert_caption(FakePage(ed), ed, cap)
     check("原生造段成功即采用", r["ok"] and r["strategy"] == "native_paragraphs", str(r["strategy"]))
-    check("原生造段用了 Enter×2 而不是逐字",
-          ed.calls.count("press(Enter)") == 4 and "insert_text" in ed.calls, str(ed.calls[:8]))
+    check("原生造段用单 Enter（段数-1 次）而不是逐字",
+          ed.calls.count("press(Enter)") == len(segs) - 1 and "insert_text" in ed.calls,
+          f"{ed.calls[:10]} segs={len(segs)}")
 
-    # ② 原生造段被压平 → 整段 insert_text 成功
-    ed = FakeEditor({"insert_text": lambda v: v.replace("\n\n", " "), "press": True,
-                     "evaluate": lambda v: v})
+    # ② 原生造段被压平 → 整段 insert_text 兜底（此前是 html_div，已按 R4 结论删除）
+    ed = FakeEditor({"insert_text": lambda v: v, "press": lambda k: None,
+                     "evaluate": lambda v: v.replace("\n", " ")})
     r = insert_caption(FakePage(ed), ed, cap)
-    check("原生造段压平时用 html_div 兜底", r["ok"] and r["strategy"] == "html_div",
-          f"{r['strategy']} problems={r['verify']['problems']}")
+    check("原生造段失败时用 insert_text 兜底（不再有 html_div）",
+          r["strategy"] in ("insert_text", "fill"), f"{r['strategy']}")
 
-    # ③ 原生不可用 → DOM 兜底仍能写进去
-    ed = FakeEditor({"evaluate": lambda v: v})
-    r = insert_caption(FakePage(ed), ed, cap)
-    check("原生不可用时 DOM 兜底", r["ok"] and r["strategy"] == "html_div", r["strategy"])
+    # ③ 源码层面确认伪兜底已删：它「能过回读但不进 React 提交态」，是另一个 bug
+    src = (PROJ / "src/utils/douyin_caption.py").read_text(encoding="utf-8")
+    check("html_div 伪兜底已从源码删除",
+          "_HTML_INSERT_JS" not in src and '"html_div"' not in src)
 
     # ④ 所有策略都被压平 → 必须报不合格（不静默）
     ed = FakeEditor({"evaluate": lambda v: v.replace("\n\n", " "),

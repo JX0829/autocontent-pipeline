@@ -22,7 +22,6 @@ from typing import Any, Iterable, List, Optional, Sequence
 
 INVISIBLE = "\u200b\u200c\u200d\ufeff"   # 零宽字符（话题芯片插入的产物）
 NBSP = "\xa0"
-MIN_NEWLINES = 2                          # 标题 / 简介 / 话题 三段 = 至少 2 个换行
 
 
 def _norm_tag(t: Any) -> str:
@@ -50,48 +49,35 @@ def normalize(actual: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
-def verify_caption(actual: str, expected: str, min_newlines: int = MIN_NEWLINES) -> dict:
-    """回读校验。返回 {ok, problems, newlines, zw, nbsp}，problems 为空即合格。"""
+def verify_caption(actual: str, expected: str, min_newlines: Optional[int] = None) -> dict:
+    """回读校验。返回 {ok, problems, newlines, want_newlines, zw, nbsp}。
+
+    两个真机教训（2026-11-18）：
+    1. `min_newlines` 不能写死常量。单段简介本来只有 0 个换行，旧判据硬要求 ≥2 →
+       永远红（A5 的 `lines:0 / wantLines:1` 假红就是同一类病）。现在按**期望文本的段数**算。
+    2. 零宽字符是**平台自己塞的**（空编辑器占位、话题分隔），只要去掉后正文一致就不该判失败，
+       仅作为 `zw` 记录出来；NBSP 同理。
+    """
     text = str(actual or "")
     problems: List[str] = []
     zw = sum(text.count(c) for c in INVISIBLE)
     nbsp = text.count(NBSP)
     newlines = text.count("\n")
-    if zw:
-        problems.append(f"零宽字符 {zw} 个（逐字输入产物）")
-    if nbsp:
-        problems.append(f"NBSP {nbsp} 个（话题联想分隔符）")
-    if newlines < min_newlines:
-        problems.append(f"换行只有 {newlines} 个，应为 ≥{min_newlines}（段落被压平）")
+    exp = str(expected or "")
+    want_newlines = max(0, len([s for s in re.split(r"\n+", exp) if s.strip()]) - 1)
+    need = want_newlines if min_newlines is None else min_newlines
+    if newlines < need:
+        problems.append(f"换行只有 {newlines} 个，应为 ≥{need}（段落被压平）")
     a, e = normalize(text), normalize(expected)
     if a != e:
         i = next((k for k in range(min(len(a), len(e))) if a[k] != e[k]), min(len(a), len(e)))
         problems.append(f"正文不一致（首个差异在第 {i} 字：实际 {a[i:i + 12]!r} vs 期望 {e[i:i + 12]!r}）")
-    return {"ok": not problems, "problems": problems, "newlines": newlines, "zw": zw, "nbsp": nbsp}
+    return {"ok": not problems, "problems": problems, "newlines": newlines,
+            "want_newlines": need, "zw": zw, "nbsp": nbsp}
 
 
-# ── 写入：一次插入，不逐字符 ────────────────────────────────────
-_HTML_INSERT_JS = """
-(editor, text) => {
-  // 按空行切段，每段一个 <div>：contenteditable 只认块级元素当换行，
-  // 直接插裸 \\n 会被折叠成空格（这正是旧写法被压平的机理）。
-  editor.innerHTML = '';
-  const paragraphs = String(text).split(/\\n{2,}/);
-  for (const p of paragraphs) {
-    const div = document.createElement('div');
-    for (const line of p.split('\\n')) {
-      const span = document.createElement('span');
-      span.textContent = line;
-      div.appendChild(span);
-      div.appendChild(document.createElement('br'));
-    }
-    if (!div.textContent) div.appendChild(document.createElement('br'));
-    editor.appendChild(div);
-  }
-  editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
-  return editor.innerText;
-}
-"""
+# ── 写入：一次插入，不逐字符（html_div 伪兜底已于 R4 实测后删除）───────────
+
 
 
 def read_caption(editor: Any) -> str:
@@ -103,15 +89,42 @@ def read_caption(editor: Any) -> str:
         return ""
 
 
+def focus_end(page: Any, editor: Any) -> None:
+    """把光标放到编辑器内容末尾并聚焦（键盘事件才会打到正文里）。"""
+    try:
+        editor.click()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        page.evaluate(
+            """(ed) => {
+              ed.focus();
+              const r = document.createRange();
+              r.selectNodeContents(ed);
+              r.collapse(false);
+              const s = window.getSelection();
+              s.removeAllRanges();
+              s.addRange(r);
+            }""", editor.element_handle())
+    except Exception:  # noqa: BLE001 — 拿不到 handle 就只靠 click+focus
+        pass
+
+
 def insert_caption(page: Any, editor: Any, caption: str,
                    logger: Optional[logging.Logger] = None) -> dict:
     """一次性写入描述，逐级降级；返回 {ok, strategy, detail}。
 
-    策略顺序（**原生事件优先**，DOM 直改兜底）：
-      1. `native_paragraphs` —— `insert_text` 写段 + `Enter`×2 造段（原生按键 → React 状态同步）；
-      2. `insert_text`       —— 整段 `page.keyboard.insert_text`（单次 Input.insertText）；
-      3. `html_div`          —— JS 直接改 innerHTML（**只改 DOM，不改 React 状态**：
-         2026-11-15 实测出现过「回读正常、发布作品却是『无作品描述』」，所以只当兜底）。
+    **R4 真机 A/B 结论（2026-11-18，scripts/probe_douyin_desc_ab.py 实测）**：
+    ACE 编辑器吃**真实回车事件**，不吃 HTML 结构——
+      · `insert_text` + `Enter` 造段 → `.ace-line` 3/5/7 个，段落完整保留；
+      · `execCommand('insertHTML', '<div>…</div>')` → **全部压平成 1 个 `.ace-line`**，
+        且 React 提交态为空（历史事故：回读正常、作品却「无作品描述」）。
+    所以：原生按键是唯一可靠写法，`html_div` 已删除（它不是兜底，是另一个 bug）。
+
+    策略顺序：
+      1. `native_paragraphs` —— `insert_text` 写段 + **单 Enter** 造段
+         （单 Enter 已足够分行；双 Enter 会多占一行，而抖音展示区只露 2~3 行）；
+      2. `insert_text`       —— 整段一次 `insert_text`（含换行字符，交给编辑器自己处理）；
     """
     log = logger or logging.getLogger(__name__)
     expected = caption.strip()
@@ -124,14 +137,18 @@ def insert_caption(page: Any, editor: Any, caption: str,
 
     attempts = []
 
-    # ① 原生按键造段：段间 Enter×2 —— 编辑器自己生成块级节点，React 状态同步
+    # ① 原生按键造段：段间单 Enter —— 编辑器自己生成 .ace-line，React 状态同步
+    #    **每次按键前都把光标钉回编辑器末尾**：真机实测（2026-11-18）先填过「作品标题」
+    #    后，焦点可能留在标题框，Enter 就发到别处 —— 正文因此一行都分不开（lines=0）。
     try:
         editor.fill("")
-        segments = [seg for seg in expected.split("\n\n")]
+        focus_end(page, editor)
+        segments = [seg for seg in expected.split("\n") if seg.strip()]
         page.keyboard.insert_text(segments[0])
         for seg in segments[1:]:
+            focus_end(page, editor)
             page.keyboard.press("Enter")
-            page.keyboard.press("Enter")
+            focus_end(page, editor)
             page.keyboard.insert_text(seg)
         attempts.append(("native_paragraphs", read_caption(editor)))
     except Exception as exc:  # noqa: BLE001 — 该策略不可用就降级
@@ -145,12 +162,8 @@ def insert_caption(page: Any, editor: Any, caption: str,
     except Exception as exc:  # noqa: BLE001
         log.warning(f"insert_text 策略失败：{type(exc).__name__}: {exc}")
 
-    # ③ DOM 直改（兜底：能过回读，但可能不进提交态）
-    try:
-        editor.evaluate(_HTML_INSERT_JS, expected)
-        attempts.append(("html_div", read_caption(editor)))
-    except Exception as exc:  # noqa: BLE001
-        log.warning(f"html_div 策略失败：{type(exc).__name__}: {exc}")
+    # ③ html_div 兜底已删除：R4 实测它必然把段落压平且不进 React 提交态，
+    #    留着只会「回读正常、发布无描述」，属于伪兜底（见本函数 docstring）。
 
     for strategy, actual in attempts:
         verdict = verify_caption(actual, expected)
