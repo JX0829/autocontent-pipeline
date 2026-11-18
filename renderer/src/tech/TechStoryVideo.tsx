@@ -7,6 +7,7 @@ import {
   Sequence,
   staticFile,
   useCurrentFrame,
+  useVideoConfig,
   Easing,
 } from 'remotion';
 import TL from './tech_scene_timeline.json';
@@ -33,6 +34,19 @@ import TL from './tech_scene_timeline.json';
 const ACCENT = '#5ED8FF';
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
 const PAD_FRAMES = 14; // 段落尾部留白（与 build 侧 PAD 一致，用于口播避让判断）
+
+/**
+ * 左右安全边距（2026-11-18）
+ *
+ * 竖版 1080 宽：抖音信息流会把左右各裁掉约 9%，原来的 88/70 被裁完就贴边了
+ * （用户原话「视频号有边距、抖音没有」——同一条视频，抖音把留白裁没了）。
+ * 提到 120（11.1%），裁 9% 后仍剩 ~23px。抖音和视频号都吃竖版，一处改两平台生效。
+ * 横版 1920 宽维持 88 不变，避免无谓改动影响 B站。
+ */
+const SAFE_X_VERTICAL = 120;
+const SAFE_X_LANDSCAPE = 88;
+const useSafeX = (): number =>
+  (useVideoConfig().width >= 1600 ? SAFE_X_LANDSCAPE : SAFE_X_VERTICAL);
 
 type SceneLike = {
   index: number;
@@ -135,6 +149,7 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
   title, subtitle, kicker, take,
 }) => {
   const frame = useCurrentFrame();
+  const safeX = useSafeX();
   const t = (a: number, b: number) =>
     interpolate(frame, [a, b], [0, 1], { easing: Easing.out(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const lineW = interpolate(frame, [40, 74], [0, 150], {
@@ -142,7 +157,7 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
   });
 
   return (
-    <div style={{ position: 'absolute', left: 88, right: 88, top: 190 }}>
+    <div style={{ position: 'absolute', left: safeX, right: safeX, top: 190 }}>
       <div style={{ fontFamily: FONT, fontSize: 24, letterSpacing: 8, color: ACCENT, opacity: t(8, 30) }}>
         {kicker}
       </div>
@@ -193,11 +208,12 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
     easing: Easing.out(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
   const no = String(scene.index).padStart(2, '0');
+  const safeX = useSafeX();
 
   return (
     <div
       style={{
-        position: 'absolute', left: 88, right: 88, top: 200,
+        position: 'absolute', left: safeX, right: safeX, top: 200,
         display: 'flex', alignItems: 'flex-start', gap: 26, opacity: t,
         transform: `translateY(${interpolate(t, [0, 1], [18, 0])}px)`,
       }}
@@ -235,6 +251,7 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
 /* ── 底部字幕 ── */
 const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   const frame = useCurrentFrame();
+  const safeX = useSafeX();
   const fadeIn = interpolate(frame, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const fadeOut = interpolate(frame, [scene.frames - 10, scene.frames], [1, 0], {
     extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
@@ -242,7 +259,7 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: 70, right: 70, bottom: 168,
+        position: 'absolute', left: safeX, right: safeX, bottom: 168,
         display: 'flex', justifyContent: 'center', opacity: fadeIn * fadeOut,
       }}
     >
@@ -275,6 +292,7 @@ const Progress: React.FC<{ total: number }> = ({ total }) => {
 };
 
 export const TechStoryVideo: React.FC<TechProps> = (props) => {
+  const safeX2 = useSafeX();
   const cfg = normalize(props);
   const first = cfg.scenes[0];
   const bodyStart = first ? first.frames : 0;
@@ -350,7 +368,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
 
       <div
         style={{
-          position: 'absolute', left: 88, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', left: safeX2, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >

@@ -52,8 +52,26 @@ DISPATCH_MODE=output_only $PY -m src.pipeline.runner \
 | `video.mp4` | 竖版 1080x1920（抖音、视频号） |
 | `video_16_9.mp4` | 横版（B站） |
 | `cover.png` / `cover_16_9.png` | 两版封面 |
+| `video_body.mp4` | 竖版**正片**（去掉片头封面段，出问题用它比对） |
 | `draft_script.json` | 脚本+分镜（改文案要从这里改或换物料） |
 | `artifacts.txt` | 本次产物清单 |
+
+### 2.1.1 封面 = 片头首帧（2026-11-18 起，不用再单独上传封面）
+
+竖版渲染完会自动把 `cover.png` **贴到成片最前面静止播放 0.5s**，然后接正片：
+
+| 项 | 值 |
+|---|---|
+| 时长 | 正片时长 + 0.50s |
+| 首帧 | 就是 `cover.png`（PSNR 42dB，肉眼一致） |
+| 口播 | 音频整体后移 0.5s，不脱轨（前 0.45s 静音，实测 -91dB） |
+| 失败 | `COVER_PREPEND_FAILED`，并把 `video_body.mp4` 恢复成 `video.mp4`，不产半成品 |
+
+**所以：抖音/视频号都不需要再上传封面**——平台默认取首帧，首帧已经是封面。
+抖音上传页的「设置封面」控件一直不稳定，这条链路不再依赖它（也不再新建上传能力）。
+横版（B站）不受影响，仍走自己的 `cover_16_9.png`。
+
+回归：`scripts/test_cover_prepend.py`（已挂 `verify_all --fast`）。
 
 ### 2.2 干跑看计划（不调模型、不写库）
 
@@ -194,6 +212,10 @@ $PY -m src.pipeline.runner --material materials/20261118_openai_chile.json \
 | 视频号 | `video.mp4` | `channels-tech-main` | **必须 CDP 9334 常驻有头**（无头一律失败）；登录态常过期，见 §7.3 |
 
 通用：`publish.aspect` 必须留空（写了就强制覆盖，会短路上面的平台映射）。
+封面：竖版首帧即封面（§2.1.1），**三平台都不做单独封面上传**；横版用 `cover_16_9.png`。
+
+竖版安全边距：模板 120px（11.1%），因为抖音信息流会裁掉左右各约 9%（原 88px 裁完贴边）。
+`scripts/audit_safe_area.py` 防回退，已挂 `verify_all`。
 
 ### 5.4 结果口径（只认这三态）
 
