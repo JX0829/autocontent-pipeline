@@ -73,6 +73,11 @@ DISPATCH_MODE=output_only $PY -m src.pipeline.runner \
 
 回归：`scripts/test_cover_prepend.py`（已挂 `verify_all --fast`）。
 
+**封面文案必须活在 3:4 里**（2026-11-18）：抖音个人主页/作品列表把 9:16 封面按 3:4 居中
+裁剪显示，1080x1920 只剩 y∈[240,1680]。封面文案块底部内边距从 210 收到 **260**
+（块底 y=1660），最低文字实测 y=1640，留 40px 余量。回归 `scripts/test_cover_34_safe.py`
+（静态判据 + 真渲染长文案），已挂 `verify_all --fast`。
+
 ### 2.2 干跑看计划（不调模型、不写库）
 
 ```bash
