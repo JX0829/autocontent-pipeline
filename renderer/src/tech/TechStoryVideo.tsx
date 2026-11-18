@@ -11,6 +11,7 @@ import {
   Easing,
 } from 'remotion';
 import TL from './tech_scene_timeline.json';
+import { PLATE_SPECS, fitPlateText, pickContrastSafe, textEm } from './plateFit';
 
 /**
  * 科技类视频模板（TechStoryVideo）· 全屏 AI 视频素材版
@@ -61,6 +62,8 @@ type SceneLike = {
 export type TechProps = {
   fps?: number;
   total_duration_in_frames?: number;
+  /** 方案B「底板大字」：'bigtext' 才启用；不传 = 与现在完全一致（R1 缺省关闭） */
+  plate_style?: string;
   cover_main_text?: string;
   cover_sub_text?: string;
   theme?: string;
@@ -100,6 +103,7 @@ const normalize = (props: TechProps) => {
     return {
       total: props.total_duration_in_frames || 900,
       kicker: KICKER[props.theme || ''] || '科技速递',
+      plateStyle: props.plate_style === 'bigtext',
       title: props.cover_main_text || props.title || '',
       subtitle: props.cover_sub_text || '',
       open: props.assets?.open ?? null,
@@ -123,6 +127,7 @@ const normalize = (props: TechProps) => {
   return {
     total: TL.total,
     kicker: TL.kicker,
+    plateStyle: false,
     title: TL.title,
     subtitle: TL.subtitle,
     open: DEFAULTS.open,
@@ -249,18 +254,71 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
 };
 
 /* ── 底部字幕 ── */
-const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
+/** 方案B「底板大字」（SPEC-20261116 §2）：大字 + 实底底板，缺省关闭。
+ *  判定全在 `plateFit.ts` 的纯函数里（降档/折行/对比度），这里只负责画。 */
+const PlateSubtitles: React.FC<{ scene: SceneLike; aspect: 'portrait' | 'landscape'; opacity: number }> = ({
+  scene, aspect, opacity,
+}) => {
+  const spec = PLATE_SPECS[aspect];
+  const text = (scene.label || scene.narration || '').trim();
+  const fit = fitPlateText(text, aspect);
+  if (!fit.ok) return null;                  // 装不下不回退截断，交给调用方用旧样式（R4）
+  const verdict = pickContrastSafe('#FFFFFF', '#050810', '#FFFFFF', 7);
+  if (!verdict.ok) return null;              // 对比度不达标同样回退（R5）
+  // 底板宽度必须把 letterSpacing 算进去：按「纯字宽」算会差 1px/字，
+  // 真机就撞出「出海新路 / 线」这种把最后一个字挤到第二行的丑样（23:00 抽帧发现）。
+  const LS = 1;
+  const widest = Math.max(
+    ...fit.lines.map((ln) => textEm(ln) * fit.fontSize + LS * Array.from(ln).length),
+  );
+  const width = Math.min(spec.maxPlateWidthHard, Math.ceil(widest + spec.padX * 2 + 2));
+  return (
+    <div
+      style={{
+        position: 'absolute', left: 0, right: 0, bottom: spec.bottom,
+        display: 'flex', justifyContent: 'center', opacity,
+      }}
+    >
+      <div
+        style={{
+          width, maxWidth: spec.maxPlateWidthHard, padding: `${spec.padY}px ${spec.padX}px`,
+          borderRadius: spec.radius, background: `rgba(5,8,16,${spec.opacity})`,
+          fontFamily: FONT, color: verdict.fg, fontWeight: 900,
+          fontSize: fit.fontSize, lineHeight: spec.lineHeight, letterSpacing: 1,
+          textAlign: 'center',
+        }}
+      >
+        {fit.lines.map((ln, i) => (
+          <div key={i} style={{ whiteSpace: 'nowrap' }}>{ln}</div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const Subtitles: React.FC<{ scene: SceneLike; plate?: boolean; aspect?: 'portrait' | 'landscape' }> = ({
+  scene, plate, aspect,
+}) => {
   const frame = useCurrentFrame();
   const safeX = useSafeX();
   const fadeIn = interpolate(frame, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const fadeOut = interpolate(frame, [scene.frames - 10, scene.frames], [1, 0], {
     extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
+  const fade = fadeIn * fadeOut;
+  if (plate) {
+    // 装不下 / 对比度不达标时 PlateSubtitles 返回 null → 这里按 R4/R5 回退现样式
+    const plateEl = (
+      <PlateSubtitles scene={scene} aspect={aspect || 'portrait'} opacity={fade} />
+    );
+    const fits = fitPlateText((scene.label || scene.narration || '').trim(), aspect || 'portrait');
+    if (fits.ok) return plateEl;
+  }
   return (
     <div
       style={{
         position: 'absolute', left: safeX, right: safeX, bottom: 168,
-        display: 'flex', justifyContent: 'center', opacity: fadeIn * fadeOut,
+        display: 'flex', justifyContent: 'center', opacity: fade,
       }}
     >
       <div
@@ -293,6 +351,7 @@ const Progress: React.FC<{ total: number }> = ({ total }) => {
 
 export const TechStoryVideo: React.FC<TechProps> = (props) => {
   const safeX2 = useSafeX();
+  const isLandscape = useVideoConfig().width >= 1600;
   const cfg = normalize(props);
   const first = cfg.scenes[0];
   const bodyStart = first ? first.frames : 0;
@@ -358,7 +417,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
           ) : (
             <SceneTag scene={s} />
           )}
-          <Subtitles scene={s} />
+          <Subtitles scene={s} plate={cfg.plateStyle} aspect={isLandscape ? 'landscape' : 'portrait'} />
           {s.audio ? <Audio src={staticFile(s.audio)} volume={1} /> : null}
           <Audio src={staticFile(s.index === 0 ? 'sfx/ding.wav' : 'sfx/whoosh.wav')} volume={0.18} />
         </Sequence>

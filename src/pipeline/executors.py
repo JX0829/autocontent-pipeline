@@ -287,6 +287,19 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     if _composition_for(props_data) == "TechStoryVideo":
         _attach_assets(ctx, props_data)
 
+    # SPEC-20261116 R1：底板大字**缺省关闭**。只有 draft_script 显式写
+    # `plate_style: "bigtext"` 才透传；不写时 props 里连这个键都不出现 → 渲染结果与现在逐帧一致（A5）。
+    _draft_doc: dict[str, Any] = {}
+    try:                                     # 缺文件/坏 JSON 一律当没声明 → 缺省关闭
+        _dp = ctx.out("draft_script.json")
+        if _dp.exists():
+            _draft_doc = json.loads(_dp.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        _draft_doc = {}
+    _plate_style = str(_draft_doc.get("plate_style") or "").strip().lower()
+    if _plate_style == "bigtext":
+        props_data["plate_style"] = "bigtext"
+
     # F-2026-11-12 M2：课文物料把 textbook/compliance 透传给渲染层 ——
     # 竖排原文取 full_text，片尾固定标注教材版本（spec F7）。科技物料不带这两块，行为不变。
     if str((ctx.material or {}).get("content_type") or "") == "textbook_story":

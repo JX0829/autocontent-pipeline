@@ -58,6 +58,12 @@ run "抖音话题真生效"       "$PY" scripts/test_douyin_topics_contract.py
 run "发布凭证回查"        "$PY" scripts/test_publish_evidence.py
 run "僵尸 RUNNING 收尸"   "$PY" scripts/test_stale_runs.py
 run "cron pin 巡检"       "$PY" scripts/audit_cron_pin.py
+# SPEC-20261116 R4/R5：底板大字的降档/折行/对比度判定是纯函数，直接跑 TS 单测（Node 原生剥类型，零依赖）
+if command -v node >/dev/null 2>&1; then
+  run "底板大字 plateFit 单测" node --experimental-strip-types renderer/src/tech/plateFit.test.ts
+else
+  echo "  ⚠️ 跳过 底板大字 plateFit 单测（未找到 node）"
+fi
 
 if [ "$MODE" != "fast" ]; then
   run "GATE-1 声明层契约"   bash scripts/gate1.sh
