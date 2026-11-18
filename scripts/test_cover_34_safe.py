@@ -27,6 +27,7 @@ PROJ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJ))
 
 CARD = PROJ / "renderer" / "src" / "tech" / "TechCoverCard.tsx"
+FRAME = PROJ / "renderer" / "src" / "tech" / "coverFrame.ts"   # 版式常量唯一事实源
 HEIGHT = 1920
 SAFE_TOP = 240
 SAFE_BOTTOM = 1680
@@ -50,12 +51,13 @@ def main() -> int:
         print(f"❌ 封面模板不存在: {CARD}")
         return 1
     src = CARD.read_text(encoding="utf-8")
+    frame_src = FRAME.read_text(encoding="utf-8") if FRAME.exists() else ""
 
-    pad_x = _num(src, "COVER_PORTRAIT_PAD_X")
-    offset_y = _num(src, "COVER_PORTRAIT_OFFSET_Y")
-    main_size = _num(src, "COVER_MAIN_SIZE")
-    safe_top = _num(src, "COVER_SAFE_34_TOP", SAFE_TOP)
-    safe_bottom = _num(src, "COVER_SAFE_34_BOTTOM", SAFE_BOTTOM)
+    pad_x = _num(frame_src, "COVER_PAD_X")
+    offset_y = _num(frame_src, "COVER_OFFSET_Y")
+    main_size = _num(frame_src, "COVER_MAIN_SIZE")
+    safe_top = _num(frame_src, "COVER_SAFE_34_TOP", SAFE_TOP)
+    safe_bottom = _num(frame_src, "COVER_SAFE_34_BOTTOM", SAFE_BOTTOM)
 
     check("① 3:4 常量一致（240 / 1680）", safe_top == SAFE_TOP and safe_bottom == SAFE_BOTTOM,
           f"{safe_top} / {safe_bottom}")
@@ -73,7 +75,7 @@ def main() -> int:
     check("④ 水平边距 ≥ 64px", pad_x >= 64, f"{pad_x}px")
     check("⑤ 主标题字号已收敛（≤88）", 60 <= main_size <= 88, f"{main_size}px")
     check("⑥ 版式确为居中", "justifyContent: 'center'" in src and "textAlign: 'center'" in src
-          and "COVER_PORTRAIT_OFFSET_Y" in src, "justifyContent/textAlign/offset 均就位")
+          and "COVER_OFFSET_Y" in src, "justifyContent/textAlign/offset 均就位")
 
     # ⑦ 底图结构：中间 3:4 清晰、上下虚化填充（不再把真实画面裁一半）
     try:

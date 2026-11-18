@@ -1,3 +1,6 @@
+// LEGACY-COVER: 旧版海报式封面，未纳入 2026-11-18 统一封面规范
+// （居中版式 / 3:4 安全区 / 无字底图）。新模板请复用 tech/coverFrame.ts + TechCoverCard，
+// 禁止照抄本文件。B站横版仍在用，改造前先跑 scripts/test_cover_34_safe.py 确认范围。
 import React from 'react';
 import { AlignedRenderPayload } from '../types';
 import { useTemplate } from '../templates/context';

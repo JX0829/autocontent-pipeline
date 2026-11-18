@@ -339,6 +339,9 @@ export const TextbookLandscapeVideo: React.FC<AlignedRenderPayload> = (props) =>
 
 /* ------------------------------------------------------------------ 封面静帧 */
 
+// LEGACY-COVER: 课文线封面（TextbookCoverStill / TextbookLandscapeCover）还是旧版式，
+// 未纳入 2026-11-18 统一封面规范。课文本线上线前必须迁到 tech/coverFrame.ts 常量
+// 并跑通 scripts/test_cover_34_safe.py，否则抖音 3:4 裁剪会切字。
 export const TextbookCoverStill: React.FC<AlignedRenderPayload> = (props) => (
   <AbsoluteFill>
     <CoverVertical props={props} />
