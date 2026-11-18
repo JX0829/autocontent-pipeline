@@ -58,6 +58,12 @@ SKIP_DIRS = {"__pycache__", "_deprecated", "backup", "node_modules", ".venv", "e
 # 注意：豁免只认 scripts/test_*.py 这一种命名，别把业务脚本写成 test_ 前缀。
 TEST_EXEMPT = re.compile(r"^scripts/test_[A-Za-z0-9_]+\.py$")
 
+# 验收用真机 harness：**只跑 stop_before_publish=True**（只上传+填表+回读，不点发布/发表），
+# 是 A1~A7 证据的唯一产出方式，走不通 runner（runner 会真发）。显式列名，不靠前缀猜。
+LIVE_VERIFY_EXEMPT = {
+    "scripts/verify_publish_gaps.py",
+}
+
 
 def iter_py(root: Path):
     for d in SCAN_DIRS:
@@ -81,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for p in iter_py(PROJ):
         rel = p.relative_to(PROJ).as_posix()
-        exempt = bool(TEST_EXEMPT.match(rel))
+        exempt = bool(TEST_EXEMPT.match(rel)) or rel in LIVE_VERIFY_EXEMPT
         try:
             lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
         except (OSError, UnicodeDecodeError) as exc:

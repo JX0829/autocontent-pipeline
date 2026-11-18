@@ -53,6 +53,8 @@ run "发布台账语义"        "$PY" scripts/test_publish_ledger.py
 run "发布结论唯一(一张卡)" "$PY" scripts/test_publish_report.py
 run "视频号话题真生效"     "$PY" scripts/test_channels_topics_contract.py
 run "抖音话题真生效"       "$PY" scripts/test_douyin_topics_contract.py
+run "抖音简介三段式(造段/判据)" "$PY" scripts/test_douyin_caption.py
+run "发布缺口(封面/分段/残渣/边距)" "$PY" scripts/test_publish_gaps.py
 run "发布凭证回查"        "$PY" scripts/test_publish_evidence.py
 run "僵尸 RUNNING 收尸"   "$PY" scripts/test_stale_runs.py
 run "cron pin 巡检"       "$PY" scripts/audit_cron_pin.py

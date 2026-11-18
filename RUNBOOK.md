@@ -1198,6 +1198,26 @@ $PY -m src.pipeline.runner --material materials/<物料>.json \
 
 ## 8. 验收 / 自检
 
+### 8.x 发布缺口验收（封面/分段/话题/安全边距，2026-11-18）
+
+真机证据**只在这两条命令里产出**，都只填表不发布：
+
+```bash
+# 抖音 7 项 + 视频号 1 项（--skip-cover 可单独验描述/话题链路）
+python3 scripts/verify_publish_gaps.py \
+    --run-dir output/<日期>/<run> --platforms douyin,channels
+
+# 竖版成片安全边距像素级量测（文字 bbox 必须落在 [120, 960]）
+python3 scripts/measure_safe_area.py frame.png --baseline 无文字同帧.png
+```
+
+口径（真机实测，别再猜）：
+- **造段**：抖音 ACE 编辑器只认原生回车；`<div>` 兜底会把段落压平（已在 2026-11-18 删除）。
+- **封面**：回读必须比**像素**。抖音缩略图 61×81 但 `naturalWidth` 仍是 1080，用 canvas 取原图再比；视频号要先点封面缩略图进编辑器再上传。
+- **话题**：抖音单条**上限 5 个**，第 6 个不会弹联想；残渣用 DOM Range 精确删，**不要**按字符数盲按 Backspace（会把前一个话题吃掉）。
+
+
+
 ```bash
 bash scripts/verify_all.sh --fast   # 0.7s  静态扫描 5 项（可挂 pre-commit）
 bash scripts/verify_all.sh          # ~2min 再加 GATE-1 声明层契约 + GATE-2 台账幂等
