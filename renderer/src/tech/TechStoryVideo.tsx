@@ -32,6 +32,10 @@ import TL from './tech_scene_timeline.json';
 
 const ACCENT = '#5ED8FF';
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
+// 抖音 feed 按「高铺满」裁边：实测 1080x1920 在 iPhone 15 Pro / Android 2340 / iPhone 14
+// 上左右各被裁 ~97px（8.9~9.0%）。留 88px 会被裁掉、70px 更贴边（2026-11-18 量化）。
+// 统一提到 120px（11.1%）> 9.0%，抖音不切字，视频号/B站留白略大（可接受）。
+const SAFE_X = 120;
 const PAD_FRAMES = 14; // 段落尾部留白（与 build 侧 PAD 一致，用于口播避让判断）
 
 type SceneLike = {
@@ -142,7 +146,7 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
   });
 
   return (
-    <div style={{ position: 'absolute', left: 88, right: 88, top: 190 }}>
+    <div style={{ position: 'absolute', left: SAFE_X, right: SAFE_X, top: 190 }}>
       <div style={{ fontFamily: FONT, fontSize: 24, letterSpacing: 8, color: ACCENT, opacity: t(8, 30) }}>
         {kicker}
       </div>
@@ -197,7 +201,7 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: 88, right: 88, top: 200,
+        position: 'absolute', left: SAFE_X, right: SAFE_X, top: 200,
         display: 'flex', alignItems: 'flex-start', gap: 26, opacity: t,
         transform: `translateY(${interpolate(t, [0, 1], [18, 0])}px)`,
       }}
@@ -242,13 +246,13 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: 70, right: 70, bottom: 168,
+        position: 'absolute', left: SAFE_X, right: SAFE_X, bottom: 168,
         display: 'flex', justifyContent: 'center', opacity: fadeIn * fadeOut,
       }}
     >
       <div
         style={{
-          padding: '18px 30px', borderRadius: 18, maxWidth: 940,
+          padding: '18px 30px', borderRadius: 18, maxWidth: 1080 - SAFE_X * 2,
           background: 'rgba(3,6,10,0.55)', border: '1px solid rgba(94,216,255,0.22)',
         }}
       >
@@ -350,7 +354,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
 
       <div
         style={{
-          position: 'absolute', left: 88, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', left: SAFE_X, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >
@@ -358,7 +362,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
       </div>
       <div
         style={{
-          position: 'absolute', right: 88, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', right: SAFE_X, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >
