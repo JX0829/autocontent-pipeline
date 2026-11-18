@@ -14,16 +14,22 @@ import { AbsoluteFill, Img, staticFile } from 'remotion';
 const ACCENT = '#5ED8FF';
 
 /**
- * 封面「3:4 可见区」安全内边距（2026-11-18 用户要求）
+ * 封面版式（2026-11-18 用户定稿：居中布局 · 下移 32 · 字号收敛 · 水平边距 ≥64）
  *
  * 抖音个人主页/作品列表把 9:16 封面按 **3:4 居中裁剪**显示：1080x1920 只留 y∈[240,1680]。
- * 原来文案块 bottom=210 → 块底落在 y=1710，超界 30px，最后一行（副标题）会被截掉。
- * 竖版底部收到 260（块底 y=1660，留 20px 余量）；左右与正文一致用 100。
+ * 文案改为**垂直居中 + 水平居中**，整体向下偏移 32px（视觉重心略低，不顶在正中间）；
+ * 左右最小边距 64px；主标题 88→76、副标 32→28、小标 22→20，给长标题留换行余量。
+ *
+ * 3:4 安全：块高预算 ≈ 20 + 22 + 76*1.2*2 + 27 + 28*1.5*2 ≈ 350px，
+ * 中心 y = 960+32 = 992 → 块范围 ~817~1167，完整落在 [240,1680] 内（余量 >570px）。
  */
 export const COVER_SAFE_34_TOP = 240;
 export const COVER_SAFE_34_BOTTOM = 1680;
-const COVER_PORTRAIT_INSET_BOTTOM = 260;
-const COVER_PORTRAIT_INSET_X = 100;
+export const COVER_PORTRAIT_PAD_X = 64;      // 水平边距最小 64
+export const COVER_PORTRAIT_OFFSET_Y = 32;   // 居中后向下偏移
+const COVER_MAIN_SIZE = 76;
+const COVER_SUB_SIZE = 28;
+const COVER_KICKER_SIZE = 20;
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
 
 const KICKER: Record<string, string> = {
@@ -46,9 +52,11 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
   const portrait = (aspect ?? 'portrait') !== 'landscape';
   const kickerText = kicker || KICKER[theme || ''] || '科技速递';
   const insets = portrait
-    ? { left: COVER_PORTRAIT_INSET_X, right: COVER_PORTRAIT_INSET_X, bottom: COVER_PORTRAIT_INSET_BOTTOM }
+    ? { left: COVER_PORTRAIT_PAD_X, right: COVER_PORTRAIT_PAD_X, bottom: 96 }
     : { left: 96, right: 96, bottom: 96 };
-  const mainSize = portrait ? 88 : 84;
+  const mainSize = portrait ? COVER_MAIN_SIZE : 84;
+  const subSize = portrait ? COVER_SUB_SIZE : 32;
+  const kickerSize = portrait ? COVER_KICKER_SIZE : 22;
 
   return (
     <AbsoluteFill style={{ background: '#04060a' }}>
@@ -63,8 +71,24 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
         }}
       />
 
-      <div style={{ position: 'absolute', left: insets.left, right: insets.right, bottom: insets.bottom }}>
-        <div style={{ fontFamily: FONT, fontSize: 22, letterSpacing: 8, color: ACCENT }}>{kickerText}</div>
+      <div
+        style={portrait
+          ? {
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }
+          : { position: 'absolute', left: insets.left, right: insets.right, bottom: insets.bottom }}
+      >
+        <div
+          style={portrait
+            ? {
+                width: '100%', paddingLeft: insets.left, paddingRight: insets.right,
+                textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center',
+                transform: `translateY(${COVER_PORTRAIT_OFFSET_Y}px)`,
+              }
+            : undefined}
+        >
+        <div style={{ fontFamily: FONT, fontSize: kickerSize, letterSpacing: 8, color: ACCENT }}>{kickerText}</div>
 
         <div
           style={{
@@ -81,13 +105,15 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
         {sub ? (
           <div
             style={{
-              marginTop: 20, fontFamily: FONT, fontSize: 32, lineHeight: 1.5, color: '#E4EEF7',
+              marginTop: 20, fontFamily: FONT, fontSize: subSize, lineHeight: 1.5, color: '#E4EEF7',
               textShadow: '0 4px 22px rgba(0,0,0,0.9)',
+              maxWidth: 900, whiteSpace: 'pre-wrap',
             }}
           >
             {sub}
           </div>
         ) : null}
+        </div>
       </div>
     </AbsoluteFill>
   );
