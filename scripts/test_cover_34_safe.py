@@ -13,7 +13,7 @@
   ① 模板常量：COVER_PORTRAIT_INSET_BOTTOM ≥ 1920-1680+20 = 260
   ② 文案块顶部不能顶出 3:4 上边界（留出多行文案的高度预算 520px）
   ③ 左右内边距与正文一致（100），3:4 只裁上下、不裁左右，但仍需 ≥96 防贴边
-  ④ 真渲染一张长文案封面，OCR 出最底文字 y 必须 ≤ 1680 - 10
+  ④ 底图结构：中间 3:4 清晰、上下为同图虚化填充
 """
 from __future__ import annotations
 
@@ -75,41 +75,37 @@ def main() -> int:
     check("⑥ 版式确为居中", "justifyContent: 'center'" in src and "textAlign: 'center'" in src
           and "COVER_PORTRAIT_OFFSET_Y" in src, "justifyContent/textAlign/offset 均就位")
 
-    # ⑤ 真渲染长文案封面，OCR 量最底文字
+    # ⑦ 底图结构：中间 3:4 清晰、上下虚化填充（不再把真实画面裁一半）
     try:
+        from src.pipeline.cover_compose import _fit_panel_34  # noqa: E402
         tmp = Path(tempfile.mkdtemp(prefix="cover34_"))
-        pub = PROJ / "renderer" / "public" / "runs" / "_cover34check"
-        pub.mkdir(parents=True, exist_ok=True)
-        bg = pub / "bg.png"            # 必须放 public/ 下，staticFile 只认相对 public 的路径
+        noise = tmp / "noise.png"
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
-                        "-i", f"color=c=0x223344:s=1080x{HEIGHT}", "-frames:v", "1", str(bg)],
-                       capture_output=True, text=True)
-        props = tmp / "props.json"
-        long_main = "OpenAI出海这次先签政府再谈监管细则"
-        props.write_text(
-            '{"bg": "%s", "main": "%s", "sub": "%s", "theme": "breaking-news", "aspect": "portrait"}'
-            % ("runs/_cover34check/bg.png", long_main, "智利科技部拒公开全文，议员质疑数据保护条款"),
-            encoding="utf-8")
-        out = tmp / "cover.png"
-        proc = subprocess.run(
-            ["npx", "remotion", "still", "src/index.ts", "TechCoverCardPortrait", str(out),
-             f"--props={props}", "--image-format=png"],
-            cwd=str(PROJ / "renderer"), capture_output=True, text=True)
-        if proc.returncode != 0 or not out.exists():
-            check("⑦ 真渲染封面", False, (proc.stderr or "").strip().splitlines()[-1:][0] if proc.stderr else "")
-        else:
-            ocr = subprocess.run(["tesseract", str(out), "-", "--psm", "11", "tsv"],
-                                 capture_output=True, text=True)
-            rows = [ln.split("\t") for ln in ocr.stdout.splitlines()[1:] if ln.strip()]
-            ys = [int(r[8]) + int(r[9]) for r in rows
-                  if len(r) > 11 and r[11].strip() and r[10].isdigit() and int(r[10]) > 40]
-            if ys:
-                check("⑦ 最底文字落在 3:4 内", max(ys) <= SAFE_BOTTOM - 10,
-                      f"最底 y={max(ys)}（上限 {SAFE_BOTTOM - 10}）")
-            else:
-                print("  ⚠️ OCR 未识别出文字（描边字体常见），跳过像素级判据，以上静态判据仍生效")
+                        "-i", "nullsrc=s=1080x1920,geq=random(1)*255:128:128",
+                        "-frames:v", "1", str(noise)], capture_output=True, text=True)
+        panel = tmp / "panel.png"
+        _fit_panel_34(noise, panel)
+
+        def sharpness(img: Path, y: int, h: int = 60) -> float:
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(img),
+                                  "-vf", f"crop=1080:{h}:0:{y},format=gray",
+                                  "-f", "rawvideo", "-"], capture_output=True).stdout
+            if not raw:
+                return 0.0
+            w, total, n = 1080, 0.0, 0
+            for r in range(0, h - 8, 8):
+                row = raw[r * w:(r + 1) * w]
+                for x in range(0, w - 8, 8):
+                    total += abs(row[x] - row[x + 8])
+                    n += 1
+            return total / max(n, 1)
+
+        top, mid, bottom = sharpness(panel, 40), sharpness(panel, 900), sharpness(panel, 1820)
+        check("⑦ 上下虚化 / 中间清晰",
+              mid > 8 and top < mid / 4 and bottom < mid / 4,
+              f"上 {top:.1f} / 中 {mid:.1f} / 下 {bottom:.1f}")
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️ 真渲染环节跳过：{exc}")
+        check("⑦ 上下虚化 / 中间清晰", False, str(exc)[:60])
 
     print(f"\nCOVER 3:4 SAFE {'PASS' if not fails else 'FAIL'}（块 y {block_top}~{block_bottom}，偏移 {offset_y}，边距 {pad_x}）")
     return 0 if not fails else 1
