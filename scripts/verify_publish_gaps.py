@@ -76,9 +76,12 @@ def verify_douyin(run: Path, info: dict, results: list[dict]) -> dict:
     tail = str((res.get("topics_tail") or {}).get("after") or "")
     results.append(check("A3 抖音描述尾部无游离文本", not tail.strip(), f"tail={tail!r}"))
     fin = res.get("topics_final") or {}
-    results.append(check("A4 抖音真话题数 == 声明数",
-                         int(fin.get("count", 0)) >= int(fin.get("want", 1)),
-                         f"count={fin.get('count')} want={fin.get('want')}"))
+    # 方案A：无联想项的话题直接丢弃 → 「声明」只算真落地的，丢弃的单独列在证据里
+    dropped = res.get("topics_dropped_no_suggestion") or []
+    results.append(check("A4 抖音真话题数 == 落地声明数（无联想项已丢弃）",
+                         int(fin.get("count", 0)) == int(fin.get("want", 0)) > 0,
+                         f"count={fin.get('count')} want={fin.get('want')} "
+                         f"dropped={dropped}"))
     results.append(check("A5 不再出现 lines:0 + wantLines:1 假红",
                          not (got_lines == 0 and (res.get("caption_dom") or {}).get("wantLines") == 1),
                          json.dumps(res.get("caption_dom") or {}, ensure_ascii=False)[:120]))
@@ -133,6 +136,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--platforms", default="douyin,channels")
+    ap.add_argument("--tags-override", default="",
+                    help="逗号分隔的话题列表，覆盖物料 tags（用来验「无联想项直接丢弃」这类分支）")
     ap.add_argument("--skip-cover", action="store_true",
                     help="不传封面：单独验描述/话题链路（封面自证未通过时用，避免被它挡住）")
     a = ap.parse_args()
@@ -141,6 +146,8 @@ def main() -> int:
     info = _load_runs(run)
     if a.skip_cover:
         info["cover"] = ""
+    if a.tags_override:
+        info["tags"] = [x.strip() for x in a.tags_override.split(",") if x.strip()]
     print(f"run={run.name} title={info['title'][:24]!r} tags={len(info['tags'])} "
           f"cover={Path(info['cover']).exists()}")
     results: list[dict] = []

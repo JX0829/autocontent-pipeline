@@ -356,11 +356,19 @@ class DouyinProvider(BaseSocialProvider):
                     logger.warning(f"[douyin] 话题超过平台上限 {DOUYIN_MAX_TOPICS} 个，"
                                    f"已丢弃 {dropped_topics}（物料层可考虑只给 5 个）")
                 _tp = douyin_form.fill_topics(page, topics_effective, log_obj=logger)
-                topics_declared, topics_landed = _tp["declared"], _tp["landed"]
+                # 方案A（2026-11-18 定稿）：没有联想项的话题**直接丢弃**，优先保证简介干净。
+                # 因此「声明」只认真的落成节点的那几个，丢掉的单独记账，绝不并进 declared
+                # 里假装成功，也不做「退到前两字」的静默改名。
+                topics_dropped_no_suggestion = list(_tp.get("dropped") or [])
+                topics_landed = list(_tp["landed"])
+                topics_declared = list(topics_landed)   # 声明 = 真落地的（丢掉的另记账）
                 topics_ok = bool(_tp["ok"])
-                if topics_declared and not topics_ok:
-                    logger.warning(f"[douyin] 话题未全部落地 landed={topics_landed} "
-                                   f"declared={topics_declared}：{'; '.join(_tp['problems'])}")
+                if topics_dropped_no_suggestion:
+                    logger.warning(f"[douyin] {len(topics_dropped_no_suggestion)} 个话题无联想项，"
+                                   f"已丢弃以保证简介干净：{topics_dropped_no_suggestion}")
+                if _tp["declared"] and len(topics_landed) != len(_tp["declared"]):
+                    logger.warning(f"[douyin] 话题落地 {len(topics_landed)}/{len(_tp['declared'])}："
+                                   f"{'; '.join(_tp['problems'])}")
 
                 # 3d. 回读简介真实内容（发布前自证：乱码/错位/截断都在这里暴露）
                 filled_text = ""
@@ -399,8 +407,9 @@ class DouyinProvider(BaseSocialProvider):
                                 "caption_ok": caption_ok,
                                 "caption_dom": caption_dom_after_fill,
                                 "topics_declared": topics_declared,
-                            "topics_dropped_by_limit": dropped_topics,
-                "topics_dropped_by_limit": dropped_topics,
+                                "topics_dropped_by_limit": dropped_topics,
+                                "topics_dropped_no_suggestion": topics_dropped_no_suggestion,
+                                "topics_landed_as": _tp.get("landed_as") or {},
                                 "topics_landed": topics_landed,
                                 "topics_ok": topics_ok,
                                 "topics_final": _tp.get("final"),
@@ -424,6 +433,9 @@ class DouyinProvider(BaseSocialProvider):
                             "topics": topics,
                             "topics_declared": topics_declared,
                             "topics_landed": topics_landed,
+                            "topics_dropped_by_limit": dropped_topics,
+                            "topics_dropped_no_suggestion": topics_dropped_no_suggestion,
+                            "topics_landed_as": _tp.get("landed_as") or {},
                             "topics_ok": topics_ok,
                             "caption_dom": caption_dom_after_fill,
                             "topics_final": _tp.get("final"),

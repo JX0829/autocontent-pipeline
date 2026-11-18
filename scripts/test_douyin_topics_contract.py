@@ -44,13 +44,13 @@ def main() -> int:
           'data-mention=\\"#\\"' in FORM or "data-mention=\"#\"" in FORM)
     check("③ 每敲一个新话题前换行（面板才会刷新）",
           'page.keyboard.press("Enter")' in FORM)
-    # ④⑤ 2026-11-18 真机后口径变了：重试改成「原词 → 短词回退」，且失败**不再**留纯文本
-    #    （留纯文本正是 `据隐私` / `######` 残渣的来源）。
-    check("④ 每个话题有重试 + 短词回退（原词无联想项时退到前两字）",
-          "for attempt, cand in enumerate(variants, start=1):" in FORM
-          and "variants = [tag] + ([tag[:2]] if len(tag) > 2 else [])" in FORM)
-    check("⑤ 未落地如实记录且不留残渣（不虚报成功）",
-          "未成为真话题（已回退，不留残渣）" in FORM and "topics_ok" in PROV)
+    # ④⑤ 2026-11-18 定稿（方案A）：没有联想项**直接丢弃**该话题，优先保证简介干净；
+    #    不做「退到前两字」的静默改名，也不留纯文本残渣（留纯文本正是 `据隐私`/`######` 来源）。
+    check("④ 每个话题最多试两次，不做短词改名替换",
+          "for attempt in (1, 2):" in FORM and "variants = " not in FORM)
+    check("⑤ 无联想项直接丢弃 + 记账 + 不留残渣（不虚报成功）",
+          "无联想项，已丢弃（不留残渣）" in FORM
+          and '"dropped": dropped' in FORM and "topics_ok" in PROV)
     check("⑥ 结果带 topics_declared/topics_landed/topics_ok",
           all(k in PROV for k in ('"topics_declared"', '"topics_landed"', '"topics_ok"')))
     check("⑦ 正文校验用 ACE DOM 判据（innerText 无 \\n 不算失败）",

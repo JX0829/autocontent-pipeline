@@ -211,35 +211,35 @@ def fill_topics(page, topics, log_obj=None) -> dict:
             return {"count": 0, "last": ""}
 
     landed_as: dict = {}
+    dropped: list[str] = []
     for tag in want:
         got = False
-        # 平台对某些词就是没有联想项（真机：`数据隐私` 5 次都进不了话题）。这时退到
-        # **前两字**（`数据`）这类平台确实存在的短词，并在 landed_as 里如实记下改名，
-        # 绝不「失败就当纯文本留着」（那正是残渣来源），也不假装原词落地了。
-        variants = [tag] + ([tag[:2]] if len(tag) > 2 else [])
-        for attempt, cand in enumerate(variants, start=1):
+        # 2026-11-18 定稿（方案A）：**没有联想项就直接丢弃这个话题**，优先保证简介干净。
+        # 不做「退到前两字」的改名替换（`数据隐私` → `数据` 等于悄悄换了话题，审批时看不出来），
+        # 也不留纯文本残渣。丢弃要记账，好让上层知道少了哪个。
+        for attempt in (1, 2):
             before = _state()["count"]
-            if attempt == 1 or cand != tag:
-                page.keyboard.insert_text(f"#{cand}")   # 整词插入：逐字敲会被平台切成「数 据隐私」
+            if attempt == 1:
+                page.keyboard.insert_text(f"#{tag}")   # 整词插入：逐字敲会被平台切成「数 据隐私」
             else:
-                page.keyboard.type(f"#{cand}", delay=160)
+                page.keyboard.type(f"#{tag}", delay=160)
             clicked = ""
             for _ in range(16):                  # 最多等 ~4.8s 联想面板
                 page.wait_for_timeout(300)
-                clicked = page.evaluate(_CLICK_SUGGEST_JS, cand)
+                clicked = page.evaluate(_CLICK_SUGGEST_JS, tag)
                 if clicked:
                     break
             page.wait_for_timeout(500)
             st = _state()
             last_txt = str(st.get("last") or "").strip()
             # 平台话题名可能比声明更长（如 数据隐私 → 数据隐私保护），互相包含即算落地
-            matched = bool(last_txt) and (last_txt == cand or cand in last_txt
-                                           or last_txt in cand)
+            matched = bool(last_txt) and (last_txt == tag or tag in last_txt
+                                           or last_txt in tag)
             if st["count"] > before and matched:
                 landed.append(tag)
-                landed_as[tag] = last_txt or cand
+                landed_as[tag] = last_txt or tag
                 got = True
-                if (last_txt or cand) != tag:
+                if (last_txt or tag) != tag:
                     log.warning(f"[douyin] 话题 #{tag} 无对应联想项，改用平台话题 #{landed_as[tag]}")
                 else:
                     log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
@@ -247,10 +247,11 @@ def fill_topics(page, topics, log_obj=None) -> dict:
             # 没落地：用 DOM Range 精确删掉「最后一个真话题之后」的残渣
             _delete_tail(page)
             page.wait_for_timeout(300)
-            log.warning(f"[douyin] 话题 #{cand} 第 {attempt} 次未落地"
+            log.warning(f"[douyin] 话题 #{tag} 第 {attempt} 次未落地"
                         f"（count {before}→{st['count']}，last={st.get('last')!r}），已回退重试")
         if not got:
-            problems.append(f"#{tag} 未成为真话题（已回退，不留残渣）")
+            dropped.append(tag)
+            problems.append(f"#{tag} 无联想项，已丢弃（不留残渣）")
 
     # R7：清尾部残渣（等于某 tag 后缀的游离文本）→ R8：终态自证
     tail = clean_topic_tail(page, want, log_obj=log)
@@ -259,7 +260,8 @@ def fill_topics(page, topics, log_obj=None) -> dict:
         problems.extend(final["problems"])
     ok = len(landed) >= len(declared) and final["ok"]
     return {"declared": declared, "landed": landed, "landed_as": landed_as,
-            "ok": ok, "problems": problems, "final": final, "tail": tail}
+            "dropped": dropped, "ok": ok, "problems": problems,
+            "final": final, "tail": tail}
 
 
 _TOPIC_STATE_JS = r"""() => {

@@ -1204,11 +1204,11 @@ $PY -m src.pipeline.runner --material materials/<物料>.json \
 
 ```bash
 # 抖音 7 项 + 视频号 1 项（--skip-cover 可单独验描述/话题链路）
-python3 scripts/verify_publish_gaps.py \
+$PY scripts/verify_publish_gaps.py \
     --run-dir output/<日期>/<run> --platforms douyin,channels
 
 # 竖版成片安全边距像素级量测（文字 bbox 必须落在 [120, 960]）
-python3 scripts/measure_safe_area.py frame.png --baseline 无文字同帧.png
+$PY scripts/measure_safe_area.py frame.png --baseline 无文字同帧.png
 ```
 
 口径（真机实测，别再猜）：
