@@ -210,6 +210,20 @@ def test_cover_compose() -> None:
     else:
         print("SKIP  §十一 hook binding 用例（无 cover_binding_landscape.json）")
 
+    # external_truth 钩子（管线真正调的那道，走 hook 协议）
+    if (run_q / "cover_binding_landscape.json").exists():
+        import subprocess as sp
+        payload = {"run_root": str(run_q), "task_id": "qwen-safety-1",
+                   "context": {"artifact_kind": "landscape", "expect_text": "先删数据，再开源"},
+                   "artifacts": {"video_16_9": str(run_q / "video_16_9.mp4"),
+                                 "cover_16_9": str(run_q / "cover_16_9.png")}}
+        r = sp.run([sys.executable, str(PROJ / "scripts" / "hooks" / "external_truth.py")],
+                   input=json.dumps(payload), capture_output=True, text=True)
+        ok_hook = r.returncode == 0 and '"ok": true' in r.stdout
+        check("§十一 external_truth 钩子放行合成封面", ok_hook,
+              (r.stdout or r.stderr)[:80].replace("\n", " "))
+        check("§十一 external_truth 记 cover_source=composer", '"composer"' in r.stdout)
+
     ex = (PROJ / "src" / "pipeline" / "executors.py").read_text(encoding="utf-8")
     check("§十一 A22 tech 链路不再渲 CoverStill", 'remotion("still"' not in ex)
     rl = (PROJ / "scripts" / "render_landscape.py").read_text(encoding="utf-8")
