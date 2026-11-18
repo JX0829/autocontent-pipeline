@@ -1,35 +1,29 @@
 import React from 'react';
 import { AbsoluteFill, Img, staticFile } from 'remotion';
-
-/**
- * 封面卡片（SPEC-20261117 §十一 R13~R18）
- *
- * 底图 = 从**成片里截的一帧真实画面**（由构建侧 ffmpeg 截好后放进 public/runs/<run>/），
- * 文案 = 由我们渲染上去（同 tech_story 的字体族 / 强调色 / 左下版位 / 渐变压暗）。
- *
- * 为什么不用 CoverStill / BilibiliLandscapeCover：那是「海报」版式，与 tech_story 正文
- * 完全不搭（用户 2026-11-18 明确否决）。这里只复刻 HookOverlay 的文字语汇。
- */
+import {
+  COVER_KICKER_SIZE,
+  COVER_MAIN_SIZE,
+  COVER_OFFSET_Y,
+  COVER_PAD_X,
+  COVER_SUB_SIZE,
+} from './coverFrame';
 
 const ACCENT = '#5ED8FF';
 
 /**
- * 封面版式（2026-11-18 用户定稿：居中布局 · 下移 32 · 字号收敛 · 水平边距 ≥64）
+ * 封面卡片（SPEC-20261117 §十一 R13~R18）
  *
- * 抖音个人主页/作品列表把 9:16 封面按 **3:4 居中裁剪**显示：1080x1920 只留 y∈[240,1680]。
- * 文案改为**垂直居中 + 水平居中**，整体向下偏移 32px（视觉重心略低，不顶在正中间）；
- * 左右最小边距 64px；主标题 88→76、副标 32→28、小标 22→20，给长标题留换行余量。
+ * 底图 = **无文字素材/背景 loop 的一帧**（由 cover_compose.pick_clean_source 挑好、
+ * 居中裁成 3:4 后放进 public/runs/<run>/），文案 = 这里渲染上去。
  *
- * 3:4 安全：块高预算 ≈ 20 + 22 + 76*1.2*2 + 27 + 28*1.5*2 ≈ 350px，
- * 中心 y = 960+32 = 992 → 块范围 ~817~1167，完整落在 [240,1680] 内（余量 >570px）。
+ * 版式一律吃 ../tech/coverFrame.ts 的统一常量（居中 / 下移 32 / 边距 ≥64 / 字号 76-28-20），
+ * 新模板请复用同一组常量，不要抄数字。
  */
-export const COVER_SAFE_34_TOP = 240;
-export const COVER_SAFE_34_BOTTOM = 1680;
-export const COVER_PORTRAIT_PAD_X = 64;      // 水平边距最小 64
-export const COVER_PORTRAIT_OFFSET_Y = 32;   // 居中后向下偏移
-const COVER_MAIN_SIZE = 76;
-const COVER_SUB_SIZE = 28;
-const COVER_KICKER_SIZE = 20;
+export {
+  COVER_SAFE_34_TOP,
+  COVER_SAFE_34_BOTTOM,
+} from './coverFrame';
+
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
 
 const KICKER: Record<string, string> = {
@@ -39,7 +33,7 @@ const KICKER: Record<string, string> = {
 };
 
 export type TechCoverProps = {
-  /** 底图（相对 renderer/public 的路径，由构建侧截帧后写入） */
+  /** 底图（相对 renderer/public 的路径；由 cover_compose 从无字素材/背景 loop 截出并裁好 3:4） */
   bg: string;
   main: string;
   sub?: string;
@@ -52,7 +46,7 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
   const portrait = (aspect ?? 'portrait') !== 'landscape';
   const kickerText = kicker || KICKER[theme || ''] || '科技速递';
   const insets = portrait
-    ? { left: COVER_PORTRAIT_PAD_X, right: COVER_PORTRAIT_PAD_X, bottom: 96 }
+    ? { left: COVER_PAD_X, right: COVER_PAD_X, bottom: 96 }
     : { left: 96, right: 96, bottom: 96 };
   const mainSize = portrait ? COVER_MAIN_SIZE : 84;
   const subSize = portrait ? COVER_SUB_SIZE : 32;
@@ -84,7 +78,7 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
             ? {
                 width: '100%', paddingLeft: insets.left, paddingRight: insets.right,
                 textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center',
-                transform: `translateY(${COVER_PORTRAIT_OFFSET_Y}px)`,
+                transform: `translateY(${COVER_OFFSET_Y}px)`,
               }
             : undefined}
         >
