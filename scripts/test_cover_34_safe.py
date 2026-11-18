@@ -51,25 +51,29 @@ def main() -> int:
         return 1
     src = CARD.read_text(encoding="utf-8")
 
-    bottom = _num(src, "COVER_PORTRAIT_INSET_BOTTOM")
-    inset_x = _num(src, "COVER_PORTRAIT_INSET_X")
+    pad_x = _num(src, "COVER_PORTRAIT_PAD_X")
+    offset_y = _num(src, "COVER_PORTRAIT_OFFSET_Y")
+    main_size = _num(src, "COVER_MAIN_SIZE")
     safe_top = _num(src, "COVER_SAFE_34_TOP", SAFE_TOP)
     safe_bottom = _num(src, "COVER_SAFE_34_BOTTOM", SAFE_BOTTOM)
 
     check("① 3:4 常量一致（240 / 1680）", safe_top == SAFE_TOP and safe_bottom == SAFE_BOTTOM,
           f"{safe_top} / {safe_bottom}")
 
-    block_bottom = HEIGHT - bottom
-    check("② 文案块底不进裁剪区", block_bottom <= safe_bottom - 10,
-          f"块底 y={block_bottom}（3:4 下边界 {safe_bottom}，需 ≤ {safe_bottom - 10}）")
+    # 竖版：垂直居中 + 向下偏移 32，块高预算 350 → 中心 960+32=992，块范围约 817~1167
+    budget = 350
+    center = HEIGHT // 2 + offset_y
+    block_top, block_bottom = center - budget // 2, center + budget // 2
+    check("② 居中下移后整块落在 3:4 内",
+          block_top >= safe_top and block_bottom <= safe_bottom,
+          f"块范围 ~y {block_top}~{block_bottom}（3:4 {safe_top}~{safe_bottom}）")
 
-    # 文案高度预算：kicker 22 + 间距 22 + 主标题两行 88*1.2*2 + 分隔 27 + 副标两行 32*1.5*2 ≈ 420
-    budget = 520
-    block_top = block_bottom - budget
-    check("③ 文案块顶不出 3:4 上边界", block_top >= safe_top,
-          f"块顶 ~y={block_top}（需 ≥ {safe_top}）")
+    check("③ 向下偏移 = 32px", offset_y == 32, f"{offset_y}px")
 
-    check("④ 左右内边距 ≥ 96（与正文 100 一致）", inset_x >= 96 and inset_x <= 130, f"{inset_x}px")
+    check("④ 水平边距 ≥ 64px", pad_x >= 64, f"{pad_x}px")
+    check("⑤ 主标题字号已收敛（≤88）", 60 <= main_size <= 88, f"{main_size}px")
+    check("⑥ 版式确为居中", "justifyContent: 'center'" in src and "textAlign: 'center'" in src
+          and "COVER_PORTRAIT_OFFSET_Y" in src, "justifyContent/textAlign/offset 均就位")
 
     # ⑤ 真渲染长文案封面，OCR 量最底文字
     try:
@@ -92,7 +96,7 @@ def main() -> int:
              f"--props={props}", "--image-format=png"],
             cwd=str(PROJ / "renderer"), capture_output=True, text=True)
         if proc.returncode != 0 or not out.exists():
-            check("⑤ 真渲染封面", False, (proc.stderr or "").strip().splitlines()[-1:][0] if proc.stderr else "")
+            check("⑦ 真渲染封面", False, (proc.stderr or "").strip().splitlines()[-1:][0] if proc.stderr else "")
         else:
             ocr = subprocess.run(["tesseract", str(out), "-", "--psm", "11", "tsv"],
                                  capture_output=True, text=True)
@@ -100,14 +104,14 @@ def main() -> int:
             ys = [int(r[8]) + int(r[9]) for r in rows
                   if len(r) > 11 and r[11].strip() and r[10].isdigit() and int(r[10]) > 40]
             if ys:
-                check("⑤ 最底文字落在 3:4 内", max(ys) <= SAFE_BOTTOM - 10,
+                check("⑦ 最底文字落在 3:4 内", max(ys) <= SAFE_BOTTOM - 10,
                       f"最底 y={max(ys)}（上限 {SAFE_BOTTOM - 10}）")
             else:
                 print("  ⚠️ OCR 未识别出文字（描边字体常见），跳过像素级判据，以上静态判据仍生效")
     except Exception as exc:  # noqa: BLE001
         print(f"  ⚠️ 真渲染环节跳过：{exc}")
 
-    print(f"\nCOVER 3:4 SAFE {'PASS' if not fails else 'FAIL'}（块底 y={block_bottom}）")
+    print(f"\nCOVER 3:4 SAFE {'PASS' if not fails else 'FAIL'}（块 y {block_top}~{block_bottom}，偏移 {offset_y}，边距 {pad_x}）")
     return 0 if not fails else 1
 
 
