@@ -9,6 +9,9 @@ from playwright.sync_api import sync_playwright, Page, TimeoutError as Playwrigh
 
 from . import cdp_session
 from . import douyin_form
+
+#: 抖音单条作品话题上限（真机 2026-11-18 实测：第 6 个敲不进去）
+DOUYIN_MAX_TOPICS = 5
 from .base import BaseSocialProvider
 
 logger = logging.getLogger("DouyinProvider")
@@ -338,10 +341,21 @@ class DouyinProvider(BaseSocialProvider):
                         caption_ok = True
                         editor_ok = True
                 logger.info(f"Filled caption: title={title[:20]!r} ok={caption_ok}")
+                # A2 的证据要**在话题插入之前**取：话题阶段会重排编辑器 DOM，
+                # 事后取到的是话题操作后的状态，会把「描述分了几段」这件事测错。
+                caption_dom_after_fill = douyin_form.caption_dom(page)
 
                 # 3c. 话题：敲 #关键词 → 点联想面板 → 真话题节点（[data-mention="#"]）
                 from src.providers import douyin_form
-                _tp = douyin_form.fill_topics(page, topics, log_obj=logger)
+                # 抖音单条作品的**话题上限是 5**：真机实测（2026-11-18）第 6 个 `#话题`
+                # 无论整词插入还是逐字敲，联想面板都不再出现（count 5→5，纯文本残留）。
+                # 所以这里显式截断并记账，不做「假装 6 个都落地」的自欺。
+                topics_effective = list(topics or [])[:DOUYIN_MAX_TOPICS]
+                dropped_topics = [t for t in (topics or [])[DOUYIN_MAX_TOPICS:]]
+                if dropped_topics:
+                    logger.warning(f"[douyin] 话题超过平台上限 {DOUYIN_MAX_TOPICS} 个，"
+                                   f"已丢弃 {dropped_topics}（物料层可考虑只给 5 个）")
+                _tp = douyin_form.fill_topics(page, topics_effective, log_obj=logger)
                 topics_declared, topics_landed = _tp["declared"], _tp["landed"]
                 topics_ok = bool(_tp["ok"])
                 if topics_declared and not topics_ok:
@@ -364,6 +378,34 @@ class DouyinProvider(BaseSocialProvider):
                             "error": "CAPTION_MISMATCH",
                             "expected": full_text[:200], "filled": filled_text[:200],
                             "message": "简介回读与预期不符（乱码/话题错位/被重排），拒绝发布"}
+                # 3e. 封面：上传 cover.png 并**回读像素自证**（R1/R2/R3）。
+                #     runner 早就把 cover.png 传到这层，之前直接丢掉 → 平台回落系统抽帧
+                #     （用户截图「没有封面帧」）。现在收下就上传，不自证通过不许发布。
+                cover_detail = {"ok": None, "skipped": True}
+                if cover_path:
+                    try:
+                        cover_detail = douyin_form.set_cover(page, cover_path, log_obj=logger)
+                    except Exception as exc:  # noqa: BLE001 — 任何异常都按失败处理
+                        cover_detail = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    if not cover_detail.get("ok"):
+                        logger.error(f"COVER_UPLOAD_FAILED: {cover_detail}")
+                        browser.close()
+                        return {"success": False, "published": False,
+                                "error": "COVER_UPLOAD_FAILED",
+                                "detail": cover_detail,
+                                # 封面挂了也要把已经填好的表单事实带回来，
+                                # 否则验收侧看不到「描述/话题到底怎么样」，等于白跑一次真机。
+                                "filled_text": filled_text,
+                                "caption_ok": caption_ok,
+                                "caption_dom": caption_dom_after_fill,
+                                "topics_declared": topics_declared,
+                            "topics_dropped_by_limit": dropped_topics,
+                "topics_dropped_by_limit": dropped_topics,
+                                "topics_landed": topics_landed,
+                                "topics_ok": topics_ok,
+                                "topics_final": _tp.get("final"),
+                                "topics_tail": _tp.get("tail"),
+                                "message": f"封面没能上传/自证（{cover_detail.get('error')}），拒绝发布"}
                 time.sleep(2)
 
                 if stop_before_publish:
@@ -383,8 +425,24 @@ class DouyinProvider(BaseSocialProvider):
                             "topics_declared": topics_declared,
                             "topics_landed": topics_landed,
                             "topics_ok": topics_ok,
+                            "caption_dom": caption_dom_after_fill,
+                            "topics_final": _tp.get("final"),
+                            "topics_tail": _tp.get("tail"),
+                            "cover": cover_detail,
                             "message": "表单已填好（含回读校验），按 stop_before_publish 未点发布"}
 
+
+                # 3f. 话题终态硬门禁（R8）：真话题数要等于声明数、尾部不许有游离文本。
+                #     旧实现只打 warning，于是 `据隐私` / `wen4` 这种残渣跟着作品发出去。
+                if topics_declared and not topics_ok:
+                    logger.error(f"TOPICS_NOT_LANDED: declared={topics_declared} "
+                                 f"landed={topics_landed} problems={_tp['problems']}")
+                    browser.close()
+                    return {"success": False, "published": False,
+                            "error": "TOPIC_TAIL_RESIDUE",
+                            "declared": topics_declared, "landed": topics_landed,
+                            "final": _tp.get("final"), "tail": _tp.get("tail"),
+                            "message": f"话题终态不合格（{'; '.join(_tp['problems'])}），拒绝发布"}
 
                 # 4. AIGC 合规声明勾选
                 if should_declare_aigc:

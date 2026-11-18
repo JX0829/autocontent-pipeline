@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +114,10 @@ def fill_caption(page, text: str) -> bool:
               const flat = ed.innerText || '';
               const lines = [...ed.querySelectorAll('.ace-line')]
                   .map(e => (e.innerText || '').replace(ZW, '').trim()).filter(Boolean);
-              const wantLines = String(exp).split(/\n{2,}/).filter(x => x.trim()).length;
+              // R4 真机实测：ACE 编辑器保留段落时每段一个 `.ace-line`，所以按「非空行数」
+              // 判；wantLines 必须按 /\n+/ 数（旧代码用 /\n{2,}/ 且依赖失效选择器，
+              // 于是恒为 lines:0 / wantLines:1 的假红，还触发无效重试）。
+              const wantLines = String(exp).split(/\n+/).filter(x => x.trim()).length;
               const want = norm(exp);
               const gotNorm = norm(flat);
               return {ok: gotNorm === want && lines.length >= wantLines,
@@ -194,47 +199,345 @@ def fill_topics(page, topics, log_obj=None) -> dict:
     except Exception:  # noqa: BLE001 — 按键失败就按原位置继续
         pass
 
+    # 真机（2026-11-18，6 个话题）实测三种写法结果一样：前 5 个都成真话题，
+    # **最后一个必然失败**，且会在正文尾巴留下 `#数 据隐私` 这类半截残渣。
+    # 原因不是「点不点联想」，而是打字过程中平台自己插了空格把词切断。
+    # 因此判据变成：逐个话题**增量校验**，不成就不留残渣（回退刚才敲的字），
+    # 不再「失败就按纯文本留着」——那正是残渣的来源。
+    def _state() -> dict:
+        try:
+            return dict(page.evaluate(_TOPIC_STATE_JS))
+        except Exception:  # noqa: BLE001
+            return {"count": 0, "last": ""}
+
+    landed_as: dict = {}
     for tag in want:
         got = False
-        for attempt in (1, 2):                   # 每个话题最多试两次（面板偶尔不刷新）
-            before = _count()
-            page.keyboard.type(f"#{tag}", delay=160)
+        # 平台对某些词就是没有联想项（真机：`数据隐私` 5 次都进不了话题）。这时退到
+        # **前两字**（`数据`）这类平台确实存在的短词，并在 landed_as 里如实记下改名，
+        # 绝不「失败就当纯文本留着」（那正是残渣来源），也不假装原词落地了。
+        variants = [tag] + ([tag[:2]] if len(tag) > 2 else [])
+        for attempt, cand in enumerate(variants, start=1):
+            before = _state()["count"]
+            if attempt == 1 or cand != tag:
+                page.keyboard.insert_text(f"#{cand}")   # 整词插入：逐字敲会被平台切成「数 据隐私」
+            else:
+                page.keyboard.type(f"#{cand}", delay=160)
             clicked = ""
             for _ in range(16):                  # 最多等 ~4.8s 联想面板
                 page.wait_for_timeout(300)
-                clicked = page.evaluate(
-                    """(kw) => {
-                      const names = [...document.querySelectorAll('[class*=tag-hash-view-name]')]
-                          .filter(e => e.offsetHeight);
-                      const pick = names.find(e => (e.innerText || '').trim() === kw)
-                                || names.find(e => (e.innerText || '').trim().startsWith(kw));
-                      if (!pick) return '';
-                      const item = pick.closest('[class*=tag-hash]').parentElement
-                                || pick.closest('[class*=tag-]');
-                      (item || pick).click();
-                      return (pick.innerText || '').trim();
-                    }""",
-                    tag,
-                )
+                clicked = page.evaluate(_CLICK_SUGGEST_JS, cand)
                 if clicked:
                     break
             page.wait_for_timeout(500)
-            if _count() > before:
+            st = _state()
+            last_txt = str(st.get("last") or "").strip()
+            # 平台话题名可能比声明更长（如 数据隐私 → 数据隐私保护），互相包含即算落地
+            matched = bool(last_txt) and (last_txt == cand or cand in last_txt
+                                           or last_txt in cand)
+            if st["count"] > before and matched:
                 landed.append(tag)
+                landed_as[tag] = last_txt or cand
                 got = True
-                log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
+                if (last_txt or cand) != tag:
+                    log.warning(f"[douyin] 话题 #{tag} 无对应联想项，改用平台话题 #{landed_as[tag]}")
+                else:
+                    log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
                 break
-            # 没落地：把这几个字符退掉，重试
-            for _ in range(len(tag) + 1):
-                page.keyboard.press("Backspace")
-            page.wait_for_timeout(400)
+            # 没落地：用 DOM Range 精确删掉「最后一个真话题之后」的残渣
+            _delete_tail(page)
+            page.wait_for_timeout(300)
+            log.warning(f"[douyin] 话题 #{cand} 第 {attempt} 次未落地"
+                        f"（count {before}→{st['count']}，last={st.get('last')!r}），已回退重试")
         if not got:
-            problems.append(f"#{tag} 无匹配联想项，已按纯文本留下")
-            page.keyboard.type(f"#{tag} ", delay=60)
-            log.warning(f"[douyin] 话题 #{tag} 未成为真话题（两次都没匹配）")
+            problems.append(f"#{tag} 未成为真话题（已回退，不留残渣）")
 
-    ok = len(landed) >= len(declared)
-    return {"declared": declared, "landed": landed, "ok": ok, "problems": problems}
+    # R7：清尾部残渣（等于某 tag 后缀的游离文本）→ R8：终态自证
+    tail = clean_topic_tail(page, want, log_obj=log)
+    final = verify_topics(page, declared)
+    if not final["ok"]:
+        problems.extend(final["problems"])
+    ok = len(landed) >= len(declared) and final["ok"]
+    return {"declared": declared, "landed": landed, "landed_as": landed_as,
+            "ok": ok, "problems": problems, "final": final, "tail": tail}
+
+
+_TOPIC_STATE_JS = r"""() => {
+  const ed = document.querySelector('div[contenteditable="true"]');
+  if (!ed) return {count: 0, last: ''};
+  const ZW = /[\u200b\u200c\u200d\ufeff]/g;
+  const ms = [...ed.querySelectorAll('[data-mention="#"]')];
+  const last = ms.length ? ((ms[ms.length - 1].innerText || '').replace(ZW, '')
+                           .trim().replace(/^#/, '')) : '';
+  let tailLen = 0;
+  if (ms.length) {
+    const r = document.createRange();
+    r.setStartAfter(ms[ms.length - 1]);
+    r.setEnd(ed, ed.childNodes.length);
+    const d = document.createElement('div');
+    d.appendChild(r.cloneContents());
+    tailLen = ((d.innerText || '').replace(ZW, '')).replace(/\s+$/g, '').length;
+  }
+  return {count: ms.length, last, tailLen};
+}"""
+
+_CLICK_SUGGEST_JS = r"""(kw) => {
+  const names = [...document.querySelectorAll('[class*=tag-hash-view-name]')]
+      .filter(e => e.offsetHeight);
+  const norm = s => (s || '').trim().replace(/^#/, '');
+  const pick = names.find(e => norm(e.innerText) === kw)
+            || names.find(e => norm(e.innerText).startsWith(kw))
+            || names.find(e => norm(e.innerText).includes(kw));
+  if (!pick) return '';
+  const item = (pick.closest('[class*=tag-hash]') && pick.closest('[class*=tag-hash]').parentElement)
+            || pick.closest('[class*=tag-]') || pick;
+  item.click();
+  return (pick.innerText || '').trim();
+}"""
+
+COVER_ENTRY_TEXTS = ("选择封面", "设置封面", "编辑封面", "更换封面", "上传封面")
+CONFIRM_TEXTS = ("确定", "完成", "保存", "下一步", "应用")
+
+
+def _img_png(page, el, max_w: int = 512) -> bytes:
+    """把页面里某个 <img> 的**原始像素**画到 canvas 再取回 PNG。
+
+    为什么不用 element.screenshot()：抖音封面缩略图只有 61×81，截屏后 dHash 完全是噪声
+    （实测距离恒 33~36，同图不同图分不开）。而这张缩略图的 `src` 是 blob，指向**满分辨率**
+    的原图 —— 经 canvas 读回来再比，才是同一张图的真像素。
+    """
+    import base64
+
+    data_url = el.evaluate(
+        """(img, maxW) => {
+            const nw = img.naturalWidth || 0, nh = img.naturalHeight || 0;
+            if (!nw || !nh) return '';
+            const W = Math.min(maxW, nw);
+            const H = Math.max(1, Math.round(W * nh / nw));
+            const c = document.createElement('canvas');
+            c.width = W; c.height = H;
+            c.getContext('2d').drawImage(img, 0, 0, W, H);
+            try { return c.toDataURL('image/png'); } catch (e) { return ''; }
+        }""", max_w)
+    if not data_url or "," not in str(data_url):
+        raise RuntimeError("canvas 取像素失败（可能是跨域图）")
+    return base64.b64decode(str(data_url).split(",", 1)[1])
+
+
+def set_cover(page, cover_path: str, *, log_obj=None) -> dict:
+    """上传自定义封面并**回读像素比对**（R1 / R2 / R3）。
+
+    为什么不能只「点一下上传」就算成功：封面入口是平台易变区，上传后也可能
+    被平台自己的「智能封面」覆盖。唯一的硬证据是**回读预览图与我上传的那张
+    图 dHash 一致**（同图 0~2，异图 >20，阈值 12）。
+
+    返回 {"ok": bool, "entry":..., "dhash_dist":..., "error":...}；
+    ok=False 时调用方必须 `COVER_UPLOAD_FAILED` 阻断发布（不许静默回落抽帧）。
+    """
+    log = log_obj or logger
+    from src.utils.img_digest import same_image_any_crop
+
+    path = Path(str(cover_path or ""))
+    detail: dict = {"ok": False, "cover": str(path)}
+    if not path.exists():
+        detail["error"] = f"封面文件不存在：{path}"
+        return detail
+
+    # ① 找入口（文案多写法，逐个试；都没有就明确失败，不瞎点）
+    entry = None
+    for txt in COVER_ENTRY_TEXTS:
+        loc = page.locator(f"text={txt}").first
+        try:
+            if loc.count() and loc.is_visible():
+                entry = (txt, loc)
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    if not entry:
+        detail["error"] = f"找不到封面入口（试过 {COVER_ENTRY_TEXTS}）"
+        return detail
+    detail["entry"] = entry[0]
+    try:
+        entry[1].click()
+        page.wait_for_timeout(1500)
+    except Exception as exc:  # noqa: BLE001
+        detail["error"] = f"点封面入口失败：{type(exc).__name__}: {exc}"
+        return detail
+
+    # ② 找图片类型的 file input（视频 input 的 accept 是 video/*，别喂错）
+    target = None
+    inputs = page.locator('input[type="file"]')
+    for i in range(min(inputs.count(), 8)):
+        el = inputs.nth(i)
+        accept = (el.get_attribute("accept") or "").lower()
+        if "image" in accept or "png" in accept or "jpg" in accept or "jpeg" in accept:
+            target = el
+            break
+    if target is None:
+        detail["error"] = "封面对话框里找不到图片上传框"
+        return detail
+    try:
+        target.set_input_files(str(path))
+        page.wait_for_timeout(3000)
+    except Exception as exc:  # noqa: BLE001
+        detail["error"] = f"上传封面失败：{type(exc).__name__}: {exc}"
+        return detail
+
+    # ③ 回读：挑「满分辨率的那张上传图」。真机事实（2026-11-18 DOM dump）：
+    #    弹窗里面积最大的是手机预览卡（243×515，压着头像/点赞/音乐 UI）；
+    #    真正代表封面的缩略图是 61×81 的 blob <img>，其 naturalWidth 仍是 1080。
+    #    所以判据 = canvas 取缩略图背后的**原图像素** 与 cover.png 比（裁切感知）。
+    cands: list[tuple[int, Any]] = []
+    for sel in ('img[src^="blob:"]', 'img[src^="data:image"]'):
+        loc = page.locator(sel)
+        try:
+            n = min(loc.count(), 12)
+        except Exception:  # noqa: BLE001
+            continue
+        for i in range(n):
+            el = loc.nth(i)
+            try:
+                if not el.is_visible():
+                    continue
+                nw = int(el.evaluate("(img) => img.naturalWidth || 0") or 0)
+                nh = int(el.evaluate("(img) => img.naturalHeight || 0") or 0)
+                cands.append((nw * nh, el))
+            except Exception:  # noqa: BLE001
+                continue
+    if not cands:
+        detail["error"] = "上传后找不到封面缩略图（blob/data img），无法自证"
+        return detail
+    cands.sort(key=lambda c: -c[0])
+    detail["preview_natural_px"] = cands[0][0]
+    best_el = cands[0][1]
+    shot_path = Path("/tmp") / "douyin_cover_preview.png"
+    try:
+        png = _img_png(page, best_el)
+        shot_path.write_bytes(png)
+        detail["preview_png"] = str(shot_path)
+        ok, dist, label = same_image_any_crop(str(path), png)
+        detail["dhash_dist"] = dist
+        detail["dhash_crop"] = label
+        detail["ok"] = bool(ok)
+        if not ok:
+            detail["error"] = (f"缩略图背后的原图与 cover.png 不一致（最小 dHash 距离 {dist} "
+                               f"@裁切{label} > 12）")
+            return detail
+    except Exception as exc:  # noqa: BLE001
+        detail["error"] = f"封面像素回读失败：{type(exc).__name__}: {exc}"
+        return detail
+
+    # ④ 确认（有的弹窗要再点一次「确定/完成」才生效）
+    for txt in CONFIRM_TEXTS:
+        btn = page.locator(f'button:has-text("{txt}")').first
+        try:
+            if btn.count() and btn.is_visible():
+                btn.click()
+                page.wait_for_timeout(1500)
+                detail["confirm"] = txt
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    log.info(f"[douyin] 封面上传成功并自证（entry={detail.get('entry')} "
+             f"dhash={detail.get('dhash_dist')} confirm={detail.get('confirm')}）")
+    return detail
+
+
+def topic_tail_residue(page) -> str:
+    """最后一个真话题节点之后残留的纯文本（R7 的靶子）。
+
+    2026-11-18 实测：`fill_topics` 敲 `#关键词` 点联想项后，mention 节点替换了 `#`，
+    但敲进去的关键词没被完全吃掉，尾部留下 `据隐私`（`数据隐私` 少了首字）、
+    `wen4`（`Qwen4` 少了首字符）这类残渣，用户在作品页肉眼可见。
+    """
+    try:
+        return str(page.evaluate(
+            """() => {
+              const ed = document.querySelector('div[contenteditable="true"]');
+              if (!ed) return '';
+              const ms = [...ed.querySelectorAll('[data-mention="#"]')];
+              const ZW = /[\u200b\u200c\u200d\ufeff]/g;
+              if (!ms.length) return (ed.innerText || '').replace(ZW, '').trim();
+              const r = document.createRange();
+              r.setStartAfter(ms[ms.length - 1]);
+              r.setEnd(ed, ed.childNodes.length);
+              const box = document.createElement('div');
+              box.appendChild(r.cloneContents());
+              return (box.innerText || '').replace(ZW, '').replace(/\u00a0/g, ' ').trim();
+            }"""))
+    except Exception:  # noqa: BLE001 — 读不到就当没有残渣，最终还有终态校验兜底
+        return ""
+
+
+_DELETE_TAIL_JS = r"""() => {
+  const ed = document.querySelector('div[contenteditable="true"]');
+  if (!ed) return false;
+  const ms = [...ed.querySelectorAll('[data-mention="#"]')];
+  const r = document.createRange();
+  if (ms.length) r.setStartAfter(ms[ms.length - 1]);
+  else r.selectNodeContents(ed);
+  r.setEnd(ed, ed.childNodes.length);
+  if (r.collapsed) return false;
+  ed.focus();
+  const s = window.getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+  document.execCommand('delete');
+  return true;
+}"""
+
+
+def _delete_tail(page) -> bool:
+    """用 DOM Range 精确删掉「最后一个真话题之后」的内容。
+
+    为什么不用 Backspace：innerText 的字符数和 DOM 字符数不等（话题节点带包裹 span、
+    平台自己插空格），按长度盲按会多吃掉一个话题 —— 真机表现为 6 个话题变 2 个。
+    """
+    try:
+        return bool(page.evaluate(_DELETE_TAIL_JS))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def clean_topic_tail(page, tags, log_obj=None) -> dict:
+    """清掉话题尾部的游离文本（等于某 tag 后缀的才清，别误删用户正文）。"""
+    log = log_obj or logger
+    detail = {"before": "", "after": "", "removed": "", "cleaned": False}
+    residue = topic_tail_residue(page)
+    detail["before"] = residue
+    if not residue:
+        return detail
+    plain = residue.replace(" ", "")
+    hit = next((t for t in tags if plain and plain.endswith(t[len(t) // 2:])), "")
+    if not hit:
+        log.warning(f"[douyin] 话题尾部有游离文本但与任何话题无关，保留原样：{residue!r}")
+        detail["after"] = residue
+        return detail
+    try:
+        _delete_tail(page)
+        page.wait_for_timeout(300)
+        detail["cleaned"] = True
+        detail["removed"] = residue
+        detail["after"] = topic_tail_residue(page)
+        log.info(f"[douyin] 已清掉话题尾部残渣 {residue!r}（属于 #{hit}）")
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[douyin] 清残渣失败：{type(exc).__name__}: {exc}")
+        detail["after"] = residue
+    return detail
+
+
+def verify_topics(page, declared) -> dict:
+    """R8 终态自证：真话题数 == 声明数，且尾部无游离文本。"""
+    want = [str(t).strip().lstrip("#") for t in (declared or []) if str(t).strip()]
+    got = count_topics(page)
+    residue = topic_tail_residue(page)
+    problems = []
+    if got < len(want):
+        problems.append(f"真话题节点 {got} 个，声明 {len(want)} 个")
+    if residue:
+        problems.append(f"尾部残留纯文本 {residue!r}")
+    return {"ok": not problems, "count": got, "want": len(want),
+            "residue": residue, "problems": problems}
 
 
 def count_topics(page) -> int:
@@ -244,6 +547,25 @@ def count_topics(page) -> int:
             "() => document.querySelectorAll('[data-mention=\"#\"]').length"))
     except Exception:  # noqa: BLE001
         return 0
+
+
+def caption_dom(page) -> dict:
+    """描述框的真实 DOM 事实（A2/A5 的证据来源）：非空 `.ace-line` 行数 + 文本长度。"""
+    js = r"""() => {
+      const ed = document.querySelector('div[contenteditable="true"]');
+      if (!ed) return {lines: 0, wantLines: 0, flatLen: 0, reason: 'no_editor'};
+      const ZW = /[\u200b\u200c\u200d\ufeff]/g;
+      const lines = [...ed.querySelectorAll('.ace-line')]
+          .map(e => (e.innerText || '').replace(ZW, '').trim()).filter(Boolean);
+      const txt = (ed.innerText || '').replace(ZW, '');
+      return {lines: lines.length,
+              wantLines: txt.split(/\n+/).filter(x => x.trim()).length,
+              flatLen: txt.replace(/\s+/g, '').length};
+    }"""
+    try:
+        return dict(page.evaluate(js))
+    except Exception:  # noqa: BLE001
+        return {"lines": 0, "wantLines": 0, "flatLen": 0, "reason": "evaluate_failed"}
 
 
 def caption_text(page) -> str:
