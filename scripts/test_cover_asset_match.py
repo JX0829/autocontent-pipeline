@@ -193,6 +193,23 @@ def test_cover_compose() -> None:
     else:
         print("SKIP  §十一 真机封面用例（无 qwen-safety-1 产物）")
 
+    # external_truth hook：有 binding 就按合成封面口径放行（A21 的前置条件）
+    run_q = PROJ / "output" / "20261118" / "qwen-safety-1"
+    if (run_q / "cover_binding_landscape.json").exists():
+        import subprocess as sp
+        payload = {"run_root": str(run_q), "context": {"expect_text": "先删数据，再开源"},
+                   "artifacts": {"video_16_9": str(run_q / "video_16_9.mp4"),
+                                 "cover_16_9": str(run_q / "cover_16_9.png")}}
+        r = sp.run([sys.executable, str(PROJ / "scripts" / "landscape_guard.py")],
+                   input=json.dumps(payload), capture_output=True, text=True)
+        rep = json.loads((r.stdout or "{}").strip().splitlines()[-1] or "{}") if r.stdout.strip() else {}
+        check("§十一 hook 认 binding 放行（ok=true）", rep.get("ok") is True, str(rep.get("reason"))[:60])
+        check("§十一 hook 记 cover_source=composer", rep.get("cover_source") == "composer", str(rep.get("cover_source")))
+        check("§十一 hook 不再比首帧", rep.get("cover_frame_diff") is None, str(rep.get("cover_frame_diff")))
+        check("§十一 binding 帧号已校验", (rep.get("cover_binding") or {}).get("verified") is True, str(rep.get("cover_binding")))
+    else:
+        print("SKIP  §十一 hook binding 用例（无 cover_binding_landscape.json）")
+
     ex = (PROJ / "src" / "pipeline" / "executors.py").read_text(encoding="utf-8")
     check("§十一 A22 tech 链路不再渲 CoverStill", 'remotion("still"' not in ex)
     rl = (PROJ / "scripts" / "render_landscape.py").read_text(encoding="utf-8")

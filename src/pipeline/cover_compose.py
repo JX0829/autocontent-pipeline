@@ -151,6 +151,15 @@ def compose_cover(video: Path | str, out_png: Path | str, *, props: dict[str, An
         raise _fail("render_still", video=video, frame=frame,
                     extra=f"composition={comp} rc={proc.returncode} {tail}")
 
+    # 落绑定证据：证明「这张封面」的底图就是该视频的第 frame 帧（供 external_truth hook 校验）
+    import hashlib
+    binding = out_png.parent / f"cover_binding_{aspect}.json"
+    binding.write_text(json.dumps({
+        "aspect": aspect, "video": str(video), "frame": frame,
+        "base": str(base), "base_sha256": hashlib.sha256(base.read_bytes()).hexdigest(),
+        "composition": comp, "cover": str(out_png),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
     got = _probe_size(out_png)
     if got != (want_w, want_h):
         raise _fail("size_check", video=video, frame=frame,
