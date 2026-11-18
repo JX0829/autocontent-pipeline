@@ -364,6 +364,84 @@ def _probe_size(path: Path) -> tuple[int, int]:
         return (0, 0)
 
 
+#: 片头封面停留秒数（2026-11-18 用户要求：封面帧直接贴到成片最前面播放 0.5s）
+COVER_LEAD_SECONDS = 0.5
+
+
+def _probe_duration(path: Path) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    try:
+        return float(out)
+    except ValueError:
+        return 0.0
+
+
+def _prepend_cover(video: Path, cover: Path, seconds: float = COVER_LEAD_SECONDS) -> Path:
+    """把封面图当成片头，静止播放 `seconds` 秒，再接正片。
+
+    为什么这么做（2026-11-18）：抖音上传页的「设置封面」控件一直没能稳定用起来，
+    平台默认取首帧。于是让**首帧就是我们要的封面**——封面帧进片头，平台自动用它，
+    不再依赖任何平台的封面上传；视频号同理（原话「后面不需要单独做封面上传」）。
+
+    实现要点：
+      · 只重编码一次（libx264 crf18），音频用 adelay 整体后移 0.5s 保持口播同步；
+      · 正片留存一份 `video_body.mp4`，出问题能直接比对是封面段还是正片段；
+      · 任何一步失败显式报错并恢复原 video.mp4（宁可没有片头封面，也不能产出半成品）。
+    """
+    video, cover = Path(video), Path(cover)
+    if not cover.exists() or cover.stat().st_size == 0:
+        raise ExecutorError(f"COVER_PREPEND_FAILED: 封面不存在: {cover}")
+    if seconds <= 0:
+        return video
+
+    width, height = _probe_size(video)
+    if not width or not height:
+        raise ExecutorError(f"COVER_PREPEND_FAILED: 探不到成片尺寸: {video.name}")
+    total = _probe_duration(video)
+    if total <= 0:
+        raise ExecutorError(f"COVER_PREPEND_FAILED: 探不到成片时长: {video.name}")
+
+    body = video.with_name("video_body.mp4")
+    tmp = video.with_name(".video_with_cover.mp4")
+    if body.exists():
+        body.unlink()
+    video.replace(body)
+
+    ms = int(round(seconds * 1000))
+    target = total + seconds
+    filt = (
+        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0];"
+        f"[1:v]scale={width}:{height},setsar=1,fps=30,format=yuv420p[v1];"
+        f"[v0][v1]concat=n=2:v=1:a=0[v];"
+        f"[1:a]adelay={ms}:all=1[a]"
+    )
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-loop", "1", "-t", f"{seconds}", "-i", str(cover), "-i", str(body),
+         "-filter_complex", filt, "-map", "[v]", "-map", "[a]",
+         "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "192k", "-t", f"{target:.3f}", str(tmp)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        if tmp.exists():
+            tmp.unlink()
+        body.replace(video)                       # 恢复原片，不产半成品
+        tail = (proc.stderr or "").strip().splitlines()[-3:]
+        raise ExecutorError(f"COVER_PREPEND_FAILED: 封面片头合成失败（{video.name}） | "
+                            f"rc={proc.returncode} | {' / '.join(tail)}")
+    tmp.replace(video)
+    got = _probe_duration(video)
+    if abs(got - target) > 0.15:
+        raise ExecutorError(f"COVER_PREPEND_FAILED: 时长异常 {got:.2f}s（期望 {target:.2f}s）")
+    return video
+
+
 def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
     """竖版渲染（只渲染，不碰 TTS —— props 由 align_tts 产出）。"""
     props = ctx.artifacts.get("props") or str(ctx.run_root / "props" / "aligned_render.json")
@@ -380,8 +458,13 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
     _remotion("render", "src/index.ts", composition, str(video),
               f"--props={Path(props).resolve()}", "--codec=h264", "--crf=18",
               "--pixel-format=yuv420p")
-    # 封面图 = 视频第 0 帧（§八）；不再渲 CoverStill 海报
-    _extract_first_frame(video, cover)
+    # 封面 = 成片截帧做底图 + tech_story 语汇渲染文案（§十一 R13~R18）；
+    # 不再渲 CoverStill 海报，也不再直接拿第 0 帧（描边大字 OCR 读不出）。
+    from src.pipeline.cover_compose import compose_cover
+    compose_cover(video, cover, props=_props_data, run_id=ctx.run_id, aspect="portrait")
+    # 封面帧贴到片头播 0.5s（§十二 2026-11-18）：首帧即封面，抖音/视频号都不再需要
+    # 单独上传封面。竖版一条改动，两个平台同时生效。
+    _prepend_cover(video, cover)
     _assert_has_audio(video)   # 无声片零容忍
     return {"video": str(video), "cover": str(cover)}
 
@@ -405,22 +488,13 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     except Exception as exc:  # noqa: BLE001
         raise ExecutorError(f"横版 props 解析失败: {props}: {exc}") from exc
     tech_landscape = (not textbook) and _composition_for(_pd) == "TechStoryVideo"
+    def _landscape_cover(video_path: Path, cover_path: Path) -> Path:
+        from src.pipeline.cover_compose import compose_cover
+        return compose_cover(video_path, cover_path, props=_pd, run_id=ctx.run_id, aspect="landscape")
 
-    # 2026-11-17（方案 B）：横版优先用 `<stem>_landscape.<ext>` 原生 16:9 副本，
-    # 没有副本才回落竖版居中裁切。竖版 props 不动，横版单写一份 props。
-    from src.assets_manager import with_landscape_assets
-    _lp, _lrep = with_landscape_assets(_pd)
-    props_for_render = props
-    if _lrep["used"]:
-        land_props = Path(ctx.run_root) / "props" / "aligned_render_landscape.json"
-        _write_json(land_props, _lp)
-        props_for_render = str(land_props)
-        print(f"[assets] 横版换成原生 16:9 副本: "
-              + ", ".join(f"{s}→{Path(v['to']).name}" for s, v in _lrep["used"].items())
-              + (f"；无横版副本回落竖版裁切: {_lrep['fallback']}" if _lrep["fallback"] else ""))
-
-    info = render_landscape(ctx.task_id, props_json=props_for_render, out_dir=str(ctx.run_root),
+    info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""),
+                            cover_composer=_landscape_cover if tech_landscape else None,
                             video_composition=("TextbookLandscapeVideo" if textbook else
                                                "TechStoryLandscapeVideo" if tech_landscape else None),
                             cover_composition="TextbookLandscapeCoverStill" if textbook else None)

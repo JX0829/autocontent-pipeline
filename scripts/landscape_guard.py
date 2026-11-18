@@ -140,8 +140,37 @@ def _frame_diff(a: str, b: str) -> float:
     return sum(abs(x - y) for x, y in zip(ra, rb)) / len(ra)
 
 
+def _cover_binding(cover: str | None) -> dict | None:
+    """读取 cover_compose 落的绑定证据（SPEC-20261117 §十一）。
+
+    有绑定且底图 hash 与记录一致 → 说明「这张封面」的底图确实是该成片的某一帧，
+    此时不再用「视频首帧 == 封面」判据（合成封面必然不等于首帧）。
+    """
+    if not cover:
+        return None
+    cp = Path(cover)
+    aspect = "landscape" if "16_9" in cp.name else "portrait"
+    bp = cp.parent / f"cover_binding_{aspect}.json"
+    if not bp.exists():
+        return None
+    try:
+        bind = json.loads(bp.read_text(encoding="utf-8"))
+        base = Path(bind.get("base") or "")
+        if not base.exists():
+            return None
+        import hashlib
+        if hashlib.sha256(base.read_bytes()).hexdigest() != bind.get("base_sha256"):
+            return None
+        return bind
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def check_landscape(video: str, expect_text: str = "",
-                    cover_path: str | None = None) -> tuple[bool, dict]:
+                    cover_path: str | None = None,
+                    compare_cover_frame: bool = True) -> tuple[bool, dict]:
+    """compare_cover_frame=False：封面不是「视频第 0 帧」而是合成卡片（SPEC-20261117 §十一），
+    此时不做首帧一致性硬判，只在报告里记 cover_source=composer。"""
     rep = {"video": video}
     try:
         w, h = _probe(video)
@@ -182,7 +211,10 @@ def check_landscape(video: str, expect_text: str = "",
     #  · 再校验「视频首帧 ≈ 封面」，确保投放时首帧画面就是这张海报（A3 的本意）
     if expect_text or cover_path:
         cover_ok = bool(cover_path and Path(cover_path).exists())
-        if cover_ok:
+        if cover_ok and not compare_cover_frame:
+            rep["cover_source"] = "composer"
+            rep["cover_frame_diff"] = None
+        elif cover_ok:
             diff = _frame_diff(video, str(cover_path))
             rep["cover_frame_diff"] = round(diff, 2)
             if diff > MAX_FRAME_DIFF:
@@ -232,6 +264,7 @@ def _hook_mode() -> int:
                          ensure_ascii=False))
         return 1
     ctx = payload.get("context") or {}
+
     arts = payload.get("artifacts") or {}
     run_root = payload.get("run_root") or ""
 
@@ -246,8 +279,13 @@ def _hook_mode() -> int:
                          ensure_ascii=False))
         return 1
 
+    _bind = _cover_binding(cover)
     ok, rep = check_landscape(video, str(ctx.get("expect_text") or ""),
-                              cover_path=cover if cover and Path(cover).exists() else None)
+                              cover_path=cover if cover and Path(cover).exists() else None,
+                              compare_cover_frame=(_bind is None))
+    if _bind:
+        rep["cover_source"] = "composer"
+        rep["cover_binding"] = {"frame": _bind.get("frame"), "verified": True}
     rep["ok"] = ok
     rep.setdefault("reason", "")
     print(json.dumps(rep, ensure_ascii=False))
@@ -260,6 +298,11 @@ if __name__ == "__main__":
     video = sys.argv[1]
     expect = sys.argv[2] if len(sys.argv) > 2 else ""
     cover = sys.argv[3] if len(sys.argv) > 3 else None
-    ok, report = check_landscape(video, expect, cover_path=cover)
+    _bind = _cover_binding(cover)
+    ok, report = check_landscape(video, expect, cover_path=cover,
+                                 compare_cover_frame=(_bind is None))
+    if _bind:
+        report["cover_source"] = "composer"
+        report["cover_binding"] = {"frame": _bind.get("frame"), "verified": True}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if ok else 1)
