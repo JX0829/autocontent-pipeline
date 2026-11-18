@@ -96,16 +96,20 @@ def verify_channels(run: Path, info: dict, results: list[dict]) -> dict:
 
     prov = ChannelsCDPProvider(_account("channels"))
     res = prov.publish_live(info["video"], info["cover"], info["title"], info["desc"],
-                            info["tags"], stop_before_publish=True)
+                            info["tags"], stop_before_publish=True,
+                            cover_expect=info.get("cover_expect") or "")
     ev = run / "gaps_evidence"
     ev.mkdir(parents=True, exist_ok=True)
     (ev / "channels_result.json").write_text(json.dumps(res, ensure_ascii=False, indent=2),
                                              encoding="utf-8")
     cov = res.get("cover") or {}
-    results.append(check("A7 视频号封面上传并自证（dHash ≤12）",
-                         bool(cov.get("ok")) and int(cov.get("dhash_dist", 99)) <= 12,
-                         f"entry={cov.get('entry')} dist={cov.get('dhash_dist')} "
-                         f"confirm={cov.get('confirm')}"))
+    auto = str(cov.get("mode") or "") == "auto"
+    results.append(check(
+        "A7 视频号封面（方案A：系统抽帧 == 视频前 0.4s 封面卡）" if auto
+        else "A7 视频号封面上传并自证（dHash ≤12）",
+        bool(cov.get("ok")) and int(cov.get("dhash_dist", 99)) <= 12,
+        f"mode={'auto' if auto else 'upload'} dist={cov.get('dhash_dist')} "
+        f"box={cov.get('preview_box')} entry={cov.get('entry')} confirm={cov.get('confirm')}"))
     return res
 
 
@@ -136,6 +140,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--platforms", default="douyin,channels")
+    ap.add_argument("--video-override", default="",
+                    help="用另一份视频跑验收（如刚重渲、带内嵌封面卡的成片）")
+    ap.add_argument("--auto-cover-expect", default="",
+                    help="方案A：不上传封面，改为校验「平台系统抽帧封面」是否等于这张图（通常是视频第 6 帧）")
     ap.add_argument("--tags-override", default="",
                     help="逗号分隔的话题列表，覆盖物料 tags（用来验「无联想项直接丢弃」这类分支）")
     ap.add_argument("--skip-cover", action="store_true",
@@ -146,6 +154,10 @@ def main() -> int:
     info = _load_runs(run)
     if a.skip_cover:
         info["cover"] = ""
+    if a.video_override:
+        info["video"] = a.video_override
+    if a.auto_cover_expect:
+        info["cover"], info["cover_expect"] = "", a.auto_cover_expect
     if a.tags_override:
         info["tags"] = [x.strip() for x in a.tags_override.split(",") if x.strip()]
     print(f"run={run.name} title={info['title'][:24]!r} tags={len(info['tags'])} "

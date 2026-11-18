@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import asyncio
+import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -15,6 +16,100 @@ from typing import Dict, Any, Optional, List
 from .base import BaseSocialProvider
 
 logger = logging.getLogger("ChannelsCDPProvider")
+
+async def _read_auto_cover(page, ui, expect_path: str, shot_dir) -> dict:
+    """方案A：**不上传封面**，读平台系统抽帧得到的封面，与「视频前 0.4s 封面卡」比对。
+
+    背景（2026-11-18 定稿）：封面卡已经渲染进视频前 12 帧，平台抽帧就该抽到它，
+    于是「封面 = 视频第一帧」成为可验证的事实，不再依赖上传通道。
+    失败返回 ok=False，由调用方阻断（fail-closed：宁可停，也不要悄悄用一张不一样的封面）。
+    """
+    from pathlib import Path as _P
+
+    from src.utils.img_digest import same_image_any_crop
+
+    detail: dict = {"ok": False, "mode": "auto", "expect": str(expect_path or "")}
+    exp = _P(str(expect_path or ""))
+    if not exp.exists():
+        detail["error"] = f"期望封面不存在：{exp}"
+        return detail
+
+    shot = None
+    box: dict = {}
+    for sname, sc in (("page", page), ("iframe", ui)):
+        try:
+            loc = sc.locator('div.form-item:has-text("封面预览") img')
+            for i in range(min(await loc.count(), 6)):
+                el = loc.nth(i)
+                b = await el.bounding_box() or {}
+                if await el.is_visible() and b.get("width", 0) >= 50:
+                    shot = await el.screenshot()
+                    box = {"w": int(b.get("width", 0)), "h": int(b.get("height", 0)), "scope": sname}
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        if shot:
+            break
+    if not shot:
+        detail["error"] = "读不到封面预览（平台可能还没生成抽帧）"
+        return detail
+
+    # 74×98 的缩略图上 dHash 分辨不出字（抖音 A1 同一教训）→ 点开封面编辑器拿大图再比。
+    # 大图 = 平台真正采用的封面，这才是「抽帧是不是封面卡」的硬证据。
+    big = None
+    try:
+        for sname, sc in (("page", page), ("iframe", ui)):
+            loc = sc.locator('div.form-item:has-text("封面预览") img')
+            if await loc.count():
+                el = loc.nth(0)
+                if await el.is_visible():
+                    await el.click()
+                    await asyncio.sleep(2.5)
+                    break
+        for sname, sc in (("page", page), ("iframe", ui)):
+            imgs = sc.locator("img")
+            best = None
+            for i in range(min(await imgs.count(), 24)):
+                e = imgs.nth(i)
+                b = await e.bounding_box() or {}
+                w = int(b.get("width", 0) or 0)
+                if await e.is_visible() and w >= 150 and (best is None or w > best[0]):
+                    best = (w, e, b, sname)
+            if best:
+                big = await best[1].screenshot()
+                detail["big_box"] = {"w": int(best[2].get("width", 0)),
+                                     "h": int(best[2].get("height", 0)), "scope": best[3]}
+                break
+    except Exception as exc:  # noqa: BLE001
+        detail["open_editor_error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        for sc in (ui, page):
+            try:
+                cancel = sc.locator('text=取消').first
+                if await cancel.count() and await cancel.is_visible():
+                    await cancel.click()
+                    await asyncio.sleep(0.8)
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+
+    vis = _P(shot_dir) / f"auto_cover_{int(time.time())}.png"
+    vis.write_bytes(shot)
+    detail["preview"] = str(vis)
+    detail["preview_box"] = box
+    if big:
+        vis_big = _P(shot_dir) / f"auto_cover_big_{int(time.time())}.png"
+        vis_big.write_bytes(big)
+        detail["preview_big"] = str(vis_big)
+        vis = vis_big          # 有编辑器大图就以它为准
+    try:
+        same, dist, note = same_image_any_crop(str(vis), str(exp))
+        detail.update(dhash_dist=int(dist), dhash_crop=note, same=bool(same))
+        detail["ok"] = int(dist) <= 12
+    except Exception as exc:  # noqa: BLE001
+        detail["error"] = f"dHash 比对失败：{type(exc).__name__}: {exc}"
+    return detail
+
 
 async def _upload_cover(page, ui, cover_path: str, shot_dir) -> dict:
     """视频号：上传自定义封面并回读自证（R9）。
@@ -265,6 +360,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
         allow_missing_flags: bool = False,
         headless: bool | None = None,
         stop_before_publish: bool = False,
+        cover_expect: str = "",
     ) -> Dict[str, Any]:
         """真实发布到微信视频号（公开可见 + 原创声明 + AI 声明）。
 
@@ -304,14 +400,15 @@ class ChannelsCDPProvider(BaseSocialProvider):
             content_text=content_text, topics=topics,
             declare_original=declare_original, declare_aigc=declare_aigc,
             dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
-            stop_before_publish=stop_before_publish, cdp_url=cdp_url))
+            stop_before_publish=stop_before_publish, cdp_url=cdp_url,
+            cover_expect=cover_expect))
 
     async def _publish_live_async(self, video_path: str, cover_path: str, title: str,
                                   content_text: str, topics: list[str],
                                   declare_original: bool, declare_aigc: bool,
                                   dry_run: bool, allow_missing_flags: bool,
                                   headless: bool, stop_before_publish: bool,
-                                  cdp_url: str = "") -> Dict[str, Any]:
+                                  cdp_url: str = "", cover_expect: str = "") -> Dict[str, Any]:
         """真实发布到视频号。2026-11-10 真机实测得出的三条硬约束：
 
         1. 直接访问 /platform/post/create 会跳回首页，必须先点首页「发表视频」；
@@ -560,6 +657,27 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
                 # 3c. 封面（R9）：收下 cover_path 就必须用，且回读自证；失败阻断发布
                 cover_detail: dict = {"ok": None, "skipped": True}
+                if not cover_path and cover_expect:
+                    # 方案A：不传封面 → 验「平台系统抽帧 = 视频前 0.4s 封面卡」
+                    try:
+                        cover_detail = await _read_auto_cover(page, ui, cover_expect, shot_dir)
+                    except Exception as exc:  # noqa: BLE001
+                        cover_detail = {"ok": False, "mode": "auto",
+                                        "error": f"{type(exc).__name__}: {exc}"}
+                    if not cover_detail.get("ok"):
+                        try:
+                            await page.screenshot(path=str(shot_dir / "fail_auto_cover.png"), full_page=True)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return {"success": False, "published": False,
+                                "status": "COVER_AUTO_MISMATCH",
+                                "cover": cover_detail,
+                                "filled_text": filled_text,
+                                "topics_declared": topics_declared,
+                                "topics_landed": topics_landed,
+                                "screenshot": str(shot_dir / "fail_auto_cover.png"),
+                                "message": ("平台系统抽帧的封面与视频前 0.4s 封面卡不一致"
+                                            f"（dist={cover_detail.get('dhash_dist')}），已中止发布")}
                 if cover_path:
                     try:
                         cover_detail = await _upload_cover(page, ui, cover_path, shot_dir)
