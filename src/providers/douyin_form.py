@@ -305,9 +305,12 @@ def fill_topics(page, topics, log_obj=None) -> dict:
                 break
             page.wait_for_timeout(300)
         if not got:
-            problems.append(f"#{tag} 无匹配联想项，已按纯文本留下")
-            page.keyboard.type(f"#{tag} ", delay=60)
-            log.warning(f"[douyin] 话题 #{tag} 未成为真话题（两次都没匹配）")
+            # 2026-11-18 18:50 真机（作品 57《英伟达圣诞季送Steam现金》）：残留「#显卡 卡卡」
+            # 的正是在这条「联想列表无匹配」路径上 —— 敲进去的 #tag 是纯文本，平台的联想
+            # 插入逻辑只吃掉一部分，留下 `卡卡` 这种尾巴，而按 chip 设计的清理判据摸不到。
+            # 处置：**无匹配就不写纯文本**（纯文本话题本来也不生效，只会制造残渣）。
+            problems.append(f"#{tag} 无匹配联想项，已跳过（不写纯文本，避免尾部残渣）")
+            log.warning(f"[douyin] 话题 #{tag} 无匹配联想项，跳过不写（防尾部残渣）")
 
     # ── R7：清尾部游离文本（联想项只吃掉 `#`+首字符，余下如「据隐私」「wen4」残留）──
     repaired = _repair_tail(page, want, log)
