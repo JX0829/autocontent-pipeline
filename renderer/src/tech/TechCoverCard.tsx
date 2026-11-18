@@ -12,6 +12,18 @@ import { AbsoluteFill, Img, staticFile } from 'remotion';
  */
 
 const ACCENT = '#5ED8FF';
+
+/**
+ * 封面「3:4 可见区」安全内边距（2026-11-18 用户要求）
+ *
+ * 抖音个人主页/作品列表把 9:16 封面按 **3:4 居中裁剪**显示：1080x1920 只留 y∈[240,1680]。
+ * 原来文案块 bottom=210 → 块底落在 y=1710，超界 30px，最后一行（副标题）会被截掉。
+ * 竖版底部收到 260（块底 y=1660，留 20px 余量）；左右与正文一致用 100。
+ */
+export const COVER_SAFE_34_TOP = 240;
+export const COVER_SAFE_34_BOTTOM = 1680;
+const COVER_PORTRAIT_INSET_BOTTOM = 260;
+const COVER_PORTRAIT_INSET_X = 100;
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
 
 const KICKER: Record<string, string> = {
@@ -34,7 +46,7 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
   const portrait = (aspect ?? 'portrait') !== 'landscape';
   const kickerText = kicker || KICKER[theme || ''] || '科技速递';
   const insets = portrait
-    ? { left: 88, right: 88, bottom: 210 }
+    ? { left: COVER_PORTRAIT_INSET_X, right: COVER_PORTRAIT_INSET_X, bottom: COVER_PORTRAIT_INSET_BOTTOM }
     : { left: 96, right: 96, bottom: 96 };
   const mainSize = portrait ? 88 : 84;
 
