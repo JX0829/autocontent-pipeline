@@ -214,7 +214,7 @@ $PY -m src.pipeline.runner --material materials/20261118_openai_chile.json \
 通用：`publish.aspect` 必须留空（写了就强制覆盖，会短路上面的平台映射）。
 封面：竖版首帧即封面（§2.1.1），**三平台都不做单独封面上传**；横版用 `cover_16_9.png`。
 
-竖版安全边距：模板 120px（11.1%），因为抖音信息流会裁掉左右各约 9%（原 88px 裁完贴边）。
+竖版安全边距：模板 100px（9.3%），因为抖音信息流会裁掉左右各约 9%（原 88px 裁完贴边）。
 `scripts/audit_safe_area.py` 防回退，已挂 `verify_all`。
 
 ### 5.4 结果口径（只认这三态）
