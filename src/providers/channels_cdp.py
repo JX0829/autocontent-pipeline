@@ -7,6 +7,7 @@ src/providers/channels_cdp.py
 import os
 import sys
 import json
+import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -14,6 +15,174 @@ from typing import Dict, Any, Optional, List
 from .base import BaseSocialProvider
 
 logger = logging.getLogger("ChannelsCDPProvider")
+
+async def _upload_cover(page, ui, cover_path: str, shot_dir) -> dict:
+    """视频号：上传自定义封面并回读自证（R9）。
+
+    真机结构（2026-11-18 探针 scripts/probe_channels_cover.py）：
+      · 封面区 = `div.form-item` 文案「封面预览 / 编辑 / 个人主页和分享卡片(3:4)」
+      · 入口是那个「编辑」（**没有**「更换封面」这种字样）
+      · 页面里 image 类型的 file input 只有一个（accept=image/jpeg,image/jpg,image/png）
+
+    之前 `_publish_live_async()` 收下 cover_path 就丢，视频号作品封面一律系统抽帧 —— 同一个病。
+    失败必须返回 ok=False，由调用方 COVER_UPLOAD_FAILED 阻断。
+    """
+    from pathlib import Path as _P
+
+    from src.utils.img_digest import same_image_any_crop
+
+    detail: dict = {"ok": False, "cover": str(cover_path or "")}
+    path = _P(str(cover_path or ""))
+    if not path.exists():
+        detail["error"] = f"封面文件不存在：{path}"
+        return detail
+
+    scopes = (("page", page), ("iframe", ui))
+
+    # ① 入口：封面预览行里的「编辑」（可能得先 hover 才出现）
+    clicked_entry = ""
+    for sname, sc in scopes:
+        try:
+            row = sc.locator('div.form-item:has-text("封面预览")').first
+            if await row.count():
+                await row.hover()
+                await asyncio.sleep(0.6)
+                for txt in ("编辑", "更换", "上传"):
+                    btn = row.locator(f'text={txt}').first
+                    if await btn.count() and await btn.is_visible():
+                        await btn.click()
+                        clicked_entry = f"{sname}:{txt}"
+                        break
+        except Exception:  # noqa: BLE001
+            pass
+        if clicked_entry:
+            break
+    # 找不到「编辑」不直接判死：视频号的图片 input 是常驻在 DOM 里的，
+    # 直接喂文件往往就生效（真机 2026-11-18 探针确认页面只有 1 个 image input）。
+    # 上传前先留一张预览基线：视频号封面预览只有 74×98，dHash 噪声大，
+    # 单看「像不像 cover」不可靠；**先证明它变了**，再看「变得像 cover」。
+    before_shot = None
+    for sname, sc in scopes:
+        try:
+            loc = sc.locator('div.form-item:has-text("封面预览") img')
+            for i in range(min(await loc.count(), 6)):
+                el = loc.nth(i)
+                box = await el.bounding_box() or {}
+                if await el.is_visible() and box.get("width", 0) >= 50:
+                    before_shot = await el.screenshot()
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        if before_shot:
+            break
+    # 「编辑」文案常常只在 hover 后才可点，点不到就**直接点封面缩略图**（视频号常规交互）
+    if not clicked_entry and before_shot is not None:
+        for sname, sc in scopes:
+            try:
+                img = sc.locator('div.form-item:has-text("封面预览") img').first
+                if await img.count() and await img.is_visible():
+                    await img.click()
+                    clicked_entry = f"{sname}:img_click"
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        if clicked_entry:
+            await asyncio.sleep(2.0)
+    detail["entry"] = clicked_entry or "direct_input"
+    await asyncio.sleep(1.5 if clicked_entry else 0.5)
+
+    # ② 图片类型 file input（视频那个 accept 是 video/*，别喂错）
+    target = None
+    for sname, sc in scopes:
+        try:
+            inputs = sc.locator('input[type="file"]')
+            for i in range(min(await inputs.count(), 8)):
+                el = inputs.nth(i)
+                accept = (await el.get_attribute("accept") or "").lower()
+                if "image" in accept:
+                    target = el
+                    detail["input_scope"] = sname
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        if target is not None:
+            break
+    if target is None:
+        detail["error"] = "找不到图片上传框"
+        return detail
+    try:
+        await target.set_input_files(str(path))
+        await asyncio.sleep(3.5)
+    except Exception as exc:  # noqa: BLE001
+        detail["error"] = f"上传封面失败：{type(exc).__name__}: {exc}"
+        return detail
+
+    # ③ 确认（有的弹层要再点「确定/确认/保存」）
+    for ctxt in ("确定", "确认", "保存", "完成"):
+        for sname, sc in scopes:
+            try:
+                btn = sc.locator(f'button:has-text("{ctxt}")').first
+                if await btn.count() and await btn.is_visible():
+                    await btn.click()
+                    detail["confirm"] = f"{sname}:{ctxt}"
+                    await asyncio.sleep(1.5)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        if detail.get("confirm"):
+            break
+
+    # ④ 回读：封面预览图截图 vs cover.png（裁切感知；视频号是 3:4）
+    shot = None
+    for sname, sc in scopes:
+        try:
+            loc = sc.locator('div.form-item:has-text("封面预览") img')
+            for i in range(min(await loc.count(), 6)):
+                el = loc.nth(i)
+                box = await el.bounding_box() or {}
+                if await el.is_visible() and box.get("width", 0) >= 50:
+                    shot = await el.screenshot()
+                    detail["preview_box"] = [int(box.get(k, 0)) for k in ("x", "y", "width", "height")]
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        if shot:
+            break
+    if not shot:
+        detail["error"] = "上传后找不到封面预览图，无法自证"
+        return detail
+    png_path = _P(str(shot_dir)) / "channels_cover_preview.png"
+    try:
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        png_path.write_bytes(shot)
+        detail["preview_png"] = str(png_path)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        ok, dist, label = same_image_any_crop(str(path), shot, threshold=25)
+        detail["dhash_dist"] = dist
+        detail["dhash_crop"] = label
+        changed = None
+        if before_shot:
+            from src.utils.img_digest import dhash, hamming
+
+            changed = hamming(dhash(before_shot), dhash(shot))
+        detail["preview_changed_by"] = changed
+        # 74×98 的预览上 dHash 噪声大，阈值放宽到 25；但**必须**同时满足「预览确实变了」，
+        # 否则等于上传没生效却报成功。
+        detail["ok"] = bool(ok and (changed is None or changed >= 8))
+        if not detail["ok"]:
+            detail["error"] = (f"封面预览校验未过（与 cover 距离 {dist}@裁切{label}，"
+                               f"较上传前变化 {changed}）")
+            return detail
+    except Exception as exc:  # noqa: BLE001
+        detail["error"] = f"封面预览比对失败：{type(exc).__name__}: {exc}"
+        return detail
+
+    logger.info(f"[CHANNELS] 封面上传并自证成功（entry={detail.get('entry')} "
+                f"dhash={detail.get('dhash_dist')} confirm={detail.get('confirm')}）")
+    return detail
+
 
 class ChannelsCDPProvider(BaseSocialProvider):
     """
@@ -389,6 +558,24 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 except Exception as e:  # noqa: BLE001 — 短标题是加分项，失败不阻断
                     logger.debug(f"[CHANNELS] 短标题填写失败（不阻断）: {e}")
 
+                # 3c. 封面（R9）：收下 cover_path 就必须用，且回读自证；失败阻断发布
+                cover_detail: dict = {"ok": None, "skipped": True}
+                if cover_path:
+                    try:
+                        cover_detail = await _upload_cover(page, ui, cover_path, shot_dir)
+                    except Exception as exc:  # noqa: BLE001
+                        cover_detail = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    if not cover_detail.get("ok"):
+                        try:
+                            await page.screenshot(path=str(shot_dir / "fail_cover.png"), full_page=True)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return {"success": False, "published": False,
+                                "status": "COVER_UPLOAD_FAILED",
+                                "cover": cover_detail,
+                                "screenshot": str(shot_dir / "fail_cover.png"),
+                                "message": f"封面没能上传/自证（{cover_detail.get('error')}），已中止发布"}
+
                 # fail-closed：描述为空绝不发布（否则会发出「无标题无文案」的空作品）
                 if len(filled_text) < 10:
                     await page.screenshot(path=str(shot_dir / "fail_description_empty.png"),
@@ -443,6 +630,7 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
                 if stop_before_publish:
                     return {"success": True, "published": False, "status": "STOPPED_BEFORE_PUBLISH",
+                            "cover": cover_detail,
                             "url": page.url, "declare_original": orig_done,
                             "original_label": orig_txt, "aigc_state": aigc_state,
                             "filled_text": filled_text[:200],
