@@ -102,6 +102,37 @@ def _fit_panel_34(src: Path, dst: Path, *, w: int = 1080, h: int = 1920) -> None
         raise CoverComposeError(f"{COVER_COMPOSE_FAILED}: stage=panel34 rc={proc.returncode} {tail}")
 
 
+def pick_clean_source(props: dict[str, Any]) -> tuple[Optional[Path], str]:
+    """挑「不含文字」的画面当封面底图（2026-11-18 用户要求）。
+
+    成片截帧这条老路有个硬伤：成片里已经烧了「锐评」和「备忘录/字幕」，
+    截出来当封面等于把正文文字重复印在封面上，用户原话「那上边的锐评和下边的
+    备忘录是啥，这两个部分要隐藏」。
+
+    所以优先用**素材背景 loop**（设计好的纯背景，无任何文字）：
+      assets.cover_bg / assets.bg 指向 renderer/public 下的视频文件时直接用，
+      帧号沿用 pick_frame() 的结果（同一时间点，画面风格和正片一致）。
+    取不到才退回成片截帧（有文字，但不至于没有封面）。
+    """
+    candidates: list[Any] = []
+    assets = props.get("assets") or {}
+    candidates.append(assets.get("cover_bg"))
+    # 分镜自带的 AI 素材视频（科技主视觉那条线）天生没有文字，比背景 loop 更有画面感
+    for sc in props.get("scenes") or []:
+        candidates.append((sc or {}).get("media_asset_url"))
+    candidates.append(assets.get("bg"))
+
+    for rel in candidates:
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        if not rel.lower().endswith((".mp4", ".mov", ".webm", ".m4v")):
+            continue
+        path = PUBLIC / rel
+        if path.exists() and path.stat().st_size > 0:
+            return path, rel
+    return None, ""
+
+
 def _probe_size(path: Path) -> tuple[int, int]:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -169,13 +200,26 @@ def compose_cover(video: Path | str, out_png: Path | str, *, props: dict[str, An
     if total and frame >= total:
         raise _fail("frame_out_of_range", video=video, frame=frame,
                     extra=f"视频只有 {total} 帧（残片/损坏），拒绝产出封面")
+
+    # 底图来源：优先无文字的素材背景 loop；成片里烧了锐评/备忘录，只作兜底
+    clean_src, clean_rel = pick_clean_source(props)
+    src = clean_src or video
+    src_frame = frame
+    if clean_src:
+        loop_total = _video_frames(clean_src)
+        if loop_total:
+            src_frame = frame % loop_total
+        logger.info("[cover] 底图源=%s（无文字素材） frame=%d", clean_rel or str(clean_src), src_frame)
+    else:
+        logger.warning("[cover] 没有素材背景 loop，退回成片截帧（封面会带上正片文字）")
+
     base = PUBLIC / "runs" / run_id / f"cover_base_{aspect}.png"
     if aspect == "portrait":
         raw = PUBLIC / "runs" / run_id / "cover_frame_raw.png"
-        _extract_frame(video, frame, raw)
+        _extract_frame(src, src_frame, raw)
         _fit_panel_34(raw, base, w=want_w, h=want_h)
     else:
-        _extract_frame(video, frame, base)
+        _extract_frame(src, src_frame, base)
 
     rel = str(base.relative_to(PUBLIC)).replace("\\", "/")
     payload = {"bg": rel, "main": main, "sub": sub,
@@ -200,6 +244,7 @@ def compose_cover(video: Path | str, out_png: Path | str, *, props: dict[str, An
     binding = out_png.parent / f"cover_binding_{aspect}.json"
     binding.write_text(json.dumps({
         "aspect": aspect, "video": str(video), "frame": frame,
+        "base_source": str(src), "base_source_rel": clean_rel, "base_frame": src_frame,
         "base": str(base), "base_sha256": hashlib.sha256(base.read_bytes()).hexdigest(),
         "composition": comp, "cover": str(out_png),
     }, ensure_ascii=False, indent=2), encoding="utf-8")

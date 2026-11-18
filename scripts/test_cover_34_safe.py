@@ -108,6 +108,17 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         check("⑦ 上下虚化 / 中间清晰", False, str(exc)[:60])
 
+    # ⑧ 底图来源：必须避开成片里烧的字（锐评 / 备忘录），优先素材视频或背景 loop
+    try:
+        from src.pipeline.cover_compose import pick_clean_source  # noqa: E402
+        with_bg = {"assets": {"bg": "assets/tech/video/bg/bg_circuit_v1_loop.mp4"}, "scenes": [{}]}
+        src, rel = pick_clean_source(with_bg)
+        check("⑧ 有素材/背景时用无字底图", src is not None and rel.endswith(".mp4"), rel or "None")
+        src2, rel2 = pick_clean_source({"assets": {}, "scenes": [{}]})
+        check("⑧b 无素材时才退回成片截帧", src2 is None and rel2 == "", "fallback 路径存在")
+    except Exception as exc:  # noqa: BLE001
+        check("⑧ 底图来源选择", False, str(exc)[:60])
+
     print(f"\nCOVER 3:4 SAFE {'PASS' if not fails else 'FAIL'}（块 y {block_top}~{block_bottom}，偏移 {offset_y}，边距 {pad_x}）")
     return 0 if not fails else 1
 
