@@ -45,12 +45,19 @@ def _fail(stage: str, *, video: Path | str, frame: int, extra: str = "") -> Cove
     return CoverComposeError(msg)
 
 
-def pick_frame(props: dict[str, Any]) -> int:
-    """选底图帧（R13）：避开 scene 0 的 HookOverlay 描边大字段。
+#: 视频开头内嵌封面卡的长度（帧）。与 `TechStoryVideo.COVER_INTRO_FRAMES` 必须一致。
+COVER_INTRO_FRAMES = 12
 
-    规则：优先 scene 1 起第一个像样的分镜（取其起始 + 12 帧，让场景卡/画面就位）；
-    视频太短没有 scene 1 → 退 scene 0 第 16 帧（过 0.5s）；再不行报错。
+
+def pick_frame(props: dict[str, Any]) -> int:
+    """选底图帧（R13 / 方案A）。
+
+    方案A（2026-11-18 定稿）：视频**前 0.4s 就是封面卡**，所以底图直接取封面卡中间那一帧 ——
+    这样「封面图」与「平台系统抽帧拿到的第一帧」是同一张，不再靠上传封面兜。
+    没声明内嵌（老物料）时退回原规则：scene 1 起始 + 12 帧。
     """
+    if props.get("cover_intro_frames", COVER_INTRO_FRAMES):
+        return max(1, COVER_INTRO_FRAMES // 2)      # 12 帧 → 第 6 帧（避开首帧解码灰边）
     scenes = props.get("scenes") or []
     for sc in scenes[1:]:
         start = int(sc.get("start_frame") or 0)
@@ -132,6 +139,27 @@ def compose_cover(video: Path | str, out_png: Path | str, *, props: dict[str, An
                     extra=f"视频只有 {total} 帧（残片/损坏），拒绝产出封面")
     base = PUBLIC / "runs" / run_id / f"cover_base_{aspect}.png"
     _extract_frame(video, frame, base)
+
+    # 方案A：视频前 0.4s 已内嵌封面卡 → 封面就是这一帧本身，**不再叠一次文案**
+    # （再叠会变成「字压字」，OCR 和肉眼都是糊的）。尺寸校验/绑定证据照走。
+    if props.get("cover_intro_frames", COVER_INTRO_FRAMES):
+        out_path = Path(out_png)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(Path(base).read_bytes())
+        got = _probe_size(out_path)
+        want = (1080, 1920) if aspect == "portrait" else (1920, 1080)
+        if want[0] and got != want:
+            raise _fail("size_check", video=video, frame=frame,
+                        extra=f"封面 {got[0]}x{got[1]} != {want[0]}x{want[1]}")
+        bind_dir = out_path.parent
+        (bind_dir / f"cover_binding_{aspect}.json").write_text(json.dumps({
+            "aspect": aspect, "video": str(video), "frame": frame,
+            "mode": "embedded_cover_intro", "intro_frames": COVER_INTRO_FRAMES,
+            "cover": str(out_path), "base": str(base),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("[cover] %s 内嵌封面卡直取 v%d 尺寸=%s（方案A，不再叠文案）",
+                    out_path.name, frame, f"{got[0]}x{got[1]}")
+        return out_path
 
     rel = str(base.relative_to(PUBLIC)).replace("\\", "/")
     payload = {"bg": rel, "main": main, "sub": sub,

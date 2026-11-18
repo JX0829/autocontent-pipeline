@@ -32,6 +32,10 @@ import TL from './tech_scene_timeline.json';
 
 const ACCENT = '#5ED8FF';
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
+//: 封面卡内嵌时长（帧）：0.4s @30fps。平台抽帧落在前 12 帧任意位置都应是同一张封面卡。
+const COVER_INTRO_FRAMES = 12;
+//: 安全边距（与 PR #83 一致：抖音 feed 左右各裁 ~97px，留 120px 不切字）
+const SAFE_X = 120;
 const PAD_FRAMES = 14; // 段落尾部留白（与 build 侧 PAD 一致，用于口播避让判断）
 
 type SceneLike = {
@@ -265,6 +269,45 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   );
 };
 
+
+/* ── 封面卡（内嵌前 0.4s）：让平台系统抽帧直接抽到封面 ──
+   为什么不放图片底：cover.png 的底图本身就是「本视频某帧」。若视频开头再引用它，
+   就成了「封面来自视频、视频又来自封面」的循环。这里只画**排版层**（压暗 + 栏目 + 主副标题），
+   底下的真实画面由正在播放的素材提供 —— 抽帧结果 = 素材 + 这层文字，与 cover.png 同构。 */
+const CoverIntro: React.FC<{ title: string; subtitle: string; kicker: string }> = ({
+  title, subtitle, kicker,
+}) => (
+  <AbsoluteFill>
+    <AbsoluteFill
+      style={{
+        background:
+          'linear-gradient(to bottom, rgba(3,5,9,0.55) 0%, rgba(3,5,9,0.18) 34%, rgba(3,5,9,0.72) 66%, rgba(3,5,9,0.94) 100%)',
+      }}
+    />
+    <div style={{ position: 'absolute', left: SAFE_X, right: SAFE_X, bottom: 210 }}>
+      <div style={{ fontFamily: FONT, fontSize: 22, letterSpacing: 8, color: ACCENT }}>{kicker}</div>
+      <div
+        style={{
+          marginTop: 22, fontFamily: FONT, fontSize: 88, fontWeight: 800,
+          lineHeight: 1.2, letterSpacing: 1, color: '#FFFFFF',
+        }}
+      >
+        {title}
+      </div>
+      {subtitle ? (
+        <div
+          style={{
+            marginTop: 26, fontFamily: FONT, fontSize: 30, lineHeight: 1.45,
+            color: 'rgba(233,240,250,0.86)',
+          }}
+        >
+          {subtitle}
+        </div>
+      ) : null}
+    </div>
+  </AbsoluteFill>
+);
+
 const Progress: React.FC<{ total: number }> = ({ total }) => {
   const frame = useCurrentFrame();
   return (
@@ -276,6 +319,7 @@ const Progress: React.FC<{ total: number }> = ({ total }) => {
 
 export const TechStoryVideo: React.FC<TechProps> = (props) => {
   const cfg = normalize(props);
+  const frame = useCurrentFrame();
   const first = cfg.scenes[0];
   const bodyStart = first ? first.frames : 0;
 
@@ -336,18 +380,25 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
       {cfg.scenes.map((s) => (
         <Sequence key={`${s.index}-${s.start}`} from={s.start} durationInFrames={s.frames}>
           {s.index === 0 ? (
-            <HookOverlay title={cfg.title} subtitle={cfg.subtitle} kicker={cfg.kicker} take={s.take} />
+            frame >= COVER_INTRO_FRAMES
+              ? <HookOverlay title={cfg.title} subtitle={cfg.subtitle} kicker={cfg.kicker} take={s.take} />
+              : null
           ) : (
             <SceneTag scene={s} />
           )}
-          <Subtitles scene={s} />
+          {frame >= COVER_INTRO_FRAMES ? <Subtitles scene={s} /> : null}
           {s.audio ? <Audio src={staticFile(s.audio)} volume={1} /> : null}
           <Audio src={staticFile(s.index === 0 ? 'sfx/ding.wav' : 'sfx/whoosh.wav')} volume={0.18} />
         </Sequence>
       ))}
 
-      <Progress total={cfg.total} />
+      <Sequence from={0} durationInFrames={Math.min(COVER_INTRO_FRAMES, cfg.total)}>
+        <CoverIntro title={cfg.title} subtitle={cfg.subtitle} kicker={cfg.kicker} />
+      </Sequence>
 
+      {frame >= COVER_INTRO_FRAMES ? <Progress total={cfg.total} /> : null}
+
+      {frame >= COVER_INTRO_FRAMES ? (
       <div
         style={{
           position: 'absolute', left: 88, top: 104, fontFamily: FONT, fontSize: 18,
@@ -356,6 +407,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
       >
         AI 辅助生成
       </div>
+      ) : null}
       <div
         style={{
           position: 'absolute', right: 88, top: 104, fontFamily: FONT, fontSize: 18,
