@@ -45,6 +45,8 @@ run "静默失败扫描"        "$PY" scripts/audit_silent_failure.py
 run "渠道无头巡检"        "$PY" scripts/audit_channels_headful.py
 run "视频号稳定性(复用/扫码/门禁)" "$PY" scripts/test_channels_stability.py
 run "RUNBOOK 命令自检"    "$PY" scripts/verify_runbook.py
+run "竖版安全边距巡检"    "$PY" scripts/audit_safe_area.py
+run "封面片头 0.5s"       "$PY" scripts/test_cover_prepend.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send
 run "封面硬编码扫描"      "$PY" scripts/check_cover_hardcode.py
 run "发布入口收口审计"    "$PY" scripts/audit_publish_entrypoints.py
