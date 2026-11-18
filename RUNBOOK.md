@@ -58,6 +58,39 @@ DISPATCH_MODE=output_only \
 ... -m src.pipeline.runner --material material.json --dry-run
 ```
 
+### 2.1 重渲已有作品（同一物料再跑，2026-11-18 实测）
+
+⚠️ **同一物料 + 同一账号再跑不会重渲**：`run_id` 是按 `content_hash` 复用的，显式传
+`--run-id` 也照样被幂等跳过。实测：
+
+```
+DISPATCH_MODE=output_only … --material materials/20261118_openai_chile.json --run-id smoke-runbook-3
+=== 幂等跳过（uq_run_content）===
+  同内容已出片: run_id=openai-chile-1 status=DONE
+```
+
+要真重渲，必须**回到旧 run 上重置起点**（只重做出片，不重跑 LLM/TTS）：
+
+```bash
+PY=/opt/homebrew/opt/python@3.14/bin/python3.14
+DISPATCH_MODE=output_only $PY -m src.pipeline.runner \
+    --material materials/20261118_openai_chile.json \
+    --run-id openai-chile-1 --resume --from-step render_vertical
+```
+
+实测结果：`video.mp4` / `video_16_9.mp4` 两个成片都重新生成（13:49），
+LLM 脚本与 TTS 复用原产物（`expand_script` / `align_tts` 断点 SKIP）。
+
+| 想做什么 | 命令 |
+|---|---|
+| 只重渲画面（改模板/字体/尺寸后） | `--from-step render_vertical` |
+| 只重做发布（不重渲） | `--from-step publish --publish <平台>` |
+| 连脚本一起重写 | 删 `output/<日期>/<run>/draft_script.json` 后再跑，或换新物料文件 |
+
+> `--from-step` 之后的所有步骤都会跑（含 approval/publish）。发布仍受**审批 approve +
+> 台账**双重门禁：approval 不是 approve 会拦，同内容已发过台账会拦成 `gate=ledger`。
+> 只想出片不发片时，务必带 `DISPATCH_MODE=output_only`。
+
 ---
 
 ## 3. 物料格式（必读）
