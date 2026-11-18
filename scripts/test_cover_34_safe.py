@@ -13,7 +13,7 @@
   ① 模板常量：COVER_PORTRAIT_INSET_BOTTOM ≥ 1920-1680+20 = 260
   ② 文案块顶部不能顶出 3:4 上边界（留出多行文案的高度预算 520px）
   ③ 左右内边距与正文一致（100），3:4 只裁上下、不裁左右，但仍需 ≥96 防贴边
-  ④ 底图结构：中间 3:4 清晰、上下为同图虚化填充
+  ④ 底图结构：中间 3:4 清晰、上下纯深色（羽化过渡），不留画面残影
 """
 from __future__ import annotations
 
@@ -101,9 +101,10 @@ def main() -> int:
             return total / max(n, 1)
 
         top, mid, bottom = sharpness(panel, 40), sharpness(panel, 900), sharpness(panel, 1820)
-        check("⑦ 上下虚化 / 中间清晰",
-              mid > 8 and top < mid / 4 and bottom < mid / 4,
-              f"上 {top:.1f} / 中 {mid:.1f} / 下 {bottom:.1f}")
+        # 「上下内容隐藏，图面干净」：上下必须接近纯色（锐度≈0），中间保留画面细节
+        check("⑦ 上下纯深色 / 中间清晰",
+              mid > 8 and top < 1.0 and bottom < 1.0,
+              f"上 {top:.2f} / 中 {mid:.2f} / 下 {bottom:.2f}（上下须 <1.0）")
     except Exception as exc:  # noqa: BLE001
         check("⑦ 上下虚化 / 中间清晰", False, str(exc)[:60])
 
