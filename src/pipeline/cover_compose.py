@@ -63,6 +63,39 @@ def pick_frame(props: dict[str, Any]) -> int:
     raise CoverComposeError(f"{COVER_COMPOSE_FAILED}: stage=pick_frame 没有可用分镜（scenes={len(scenes)}）")
 
 
+#: 竖版封面「内容板」高度：1080x1440 = 3:4，正好是抖音个人主页的裁剪区
+PANEL_34_HEIGHT = 1440
+
+
+def _fit_panel_34(src: Path, dst: Path, *, w: int = 1080, h: int = 1920) -> None:
+    """把 9:16 截帧装成「中间 3:4 是完整画面、上下是同图虚化填充」的封面底图。
+
+    为什么（2026-11-18 用户要求）：「图片上下的内容可以去掉，只保留中间部分，
+    不然上下被裁掉很难看」。抖音把 9:16 封面按 3:4 居中裁剪，原来上下 240px 里的
+    真实画面会被硬切掉一半，看着像截断。现在：
+      · 中间 1440px（y 240~1680）= 原帧**居中裁出的完整 3:4 画面**，不丢内容；
+      · 上下各 240px = 同一张图放大模糊 + 压暗填充，被裁掉也不可惜。
+    """
+    panel = min(PANEL_34_HEIGHT, h)
+    y = (h - panel) // 2
+    filt = (
+        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+        f"crop={w}:{panel}:(iw-{w})/2:(ih-{panel})/2,split=2[panel][fill];"
+        f"[fill]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+        f"boxblur=60:3,eq=brightness=-0.14[bg];"
+        f"[bg][panel]overlay=0:{y}"
+    )
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.unlink(missing_ok=True)
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-filter_complex", filt, str(dst)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        tail = " / ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise CoverComposeError(f"{COVER_COMPOSE_FAILED}: stage=panel34 rc={proc.returncode} {tail}")
+
+
 def _probe_size(path: Path) -> tuple[int, int]:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -131,7 +164,12 @@ def compose_cover(video: Path | str, out_png: Path | str, *, props: dict[str, An
         raise _fail("frame_out_of_range", video=video, frame=frame,
                     extra=f"视频只有 {total} 帧（残片/损坏），拒绝产出封面")
     base = PUBLIC / "runs" / run_id / f"cover_base_{aspect}.png"
-    _extract_frame(video, frame, base)
+    if aspect == "portrait":
+        raw = PUBLIC / "runs" / run_id / "cover_frame_raw.png"
+        _extract_frame(video, frame, raw)
+        _fit_panel_34(raw, base, w=want_w, h=want_h)
+    else:
+        _extract_frame(video, frame, base)
 
     rel = str(base.relative_to(PUBLIC)).replace("\\", "/")
     payload = {"bg": rel, "main": main, "sub": sub,
