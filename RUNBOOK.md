@@ -354,6 +354,26 @@ $PY scripts/test_channels_stability.py     # 视频号稳定性
 - BGM 音量永远低于口播；分镜「锐评」`creator_take` **必填且有门禁**
 - 细节见 `docs/RUNBOOK-20261118-full.md` §5.5
 
+## 附录 A2 底板大字 `plate_bigtext`（SPEC-20261116）
+
+- **缺省关闭**：物料 `draft_script.plate_style` 不写时，渲染结果与现在完全一致（A5 已实测：逐帧 dHash 最大差 1 bit、像素 MAE 0.72/255）。
+- **只为后续作品开启**：2026-11-18 用户定口径 —— **线上作品保持现状，不回溯、不重渲、不重制历史内容**；
+  想给新物料开就在 `draft_script.json` 里加 `"plate_style": "bigtext"`，其余不动。
+- 判定全在 `renderer/src/tech/plateFit.ts`（纯函数）：竖屏 104→88px、横屏 88→76px 逐档降字号，
+  两行装不下 → **回退旧字幕样式**（不截断、不加省略号）；对比度 <7:1 → 反色 → 仍不达标同样回退。
+- 底板宽度：设计基准 880px（竖）/1500px（横）；竖屏允许放宽到 **1024px**，否则 §2.1「每行 14 字」与
+  「880 宽 + 2 行 + 最小 88px」自相矛盾，20 字物料必然回退。
+- 抽帧验收命令（不为它单独渲染整片，用白底对照视频即可判底板边界）：
+
+  ```bash
+  $PY scripts/measure_plate.py --on <with_plate.mp4> --off <without_plate.mp4> \
+      --aspect portrait --frames 30,60,90,120,150,175 --out /tmp/a1_plate.json
+  $PY scripts/compare_plate_regression.py --base <develop基线.mp4> --new <缺省版.mp4> \
+      --frames 0-180 --step 10 --out /tmp/a5_reg.json
+  ```
+
+- 单测：`node --experimental-strip-types renderer/src/tech/plateFit.test.ts`（已挂 `verify_all.sh --fast`）。
+
 ## 附录 B 课文古风模板 `textbook_story`
 
 - 触发：物料带 `template: textbook_story`（教育号默认关闭）
