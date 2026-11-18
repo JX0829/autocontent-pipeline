@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import subprocess
+import uuid
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -389,7 +390,9 @@ def _prepend_cover(video: Path, cover: Path, seconds: float = COVER_LEAD_SECONDS
 
     实现要点：
       · 只重编码一次（libx264 crf18），音频用 adelay 整体后移 0.5s 保持口播同步；
-      · 正片留存一份 `video_body.mp4`，出问题能直接比对是封面段还是正片段；
+      · 正片留存一份 `<片名>_body.mp4`（如 video_body.mp4 / video_16_9_body.mp4），
+        出问题能直接比对是封面段还是正片段；
+      · 临时件名按 `<片名>+pid+uuid` 唯一化 —— 竖横并行渲染同一 run_root 时不会互踩；
       · 任何一步失败显式报错并恢复原 video.mp4（宁可没有片头封面，也不能产出半成品）。
     """
     video, cover = Path(video), Path(cover)
@@ -405,8 +408,11 @@ def _prepend_cover(video: Path, cover: Path, seconds: float = COVER_LEAD_SECONDS
     if total <= 0:
         raise ExecutorError(f"COVER_PREPEND_FAILED: 探不到成片时长: {video.name}")
 
-    body = video.with_name("video_body.mp4")
-    tmp = video.with_name(".video_with_cover.mp4")
+    # 临时件与正片备份都必须按**目标文件名**唯一化（2026-11-18 P0）：
+    # 原先写死 `.video_with_cover.mp4` / `video_body.mp4`，竖版(video.mp4)与横版
+    # (video_16_9.mp4)在同一个 run_root 里并行渲染时互相覆盖，两个成片一起写坏。
+    body = video.with_name(f"{video.stem}_body.mp4")
+    tmp = video.with_name(f".{video.stem}.with_cover.{os.getpid()}.{uuid.uuid4().hex[:8]}.mp4")
     if body.exists():
         body.unlink()
     video.replace(body)
