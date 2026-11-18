@@ -5,7 +5,7 @@
 背景（2026-11-18 用户反馈）：「抖音视频整个内容被扩展到屏幕内侧，视频号有边距抖音没有」。
 根因：抖音信息流把竖版左右各裁掉约 9%，模板原来的 88/70px 被裁完就贴边了。
 修法：`renderer/src/tech/TechStoryVideo.tsx` 引入 SAFE_X_VERTICAL=120，竖版所有文字层
-统一吃它；横版 1920 宽保持 88 不变。
+统一吃它（2026-11-18 折中定 100px）；横版 1920 宽保持 88 不变。
 
 本脚本防的是「有人手滑把 88 写回去」——静态扫描，不渲染。
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 PROJ = Path(__file__).resolve().parents[1]
 TSX = PROJ / "renderer" / "src" / "tech" / "TechStoryVideo.tsx"
 
-MIN_VERTICAL = 120
+MIN_VERTICAL = 100
 ALLOWED_LANDSCAPE = 88
 
 fails: list[str] = []
