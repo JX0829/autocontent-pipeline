@@ -68,27 +68,33 @@ PANEL_34_HEIGHT = 1440
 
 
 def _fit_panel_34(src: Path, dst: Path, *, w: int = 1080, h: int = 1920) -> None:
-    """把 9:16 截帧装成「中间 3:4 是完整画面、上下是同图虚化填充」的封面底图。
+    """把 9:16 截帧装成「中间 3:4 完整画面 + 上下纯深色」的干净封面底图。
 
-    为什么（2026-11-18 用户要求）：「图片上下的内容可以去掉，只保留中间部分，
-    不然上下被裁掉很难看」。抖音把 9:16 封面按 3:4 居中裁剪，原来上下 240px 里的
-    真实画面会被硬切掉一半，看着像截断。现在：
-      · 中间 1440px（y 240~1680）= 原帧**居中裁出的完整 3:4 画面**，不丢内容；
-      · 上下各 240px = 同一张图放大模糊 + 压暗填充，被裁掉也不可惜。
+    演进（都是用户当天提的）：
+      ① 「上下被裁掉很难看」→ 中间裁成 3:4 完整画面，上下填充；
+      ② 「上下内容隐藏，确保图面干净吸引人」→ 填充不再用同图虚化（仍有纹理和色块，
+         看着脏），改成**纯深色底** + 画面上下边缘 70px 羽化，融进底色不留硬边。
+
+    结果：抖音 3:4 裁剪区里是满幅清晰画面，裁掉的上下两块只剩干净底色。
     """
     panel = min(PANEL_34_HEIGHT, h)
     y = (h - panel) // 2
+    feather = 70
     filt = (
-        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
-        f"crop={w}:{panel}:(iw-{w})/2:(ih-{panel})/2,split=2[panel][fill];"
-        f"[fill]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
-        f"boxblur=60:3,eq=brightness=-0.14[bg];"
-        f"[bg][panel]overlay=0:{y}"
+        f"[1:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+        f"crop={w}:{panel}:(iw-{w})/2:(ih-{panel})/2,scale={w}:{panel},"
+        f"format=rgba,"
+        f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+        f"a='255*min(1\\,min(Y\\,{panel - 1}-Y)/{feather})'[panel];"
+        f"[0:v][panel]overlay=0:{y}:format=auto,format=yuv420p[vout]"
     )
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.unlink(missing_ok=True)
     proc = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-filter_complex", filt, str(dst)],
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", f"color=c=0x05070b:s={w}x{h}",
+         "-i", str(src),
+         "-filter_complex", filt, "-map", "[vout]", "-frames:v", "1", str(dst)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
