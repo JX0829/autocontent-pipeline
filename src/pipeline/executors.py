@@ -380,8 +380,10 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
     _remotion("render", "src/index.ts", composition, str(video),
               f"--props={Path(props).resolve()}", "--codec=h264", "--crf=18",
               "--pixel-format=yuv420p")
-    # 封面图 = 视频第 0 帧（§八）；不再渲 CoverStill 海报
-    _extract_first_frame(video, cover)
+    # 封面 = 成片截帧做底图 + tech_story 语汇渲染文案（§十一 R13~R18）；
+    # 不再渲 CoverStill 海报，也不再直接拿第 0 帧（描边大字 OCR 读不出）。
+    from src.pipeline.cover_compose import compose_cover
+    compose_cover(video, cover, props=_props_data, run_id=ctx.run_id, aspect="portrait")
     _assert_has_audio(video)   # 无声片零容忍
     return {"video": str(video), "cover": str(cover)}
 
@@ -405,22 +407,13 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     except Exception as exc:  # noqa: BLE001
         raise ExecutorError(f"横版 props 解析失败: {props}: {exc}") from exc
     tech_landscape = (not textbook) and _composition_for(_pd) == "TechStoryVideo"
+    def _landscape_cover(video_path: Path, cover_path: Path) -> Path:
+        from src.pipeline.cover_compose import compose_cover
+        return compose_cover(video_path, cover_path, props=_pd, run_id=ctx.run_id, aspect="landscape")
 
-    # 2026-11-17（方案 B）：横版优先用 `<stem>_landscape.<ext>` 原生 16:9 副本，
-    # 没有副本才回落竖版居中裁切。竖版 props 不动，横版单写一份 props。
-    from src.assets_manager import with_landscape_assets
-    _lp, _lrep = with_landscape_assets(_pd)
-    props_for_render = props
-    if _lrep["used"]:
-        land_props = Path(ctx.run_root) / "props" / "aligned_render_landscape.json"
-        _write_json(land_props, _lp)
-        props_for_render = str(land_props)
-        print(f"[assets] 横版换成原生 16:9 副本: "
-              + ", ".join(f"{s}→{Path(v['to']).name}" for s, v in _lrep["used"].items())
-              + (f"；无横版副本回落竖版裁切: {_lrep['fallback']}" if _lrep["fallback"] else ""))
-
-    info = render_landscape(ctx.task_id, props_json=props_for_render, out_dir=str(ctx.run_root),
+    info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""),
+                            cover_composer=_landscape_cover if tech_landscape else None,
                             video_composition=("TextbookLandscapeVideo" if textbook else
                                                "TechStoryLandscapeVideo" if tech_landscape else None),
                             cover_composition="TextbookLandscapeCoverStill" if textbook else None)

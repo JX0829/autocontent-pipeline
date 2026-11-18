@@ -141,7 +141,10 @@ def _frame_diff(a: str, b: str) -> float:
 
 
 def check_landscape(video: str, expect_text: str = "",
-                    cover_path: str | None = None) -> tuple[bool, dict]:
+                    cover_path: str | None = None,
+                    compare_cover_frame: bool = True) -> tuple[bool, dict]:
+    """compare_cover_frame=False：封面不是「视频第 0 帧」而是合成卡片（SPEC-20261117 §十一），
+    此时不做首帧一致性硬判，只在报告里记 cover_source=composer。"""
     rep = {"video": video}
     try:
         w, h = _probe(video)
@@ -182,7 +185,10 @@ def check_landscape(video: str, expect_text: str = "",
     #  · 再校验「视频首帧 ≈ 封面」，确保投放时首帧画面就是这张海报（A3 的本意）
     if expect_text or cover_path:
         cover_ok = bool(cover_path and Path(cover_path).exists())
-        if cover_ok:
+        if cover_ok and not compare_cover_frame:
+            rep["cover_source"] = "composer"
+            rep["cover_frame_diff"] = None
+        elif cover_ok:
             diff = _frame_diff(video, str(cover_path))
             rep["cover_frame_diff"] = round(diff, 2)
             if diff > MAX_FRAME_DIFF:
