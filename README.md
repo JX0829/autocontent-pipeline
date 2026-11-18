@@ -87,8 +87,27 @@ disagrees with the declaration fails the gate instead of silently drifting.
 | B站 | `src/providers/bilibili.py` + `scripts/bilibili_live_uploader.py` | ✅ | ✅ `creation_statement_id=1` | ✅ `original=True` |
 | 微信视频号 | `src/providers/channels_cdp.py`（Playwright） | ✅ | ❌ **Web 端无此控件** | ✅ fail-closed |
 
+> **封面口径**：封面帧已贴进成片首帧（播 0.5s），三平台都靠「首帧即封面」自动取用，
+> 不再调用各平台的封面上传接口。
+>
 > 平台发布目前走独立 CLI，默认**没有**挂进 runner 的 `publish` 步（`publish.enabled: false`）。
 > 视频号三个真机坑（直连被弹回、wujie iframe、原生文件选择器）见 `RUNBOOK.md` §6.1，照着做别自己摸索。
+
+### 🆕 最近升级（2026-11 中旬）
+
+> 下面这些都已在主干（`main` = `develop`），每一行都有机器门禁兜着，改之前先看 `RUNBOOK.md`。
+
+| 升级 | 关键点 | 门禁 |
+|---|---|---|
+| **封面链路重构** | ① 封面帧直接**贴到成片最前面播 0.5s**（首帧即封面）② 底图取自**无字素材/背景 loop**，成片里烧的「锐评/备忘录」不再进封面 ③ 版式**居中 + 下移 32 + 边距 ≥64 + 字号 76/28/20** ④ 上下各 240px 纯深色底 + 70px 羽化 ⑤ **三个平台都不再单独上传封面**（抖音封面控件长期不可用） | `test_cover_prepend.py`、`test_cover_34_safe.py`、`audit_cover_standard.py` |
+| **封面规范模板无关** | 版式常量集中在 `renderer/src/tech/coverFrame.ts`；新模板封面必须复用该模块，旧版式（Bilibili/课文）已标 `LEGACY-COVER` 显式认账 | `audit_cover_standard.py` |
+| **竖版安全边距 100px** | 抖音信息流左右各裁约 9%，原 88px 裁完贴边；竖版 4 处文字层统一 `SAFE_X_VERTICAL=100`，横版保持 88 | `audit_safe_area.py` |
+| **RUNBOOK 压缩为执行手册** | 1288 行 → 339 行，只留可直接照抄的命令；完整版归档 `docs/RUNBOOK-20261118-full.md` | `verify_runbook.py`（26 条命令逐条核对脚本/参数/解释器） |
+| **`--publish` 三语义** | 默认真发 / `--publish-dry-run` 只预检 / `--stop-before-publish` 停发表前；dry-run 不再把审批卡刷成「已发布」 | 单测 + 实测回执 |
+| **重渲正确姿势** | 同物料+同账号按 `content_hash` 复用 run_id，换 run-id 也拦不住；必须 `--resume --from-step render_vertical` | `RUNBOOK.md` §2.3 |
+| **抖音标题/正文/话题** | 标题进独立「作品标题」框；正文与话题**一次原子插入**；回读比对先切掉话题段 | `test_douyin_topics_contract.py` |
+| **视频号收回流水线** | 删 `publish_channels.py`，只读排障用 `probe_channels.py`；账号级 `headless` 生效但**视频号禁止无头**；`objectId` 当凭证 + 回执三态（published/unverified/failed） | `audit_channels_headful.py`、`test_channels_stability.py`、`audit_publish_entrypoints.py` |
+| **物料硬约束** | `title` 用物料原值（>20 字报 `TITLE_TOO_LONG`）；`tags` = 物料 + 生成去重取前 6（物料在前，超限报 `TAGS_OVER_LIMIT`） | `test_material_binding.py` |
 
 ### 📁 关联姊妹项目
 - [**study-schedule**](https://github.com/JX0829/study-schedule) — React + Vite + 多通道即时通知的儿童习惯养成与任务规划系统

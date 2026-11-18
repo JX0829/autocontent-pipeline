@@ -88,7 +88,30 @@ x 240~840（中心 540 完全对称），3:4 下边界 1680 还剩 **590px** 余
 不损失任何信息。
 
 **为什么关心 3:4**：抖音个人主页/作品列表把 9:16 封面按 3:4 居中裁剪，1080x1920 只剩
-y∈[240,1680]。回归 `scripts/test_cover_34_safe.py`（7 项，含虚化结构），已挂 `verify_all`。
+y∈[240,1680]。回归 `scripts/test_cover_34_safe.py`（9 项），已挂 `verify_all`。
+
+### 2.1.2 封面规范对所有模板生效（新增模板必看）
+
+上面这套不是 tech_story 专属。**任何新模板接封面，按这五条做，不许另起一套**：
+
+| # | 要求 | 怎么满足 |
+|---|---|---|
+| 1 | 版式常量只认一份 | `renderer/src/tech/coverFrame.ts`（居中 / 下移 32 / 边距 64 / 76-28-20 / 3:4 240~1680）。import 它，别抄数字 |
+| 2 | 底图必须无字 | 走 `cover_compose.pick_clean_source()`：分镜素材视频 > `assets.cover_bg` > `assets.bg` > 成片截帧（仅兜底 + warning） |
+| 3 | 上下内容隐藏 | `_fit_panel_34()` 已经把上下 240px 换成纯深色底 + 70px 羽化，底图别在上下塞东西 |
+| 4 | 封面进片头 | `_prepend_cover()` 自动把 `cover.png` 贴到成片最前播 0.5s，音频 adelay 同步；新模板渲染完都要过这一步 |
+| 5 | 三平台不传封面 | 平台取首帧即可，禁止再写封面上传代码（抖音控件不可用，视频号 Web 端也没有） |
+
+自检两件套（都已在 `verify_all.sh` 里）：
+
+```bash
+$PY scripts/audit_cover_standard.py    # 常量/复用/LEGACY 认账/无字底图
+$PY scripts/test_cover_34_safe.py      # 3:4 安全区 + 虚化结构 + 底图来源
+```
+
+旧版式（`BilibiliLandscapeCover`、课文 `TextbookCoverStill/TextbookLandscapeCover`）已标
+`LEGACY-COVER`：`audit_cover_standard.py` 会放行但记录在案；课文本线上线前必须迁到
+`coverFrame.ts`，否则抖音 3:4 会切字。
 
 ### 2.2 干跑看计划（不调模型、不写库）
 
