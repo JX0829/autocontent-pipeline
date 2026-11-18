@@ -40,10 +40,11 @@ const PAD_FRAMES = 14; // 段落尾部留白（与 build 侧 PAD 一致，用于
  *
  * 竖版 1080 宽：抖音信息流会把左右各裁掉约 9%，原来的 88/70 被裁完就贴边了
  * （用户原话「视频号有边距、抖音没有」——同一条视频，抖音把留白裁没了）。
- * 提到 120（11.1%），裁 9% 后仍剩 ~23px。抖音和视频号都吃竖版，一处改两平台生效。
+ * 折中定 100（9.3%）：裁 9% 后还剩约 3px 缓冲，视觉上比 88 明显宽松，又不至于
+ * 把正文压得太窄。抖音和视频号都吃竖版，一处改两平台生效。
  * 横版 1920 宽维持 88 不变，避免无谓改动影响 B站。
  */
-const SAFE_X_VERTICAL = 120;
+const SAFE_X_VERTICAL = 100;
 const SAFE_X_LANDSCAPE = 88;
 const useSafeX = (): number =>
   (useVideoConfig().width >= 1600 ? SAFE_X_LANDSCAPE : SAFE_X_VERTICAL);
