@@ -355,6 +355,25 @@ def _resolve_pending(step: dict[str, Any]) -> str:
     return f"{executor or '未知执行体'} 尚未实现"
 
 
+
+def _filter_aspects_by_template(cfg: dict, aspects: list[str], material: dict | None) -> list[str]:
+    """按模板收敛画幅。
+
+    课文本/水墨本布局是竖排的，出横版只是把竖排字塞进 1920x1080 画布，
+    既不是真横版版式，又白烧一次完整渲染（实测 13 分钟）。科技风保持横竖都要。
+    """
+    by_tpl = cfg.get("aspects_by_template") or {}
+    man = material or {}
+    tpl = "textbook_story" if man.get("textbook") else str(man.get("content_type") or man.get("template") or "")
+    allow = by_tpl.get(tpl)
+    if not allow:
+        return aspects
+    kept = [a for a in aspects if a in allow]
+    dropped = [a for a in aspects if a not in allow]
+    if dropped:
+        print(f"[aspects] 模板 {tpl} 只出 {kept}（去掉 {dropped}）")
+    return kept
+
 def dispatch_policy(cfg: dict[str, Any]) -> tuple[bool, str, list[str]]:
     """T4.7 出片/发片解耦：返回 (output_only, mode, aspects)。"""
     steps = cfg.get("steps") or []
@@ -610,6 +629,8 @@ def run_steps(cfg: dict[str, Any], run_root: Path, run_id: str,
 
     # T4.7 出片/发片解耦：output_only 不审批不发送；aspects 决定要哪几版成片
     output_only, dispatch_mode, aspects = dispatch_policy(cfg)
+    # 2026-11-19：课文本（课后古诗）布局是竖排的，只出竖版；科技风照旧横竖都要。
+    aspects = _filter_aspects_by_template(cfg, aspects, material)
     skip: dict[str, str] = {}
     if output_only:
         skip["approval"] = "output_only 不审批"

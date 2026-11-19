@@ -123,8 +123,13 @@ class Selection:
         d = asdict(self)
         return d
 
-    def to_render_props(self) -> dict[str, Any]:
-        """渲染器需要的字段（扁平、只放路径与音量）。"""
+    def to_render_props(self, inject_mid_end: bool = False) -> dict[str, Any]:
+        """渲染器需要的字段（扁平、只放路径与音量）。
+
+        `inject_mid_end=True`：把 mid/end 真正注入渲染层。
+        科技库维持 False（那批素材开头是黑场，压场景交界会黑闪）；
+        水墨库传 True —— 课文本要靠 mid 播飞鸟/泼墨、end 播残墨。
+        """
         return {
             "assets": {
                 "open": self.open.src if self.open else None,
@@ -133,8 +138,8 @@ class Selection:
                 "cover_mode": self.cover_mode,
                 # 2026-11-19 回滚：mid/end 素材开头是黑场，压场景交界会全黑闪断，
                 # 暂不注入渲染（选材记录保留在 audit 里，方便以后做无黑场素材再开）。
-                "mid": None,
-                "end": None,
+                "mid": (self.mid.src if (inject_mid_end and self.mid) else None),
+                "end": (self.end.src if (inject_mid_end and self.end) else None),
                 # 2026-11-19（方案 C）：水墨模板用 reveal/tex；科技模板不读这两个键，注入无害
                 "reveal": self.reveal.src if self.reveal else None,
                 "tex": self.tex.src if self.tex else None,
