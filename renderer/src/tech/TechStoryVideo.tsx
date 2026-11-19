@@ -111,8 +111,9 @@ const normalize = (props: TechProps) => {
       openStart: props.assets?.open_start_from ?? 40,
       coverMode: props.assets?.cover_mode ?? 'none',
       bg: props.assets?.bg || DEFAULTS.bg,
-      mid: props.assets?.mid ?? null,
-      end: props.assets?.end ?? null,
+      // 2026-11-19 回滚：mid/end 不再参与渲染（见下方注释），字段保留只为兼容旧 props
+      mid: null as string | null,
+      end: null as string | null,
       bgm: props.bgm_src || '',
       bgmVolume: props.bgm_volume ?? 0.22,
       bgmDuck: props.bgm_duck_volume ?? 0.12,
@@ -289,36 +290,6 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   );
 };
 
-/* ── 幕间/片尾覆盖片段（2026-11-18）─────────────────────────────────────────
-   只做**覆盖**，不移动时间轴：口播、BGM、字幕、进度条全部按原帧号走，
-   所以插入转场不会让口播脱轨（这是最容易被改坏的地方）。
-   淡入 6 帧 / 淡出 6 帧，中间保持不透明；muted，不抢口播。 */
-const MID_FRAMES = 15;      // 0.5s @30fps
-const MID_LEAD_FRAMES = 8;  // 场景切换前 8 帧开始压
-const END_FRAMES = 36;      // 1.2s @30fps
-
-const OverlayClip: React.FC<{ src: string; frames: number; startFrom?: number }> = ({
-  src, frames, startFrom = 0,
-}) => {
-  const f = useCurrentFrame();
-  const fade = Math.min(6, Math.max(1, Math.floor(frames / 3)));
-  const opacity = Math.min(
-    interpolate(f, [0, fade], [0, 1], { extrapolateRight: 'clamp' }),
-    interpolate(f, [frames - fade, frames], [1, 0], { extrapolateLeft: 'clamp' }),
-  );
-  return (
-    <AbsoluteFill style={{ opacity, background: '#04060a' }}>
-      <OffthreadVideo
-        src={staticFile(src)}
-        startFrom={startFrom}
-        muted
-        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-      />
-      <AbsoluteFill style={{ background: 'rgba(3,5,9,0.28)' }} />
-    </AbsoluteFill>
-  );
-};
-
 const Progress: React.FC<{ total: number }> = ({ total }) => {
   const frame = useCurrentFrame();
   return (
@@ -401,24 +372,9 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
         </Sequence>
       ))}
 
-      {/* 幕间转场（0.5s 全屏覆盖，不改时间轴）：每个非首场景交界处压一段素材 */}
-      {cfg.mid
-        ? cfg.scenes.slice(1).map((s, i) => {
-            const from = Math.max(0, s.start - MID_LEAD_FRAMES);
-            return (
-              <Sequence key={`mid-${i}`} from={from} durationInFrames={MID_FRAMES}>
-                <OverlayClip src={cfg.mid as string} frames={MID_FRAMES} />
-              </Sequence>
-            );
-          })
-        : null}
-
-      {/* 片尾收尾（1.2s 全屏覆盖，不改时间轴） */}
-      {cfg.end ? (
-        <Sequence from={Math.max(0, cfg.total - END_FRAMES)} durationInFrames={END_FRAMES}>
-          <OverlayClip src={cfg.end} frames={END_FRAMES} startFrom={8} />
-        </Sequence>
-      ) : null}
+      {/* 幕间转场 / 片尾收尾：2026-11-19 已回滚 —— mid 素材开头是黑场，
+          压在场景交界会造成 0.3~0.5s 全黑闪断（实测 7.0~7.2s 亮度 0.0）。
+          要恢复必须先在素材侧裁掉黑场头，再加回来。 */}
 
       <Progress total={cfg.total} />
 

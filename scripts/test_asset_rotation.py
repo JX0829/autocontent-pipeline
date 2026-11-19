@@ -92,8 +92,14 @@ def main() -> int:
         ratio = len(got) / len(want) if want else 1.0
         check(f"② 槽位 {s} 覆盖 ≥80%", ratio >= 0.8,
               f"{len(got)}/{len(want)} 条被抽到（抽样 {args.runs} 次）")
-    check("② 槽位 end 已接入（不再恒 None）", picks["end"].get("NONE", 0) == 0,
-          f"{dict(picks['end'])}")
+    # 2026-11-19 回滚：mid/end 素材开头是黑场 → 压场景交界会全黑闪断，已停止注入渲染。
+    # 选材仍会记录（audit 可查），但 props 里必须是 None，否则又会闪黑。
+    from src.assets_manager import AssetManager as _AM
+    _sel = _AM().select(run_id="rollback-check", draft=draft)
+    _rp = _sel.to_render_props()["assets"]
+    check("② mid/end 已回滚（不再注入 props）",
+          _rp.get("mid") is None and _rp.get("end") is None,
+          f"mid={_rp.get('mid')} end={_rp.get('end')}")
 
     distinct = len(set(picks["bg"]) - {"NONE"})
     check("③ bg 未被锁死（distinct ≥3）", distinct >= 3, f"distinct={distinct} {dict(picks['bg'])}")
