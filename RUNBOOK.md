@@ -25,6 +25,12 @@ cd ~/Downloads/workspace/team/project/autocontent-pipeline
 
 ## 1. 环境自检（30 秒，出片前必跑）
 
+> **代码同步已自动化（2026-11-19）**：`runner` 启动会先把当前 checkout 追平 `origin/develop`。
+> 干净工作区 → 自动 `merge --ff-only`（并打印 `[preflight] 🔄 已自动同步代码 xxx → yyy`）；
+> 有未提交改动或有未推送提交 → 报 `STALE_CHECKOUT` 直接拒跑，不会悄悄用旧代码。
+> 特殊情况要跳过一次：`--no-sync` 或 `PIPELINE_SKIP_SYNC=1`。
+> **所以出片不用再问“现在是最新代码吗”** —— 日志第一行就是答案。
+
 ```bash
 bash scripts/verify_all.sh --fast
 ```
