@@ -96,6 +96,8 @@ def _remotion(*args: str, timeout: int = 900) -> None:
 COMPOSITION_BY_TEMPLATE = {
     "tech_story": "TechStoryVideo",
     "textbook_story": "TextbookStoryVideo",
+    # 2026-11-19（SPEC 方案 C）：水墨本模板
+    "ink_story": "InkStoryVideo",
     # 2026-11-18 用户要求下线旧 GeekShortVideo 排版模板：T1~T5 一律落到 tech_story，
     # 不再有任何路径渲染 GeekShortVideo（文件保留，回滚=删这几行）。
     "editorial_news": "TechStoryVideo",
@@ -114,7 +116,8 @@ def _composition_for(props_data: dict[str, Any]) -> str:
     return COMPOSITION_BY_TEMPLATE.get(str(props_data.get("template_id")), DEFAULT_VERTICAL_COMPOSITION)
 
 
-def _attach_assets(ctx: StepContext, props_data: dict[str, Any]) -> None:
+def _attach_assets(ctx: StepContext, props_data: dict[str, Any],
+                   library: str | None = None) -> None:
     """按素材库配置选素材，注入 props 并落 asset_binding.json 审计。
 
     2026-11-17（SPEC-20261117 R2/R3/R5）：
@@ -137,7 +140,8 @@ def _attach_assets(ctx: StepContext, props_data: dict[str, Any]) -> None:
               (("open", "open_asset"), ("bg", "bg_asset"), ("cover", "cover_asset"))
               if man.get(key)}
 
-    sel = AssetManager().select(run_id=ctx.run_id, draft=draft, locked=locked)
+    sel = AssetManager().select(run_id=ctx.run_id, library=library,
+                                draft=draft, locked=locked)
     props_data.update(sel.to_render_props())
     audit = sel.to_audit()
     props_data["asset_binding"] = audit
@@ -254,17 +258,26 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     payload = DraftScriptPayload(**draft)
 
     # 分镜二次创作门禁：不达标立刻 BLOCKED，不浪费一次 TTS + 渲染
+    # 2026-11-19（方案 C）：课文本 / 水墨本不走「新闻锐评」口径（诗词讲解没有"我们的看法"这种东西），
+    # 门禁只对新闻/科技类生效；否则课文物料永远过不了门禁 → textbook 链路实际不可用。
     from src.utils.creator_take_guard import check_creator_takes, summarize
-    _take_errors = check_creator_takes(
-        [sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)
-    print(f"[creator_take] {summarize([sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)}")
-    if _take_errors:
-        # 历史 run 重渲染用逃生阀（旧物料没有 creator_take），新内容一律不许绕过
-        if os.environ.get("ALLOW_LEGACY_NO_TAKE") == "1":
-            print("[creator_take] WARN 门禁被 ALLOW_LEGACY_NO_TAKE=1 绕过（仅限历史 run 重渲染）")
-        else:
-            raise ExecutorError("creator_take 门禁未通过（分镜缺二次创作或在复述原文）:\n  "
-                                + "\n  ".join(_take_errors))
+    _tpl = str((draft or {}).get("template_id") or "")
+    _is_literary = (_tpl in ("textbook_story", "ink_story")
+                    or str((ctx.material or {}).get("content_type") or "") in ("textbook_story", "ink_story")
+                    or bool((ctx.material or {}).get("textbook")))
+    if _is_literary:
+        print(f"[creator_take] SKIP 文学类模板（{_tpl or 'textbook/ink'}）不需要新闻锐评，门禁不适用")
+    else:
+        _take_errors = check_creator_takes(
+            [sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)
+        print(f"[creator_take] {summarize([sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)}")
+        if _take_errors:
+            # 历史 run 重渲染用逃生阀（旧物料没有 creator_take），新内容一律不许绕过
+            if os.environ.get("ALLOW_LEGACY_NO_TAKE") == "1":
+                print("[creator_take] WARN 门禁被 ALLOW_LEGACY_NO_TAKE=1 绕过（仅限历史 run 重渲染）")
+            else:
+                raise ExecutorError("creator_take 门禁未通过（分镜缺二次创作或在复述原文）:\n  "
+                                    + "\n  ".join(_take_errors))
 
     # T4.5：音色/语速一律来自 pipeline.yaml 的 tts.* 槽位（缺配置即 MissingConfig）
     # edu（课文故事）复用「讲述向」的 tts.news 槽位：M1 不新增 required_env 键，
@@ -293,8 +306,19 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
     props_data["cover_card_source"] = (
         (load_pipeline().get("cover") or {}).get("card_source") or [0, 1, 3])
     # 新模板（tech_story）需要按素材库选 open/bg/bgm；老模板不注入，行为不变
-    if _composition_for(props_data) == "TechStoryVideo":
+    _comp = _composition_for(props_data)
+    # 注意：模板解析（templates_manager）在素材注入之前就把 template_id 定成了 tech_story（默认模板），
+    # 所以只看 _comp 会把课文物料判成科技类，抽到 assets/tech 的素材。以物料为准再判一次。
+    _man = ctx.material or {}
+    _is_literary = (bool(_man.get("textbook"))
+                    or str(_man.get("content_type") or "") in ("textbook_story", "ink_story")
+                    or str(props_data.get("template_id") or "") in ("textbook_story", "ink_story"))
+    if _comp == "TechStoryVideo" and not _is_literary:
         _attach_assets(ctx, props_data)
+    elif _comp in ("InkStoryVideo", "TextbookStoryVideo") or _is_literary:
+        # 2026-11-19（方案 C）：水墨本 / 课文本都走 ink_story 库（6 槽位）。
+        # 课文本把 assets.bg 当水墨底、assets.tex 当纸纹；缺素材时渲染层回落纯纸色。
+        _attach_assets(ctx, props_data, library="ink_story")
 
     # F-2026-11-12 M2：课文物料把 textbook/compliance 透传给渲染层 ——
     # 竖排原文取 full_text，片尾固定标注教材版本（spec F7）。科技物料不带这两块，行为不变。

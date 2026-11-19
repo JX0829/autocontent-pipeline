@@ -36,6 +36,12 @@ export interface AlignedSceneItem {
 }
 
 export interface AlignedRenderPayload extends Record<string, unknown> {
+  /** 2026-11-19（方案 C）：素材库选出的水墨素材（缺口时不传，渲染层回落纯纸色） */
+  assets?: {
+    open?: string | null; reveal?: string | null; bg?: string | null;
+    mid?: string | null; end?: string | null; tex?: string | null;
+    open_start_from?: number; cover_mode?: string;
+  } | null;
   task_id: string;
   template_id?: string;
   fps: number;

@@ -1,0 +1,179 @@
+# 水墨素材库 manifest（课文古风 / 水墨本共用）
+#
+# 命名规范：<slot>_<family>_v<N>[_<derived>].<ext>
+# 加素材三步：放文件 → 这里加一条 → 跑两道校验
+#   $PY scripts/verify_assets.py && $PY tools/ink_asset_check.py <file>
+#
+# 槽位：open 开场 / reveal 揭示 / bg 正文底（required）/ mid 转场 / end 收尾 / tex 纸纹
+#
+# ---- 2026-11-19 用户上传 19 条，入库 13 条 ----
+# 排除：
+#   · 2 条 1920×1080 横版（用户只要竖版，已挪 _landscape/ 留档）：
+#       ink_brush_touch_v1.mp4、ink_mist_drift_v1.mp4
+#   · 2 条重复：开场_墨滴落纸晕染.mp4（与 ink_drop_bloom md5 相同）、泼墨转场.mp4（720p 低分版）
+#   · 5 条判据不过（等重出）：
+#       ink_blank_paper_v1  中位饱和 41 > 40
+#       ink_paper_aged_v1   中位饱和 44 > 40
+#       ink_paper_fiber_v1  OCR 'moe'(78) + 饱和 31
+#       ink_ripple_widen_v1 OCR 'ESS'(79)
+#       ink_river_calm_v1   OCR 'SIN'(91)
+library: ink_story
+version: 3
+
+assets:
+  - id: ink_drop_bloom
+    file: ink_drop_bloom.mp4
+    slot: open
+    family: drop_bloom
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 720
+    height: 1280
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_line_wander_v1
+    file: ink_line_wander_v1.mp4
+    slot: open
+    family: line_wander
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_curtain_lift_v1
+    file: ink_curtain_lift_v1.mp4
+    slot: reveal
+    family: curtain_lift
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_misty_mountains
+    file: ink_misty_mountains.mp4
+    slot: bg
+    family: misty_mountains
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: true
+    width: 1080
+    height: 1920
+    fps: 25.0
+    duration_s: 9.68
+  - id: ink_misty_mountains_v2
+    file: ink_misty_mountains_v2.mp4
+    slot: bg
+    family: misty_mountains
+    version: 2
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: true
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_bamboo_sway_v1
+    file: ink_bamboo_sway_v1.mp4
+    slot: bg
+    family: bamboo_sway
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: true
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_window_snow_v1
+    file: ink_window_snow_v1.mp4
+    slot: bg
+    family: window_snow
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: true
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_mountain_mist_v1
+    file: ink_mountain_mist_v1.mp4
+    slot: bg
+    family: mountain_mist
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: true
+    width: 1080
+    height: 1920
+    fps: 25.0
+    duration_s: 9.68
+  - id: ink_splash_transition
+    file: ink_splash_transition.mp4
+    slot: mid
+    family: splash_transition
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_splash_transition_v2
+    file: ink_splash_transition_v2.mp4
+    slot: mid
+    family: splash_transition
+    version: 2
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_leaf_fall_v1
+    file: ink_leaf_fall_v1.mp4
+    slot: mid
+    family: leaf_fall
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_birds_pass_v1
+    file: ink_birds_pass_v1.mp4
+    slot: mid
+    family: birds_pass
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 10.027
+  - id: ink_residual_ink_v1
+    file: ink_residual_ink_v1.mp4
+    slot: end
+    family: residual_ink
+    version: 1
+    license: "用户自建（AI 生成）"
+    derived: null
+    loop: false
+    width: 1080
+    height: 1920
+    fps: 24.0
+    duration_s: 6.037

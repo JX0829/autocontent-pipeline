@@ -105,6 +105,10 @@ class Selection:
     mid: Optional[AssetChoice] = None
     #: 片尾收尾片段（2026-11-18）：最后 1.2s 全屏覆盖，不改时间轴
     end: Optional[AssetChoice] = None
+    #: 水墨「揭示」层（2026-11-19，SPEC 方案 C）：雾散/水波，压在正文揭示动画之上
+    reveal: Optional[AssetChoice] = None
+    #: 纸纹叠加层（2026-11-19）：宣纸纤维肌理，最上层极低不透明度
+    tex: Optional[AssetChoice] = None
     volume: float = 0.22
     duck_volume: float = 0.12
     rejected: list[str] = field(default_factory=list)
@@ -131,6 +135,9 @@ class Selection:
                 # 暂不注入渲染（选材记录保留在 audit 里，方便以后做无黑场素材再开）。
                 "mid": None,
                 "end": None,
+                # 2026-11-19（方案 C）：水墨模板用 reveal/tex；科技模板不读这两个键，注入无害
+                "reveal": self.reveal.src if self.reveal else None,
+                "tex": self.tex.src if self.tex else None,
             },
             "bgm_src": self.bgm.src if self.bgm else "",
             "bgm_volume": self.volume,
@@ -356,8 +363,9 @@ class AssetManager:
             by_domain["open"] = assets
             cover_mode = "none"
 
+        bgm_vol: float = 0.22
         picked: dict[str, Optional[AssetChoice]] = {}
-        for slot in ("open", "bg", "bgm", "mid", "end"):
+        for slot in ("open", "reveal", "bg", "bgm", "mid", "end", "tex"):
             cfg = slots.get(slot) or {}
             window = int(cfg.get("no_repeat_window", 0))
             pool_size = len([a for a in assets if a.get("slot") == slot])
@@ -389,12 +397,32 @@ class AssetManager:
         if picked["bg"] is None:
             raise AssetError("素材库不可用：正文背景 bg 必须有素材")
 
+        # 2026-11-19：本库没配 bgm 槽位时（如水墨 ink_story 只有画面素材），
+        # 退回默认库的 BGM 池 —— 否则课文本/水墨本整套变静音，属于能力倒退。
+        if picked.get("bgm") is None and "bgm" not in slots:
+            try:
+                _dname, _dlib = self._library(None)
+                if _dname != name:
+                    _dman = self._manifest(_dname, _dlib)
+                    _dbgm_cfg = ((_dlib.get("slots") or {}).get("bgm") or {})
+                    _w = int(_dbgm_cfg.get("no_repeat_window", 0))
+                    _recent = self.recent_ids(_w, "bgm", exclude_run_id=run_id) if _w else set()
+                    picked["bgm"] = self._pick_slot(
+                        _dman.get("assets") or [], "bgm", _dbgm_cfg, rng, _recent,
+                        _dlib["root"], warnings, rejected)
+                    if picked["bgm"] is not None:
+                        warnings.append(f"BGM 借自默认库 {_dname}（本库未配 bgm 槽位）")
+                        bgm_vol = float(_dbgm_cfg.get("volume", 0.22))
+            except Exception as exc:  # noqa: BLE001 — 借不到就算了，静音但不阻断出片
+                warnings.append(f"BGM 回退失败（{type(exc).__name__}），本片静音")
+
         bgm_cfg = slots.get("bgm") or {}
         sel = Selection(
             library=name, seed=_seed_of(run_id),
             open=picked["open"], bg=picked["bg"], bgm=picked["bgm"],
             mid=picked.get("mid"), end=picked.get("end"),
-            volume=float(bgm_cfg.get("volume", 0.22)),
+            reveal=picked.get("reveal"), tex=picked.get("tex"),
+            volume=float(bgm_cfg.get("volume", bgm_vol)),
             duck_volume=float(bgm_cfg.get("duck_volume", 0.12)),
             rejected=sorted(set(rejected)), warnings=warnings,
             cover_mode=cover_mode, domain=domain,

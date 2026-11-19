@@ -30,6 +30,15 @@ theme_mapping:
 
 # 内置 5 套默认视觉模板元数据（供 CLI、飞书审批卡片下拉菜单及校验器读取）
 templates:
+  # 2026-11-19（SPEC 方案 C）：水墨本模板，走 ink_story 素材库（6 槽位）
+  ink_story:
+    name: "T7 · 水墨古风（宣纸 + 水墨素材）"
+    description: "宣纸底 + 水墨视频素材（开场/揭示/正文/转场/收尾/纸纹）+ 竖排文字；课文与古风选题"
+    recommended_themes: ["textbook", "poetry", "culture"]
+    enabled: true
+    composition: "InkStoryVideo"
+    asset_library: "ink_story"
+
   tech_story:
     name: "T6 · 科技全屏视频（AI 素材 + 口播）"
     description: "全屏 AI 视频素材铺底 + 顶部标题/关键词 + 底部字幕 + 舒缓 BGM；文字不遮画面中部"

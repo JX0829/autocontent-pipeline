@@ -450,6 +450,7 @@ $PY scripts/test_channels_stability.py     # 视频号稳定性
 - 素材放 `renderer/public/assets/`，新增素材不改代码；`COVER_FRAME` 控制封面抽帧
 - BGM 音量永远低于口播；分镜「锐评」`creator_take` **必填且有门禁**
 - 细节见 `docs/RUNBOOK-20261118-full.md` §5.5
+- **水墨模板 `ink_story`（2026-11-19）**：素材放 `renderer/public/ink/`，6 槽位 `open/reveal/bg/mid/end/tex`，课文本也会用其中的 `bg`+`tex`；细节见完整版 §5.7
 
 ## 附录 B 课文古风模板 `textbook_story`
 
