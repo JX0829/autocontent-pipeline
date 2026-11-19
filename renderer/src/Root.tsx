@@ -20,6 +20,7 @@ import { StatChartView } from './components/StatChartView';
 import { MediaShowcaseView } from './components/MediaShowcaseView';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { TechStoryVideo, TECH_TOTAL } from './tech/TechStoryVideo';
+import { TechCoverCard } from './tech/TechCoverCard';
 import type { TechProps } from './tech/TechStoryVideo';
 import { InkDropIntro } from './demo/InkDropIntro';
 import { InkStoryVideo } from './ink/InkStoryVideo';
@@ -505,6 +506,25 @@ export const RemotionRoot: React.FC = () => {
         width={1080}
         height={1920}
         calculateMetadata={calculateTechMetadata}
+      />
+      {/* 封面卡片（SPEC-20261117 §十一）：底图=成片截帧，文案由 tech_story 同套语汇渲染 */}
+      <Composition
+        id="TechCoverCardPortrait"
+        component={TechCoverCard}
+        durationInFrames={1}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{ bg: '', main: '', sub: '', kicker: '', theme: '', aspect: 'portrait' }}
+      />
+      <Composition
+        id="TechCoverCardLandscape"
+        component={TechCoverCard}
+        durationInFrames={1}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{ bg: '', main: '', sub: '', kicker: '', theme: '', aspect: 'landscape' }}
       />
       {/* 同一个 TechStoryVideo 组件的 16:9 画幅（R6）：版式元素同源，不做第二套科技版式 */}
       <Composition

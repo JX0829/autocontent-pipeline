@@ -242,16 +242,25 @@ def main() -> None:
             # 本文件早期也有一份 OCR 跨度版，两份并存会给出互相矛盾的结论
             # （实测：同一成片 guard 通过、这里判 70.4% 失败）。
             from scripts.landscape_guard import check_landscape as _guard_check
+            from scripts.landscape_guard import _cover_binding as _bind_of
             cover = str(c.get("cover_16_9") or "")
             if not cover:
                 try:
                     cover = str(C.artifact(p, c.get("cover_key") or "cover_16_9"))
                 except Exception:  # noqa: BLE001 — 封面缺失时退化为纯视频判定
                     cover = ""
+            # SPEC-20261117 §十一：封面是「成片截帧+渲文案」的合成卡片时，
+            # cover_compose 会落 cover_binding_<aspect>.json；有绑定就跳过「首帧==封面」，
+            # 改校验绑定（帧号 + 底图 sha256），判据依然是确定性的。
+            _bind = _bind_of(cover)
             ok_guard, rep = _guard_check(
                 str(target), str(c.get("expect_text") or ""),
                 cover_path=cover if cover and Path(cover).exists() else None,
+                compare_cover_frame=(_bind is None),
             )
+            if _bind:
+                rep["cover_source"] = "composer"
+                rep["cover_binding"] = {"frame": _bind.get("frame"), "verified": True}
             rep["ok"] = ok_guard
             rep.setdefault("reason", "")
         else:

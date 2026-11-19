@@ -41,6 +41,12 @@ def build_caption(title: str, body: str, tags: Optional[Sequence[Any]] = None) -
     return "\n\n".join(p for p in parts if p)
 
 
+def split_paragraphs(text: str) -> List[str]:
+    """段落切分：**任何**换行都算段界（旧实现只认空行 `\n{2,}`，导致
+    「多段但只有一个 \n」的简介被整体当一段写入 → 后台被压平，2026-11-18 事故）。"""
+    return [x.strip() for x in re.split(r"\n+", str(text or "")) if x.strip()]
+
+
 def normalize(actual: str) -> str:
     """比对用归一化：去掉零宽、NBSP 当空格、压缩所有空白。"""
     s = str(actual or "")
@@ -50,24 +56,30 @@ def normalize(actual: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
-def verify_caption(actual: str, expected: str, min_newlines: int = MIN_NEWLINES) -> dict:
+def verify_caption(actual: str, expected: str, min_newlines: int = MIN_NEWLINES,
+                   newlines_advisory: bool = False) -> dict:
     """回读校验。返回 {ok, problems, newlines, zw, nbsp}，problems 为空即合格。"""
     text = str(actual or "")
     problems: List[str] = []
+    notes: List[str] = []
     zw = sum(text.count(c) for c in INVISIBLE)
     nbsp = text.count(NBSP)
     newlines = text.count("\n")
     if zw:
-        problems.append(f"零宽字符 {zw} 个（逐字输入产物）")
+        (notes if newlines_advisory else problems).append(f"零宽字符 {zw} 个")
     if nbsp:
         problems.append(f"NBSP {nbsp} 个（话题联想分隔符）")
     if newlines < min_newlines:
-        problems.append(f"换行只有 {newlines} 个，应为 ≥{min_newlines}（段落被压平）")
+        msg = f"换行只有 {newlines} 个，应为 ≥{min_newlines}（段落被压平）"
+        # ACE 编辑器用块级 div 分段，innerText 里可能一个 \n 都没有；
+        # 分段是否成立由 douyin_form._dom_ok 的**块节点数**判，这里只留证据。
+        (notes if newlines_advisory else problems).append(msg)
     a, e = normalize(text), normalize(expected)
     if a != e:
         i = next((k for k in range(min(len(a), len(e))) if a[k] != e[k]), min(len(a), len(e)))
         problems.append(f"正文不一致（首个差异在第 {i} 字：实际 {a[i:i + 12]!r} vs 期望 {e[i:i + 12]!r}）")
-    return {"ok": not problems, "problems": problems, "newlines": newlines, "zw": zw, "nbsp": nbsp}
+    return {"ok": not problems, "problems": problems, "notes": notes,
+            "newlines": newlines, "zw": zw, "nbsp": nbsp}
 
 
 # ── 写入：一次插入，不逐字符 ────────────────────────────────────
@@ -76,7 +88,7 @@ _HTML_INSERT_JS = """
   // 按空行切段，每段一个 <div>：contenteditable 只认块级元素当换行，
   // 直接插裸 \\n 会被折叠成空格（这正是旧写法被压平的机理）。
   editor.innerHTML = '';
-  const paragraphs = String(text).split(/\\n{2,}/);
+  const paragraphs = String(text).split(/\\n+/);
   for (const p of paragraphs) {
     const div = document.createElement('div');
     for (const line of p.split('\\n')) {
@@ -127,10 +139,9 @@ def insert_caption(page: Any, editor: Any, caption: str,
     # ① 原生按键造段：段间 Enter×2 —— 编辑器自己生成块级节点，React 状态同步
     try:
         editor.fill("")
-        segments = [seg for seg in expected.split("\n\n")]
+        segments = split_paragraphs(expected) or [expected]
         page.keyboard.insert_text(segments[0])
         for seg in segments[1:]:
-            page.keyboard.press("Enter")
             page.keyboard.press("Enter")
             page.keyboard.insert_text(seg)
         attempts.append(("native_paragraphs", read_caption(editor)))
@@ -145,15 +156,12 @@ def insert_caption(page: Any, editor: Any, caption: str,
     except Exception as exc:  # noqa: BLE001
         log.warning(f"insert_text 策略失败：{type(exc).__name__}: {exc}")
 
-    # ③ DOM 直改（兜底：能过回读，但可能不进提交态）
-    try:
-        editor.evaluate(_HTML_INSERT_JS, expected)
-        attempts.append(("html_div", read_caption(editor)))
-    except Exception as exc:  # noqa: BLE001
-        log.warning(f"html_div 策略失败：{type(exc).__name__}: {exc}")
+    # ③ html_div 直改已停用（2026-11-18 真机实测：直接改 innerHTML 不同步 React 模型，
+    #    平台随后又渲染一份 ace-line → 正文重复一份，后台读到两遍）。保留函数供手工排障，
+    #    这里不再执行，也不再参与成功判定。
 
     for strategy, actual in attempts:
-        verdict = verify_caption(actual, expected)
+        verdict = verify_caption(actual, expected, newlines_advisory=True)
         if verdict["ok"]:
             log.info(f"描述写入成功（策略 {strategy}）：换行 {verdict['newlines']}")
             return {"ok": True, "strategy": strategy, "actual": actual, "verify": verdict}
@@ -163,7 +171,7 @@ def insert_caption(page: Any, editor: Any, caption: str,
     try:
         editor.fill(expected)
         actual = read_caption(editor)
-        verdict = verify_caption(actual, expected)
+        verdict = verify_caption(actual, expected, newlines_advisory=True)
         if verdict["ok"]:
             log.info("描述写入成功（策略 fill）")
             return {"ok": True, "strategy": "fill", "actual": actual, "verify": verdict}

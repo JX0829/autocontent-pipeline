@@ -129,11 +129,13 @@ def test_guard_ocr_is_advisory() -> None:
     if not vid.exists() or not cov.exists():
         print("SKIP  §十 guard 用例（本机无 qwen-safety-1 产物）")
         return
-    ok, rep = check_landscape(str(vid), "自立门户？查无实据", cover_path=str(cov))
-    check("§十 OCR 无文字不再硬拦（ok=true）", ok is True, str(rep.get("reason")))
-    check("§十 记 text_check=advisory_no_text",
+    # §十一 起封面是合成卡片（≠视频第 0 帧）→ 走 compare_cover_frame=False
+    ok, rep = check_landscape(str(vid), "自立门户？查无实据", cover_path=str(cov),
+                              compare_cover_frame=False)
+    check("§十/§十一 守卫放行（ok=true）", ok is True, str(rep.get("reason")))
+    check("§十一 文案校验走 advisory/hit",
           rep.get("text_check") in ("advisory_no_text", "hit", "advisory_miss"), str(rep.get("text_check")))
-    check("§十 首帧=封面仍硬判（diff=0）", rep.get("cover_frame_diff") == 0.0, str(rep.get("cover_frame_diff")))
+    check("§十一 合成封面不做首帧硬判", rep.get("cover_source") == "composer", str(rep.get("cover_source")))
     check("§十 覆盖率判据仍在", rep.get("coverage") == 1.0, str(rep.get("coverage")))
 
     # R12 反向：竖版塞横屏必须仍被拦
@@ -148,6 +150,84 @@ def test_guard_ocr_is_advisory() -> None:
           'rep["reason"] = "封面 OCR 未识别到任何文字' not in src)
     rl = (PROJ / "scripts" / "render_landscape.py").read_text(encoding="utf-8")
     check("§十 R11 props 文案断言仍在（唯一硬判据）", "LandscapeGuardError" in rl and "_cover_text" in rl)
+def test_cover_compose() -> None:
+    """§十一 R13~R18：封面=成片截帧+渲染文案；避开 HookOverlay；失败态显式。"""
+    import subprocess
+    from src.pipeline import cover_compose as CC
+
+    props = {"scenes": [{"start_frame": 0, "duration_frames": 120},
+                        {"start_frame": 120, "duration_frames": 150}],
+             "cover_main_text": "先删数据，再开源", "cover_sub_text": "安全数据按用途过滤",
+             "theme": "breaking-news"}
+    f = CC.pick_frame(props)
+    check("§十一 底图帧避开 scene 0（HookOverlay）", f >= 120, f"frame={f}")
+
+    short = {"scenes": [{"start_frame": 0, "duration_frames": 12}]}
+    check("§十一 极短片回退 scene0 第 16 帧", CC.pick_frame(short) == 16, str(CC.pick_frame(short)))
+    try:
+        CC.pick_frame({"scenes": []})
+        check("§十一 无分镜时报错", False, "没有抛")
+    except CC.CoverComposeError as exc:
+        check("§十一 无分镜时报错", "COVER_COMPOSE_FAILED" in str(exc), str(exc)[:50])
+
+    run = PROJ / "output" / "20261118" / "qwen-safety-1"
+    if (run / "video.mp4").exists():
+        vid = run / "video.mp4"
+        for asp, name, size in (("portrait", "cover.png", (1080, 1920)),
+                                ("landscape", "cover_16_9.png", (1920, 1080))):
+            f = run / name
+            check(f"§十一 {name} 尺寸 {size}", CC._probe_size(f) == size, str(CC._probe_size(f)))
+            base = PROJ / "renderer" / "public" / "runs" / "qwen-safety-1" / f"cover_base_{asp}.png"
+            check(f"§十一 {name} 底图存在且非空", base.exists() and base.stat().st_size > 0)
+        # A23：0.2s 残片必须显式失败
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        bad = tmp / "short.mp4"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(vid), "-t", "0.2",
+                        "-c:v", "libx264", "-c:a", "aac", str(bad)], check=True)
+        try:
+            CC.compose_cover(bad, tmp / "x.png", props=props, run_id="t", aspect="portrait")
+            check("§十一 A23 残片 → COVER_COMPOSE_FAILED", False, "没有抛")
+        except CC.CoverComposeError as exc:
+            check("§十一 A23 残片 → COVER_COMPOSE_FAILED", "COVER_COMPOSE_FAILED" in str(exc), str(exc)[:60])
+            check("§十一 A23 不产出空封面", not (tmp / "x.png").exists())
+    else:
+        print("SKIP  §十一 真机封面用例（无 qwen-safety-1 产物）")
+
+    # external_truth hook：有 binding 就按合成封面口径放行（A21 的前置条件）
+    run_q = PROJ / "output" / "20261118" / "qwen-safety-1"
+    if (run_q / "cover_binding_landscape.json").exists():
+        import subprocess as sp
+        payload = {"run_root": str(run_q), "context": {"expect_text": "先删数据，再开源"},
+                   "artifacts": {"video_16_9": str(run_q / "video_16_9.mp4"),
+                                 "cover_16_9": str(run_q / "cover_16_9.png")}}
+        r = sp.run([sys.executable, str(PROJ / "scripts" / "landscape_guard.py")],
+                   input=json.dumps(payload), capture_output=True, text=True)
+        rep = json.loads((r.stdout or "{}").strip().splitlines()[-1] or "{}") if r.stdout.strip() else {}
+        check("§十一 hook 认 binding 放行（ok=true）", rep.get("ok") is True, str(rep.get("reason"))[:60])
+        check("§十一 hook 记 cover_source=composer", rep.get("cover_source") == "composer", str(rep.get("cover_source")))
+        check("§十一 hook 不再比首帧", rep.get("cover_frame_diff") is None, str(rep.get("cover_frame_diff")))
+        check("§十一 binding 帧号已校验", (rep.get("cover_binding") or {}).get("verified") is True, str(rep.get("cover_binding")))
+    else:
+        print("SKIP  §十一 hook binding 用例（无 cover_binding_landscape.json）")
+
+    # external_truth 钩子（管线真正调的那道，走 hook 协议）
+    if (run_q / "cover_binding_landscape.json").exists():
+        import subprocess as sp
+        payload = {"run_root": str(run_q), "task_id": "qwen-safety-1",
+                   "context": {"artifact_kind": "landscape", "expect_text": "先删数据，再开源"},
+                   "artifacts": {"video_16_9": str(run_q / "video_16_9.mp4"),
+                                 "cover_16_9": str(run_q / "cover_16_9.png")}}
+        r = sp.run([sys.executable, str(PROJ / "scripts" / "hooks" / "external_truth.py")],
+                   input=json.dumps(payload), capture_output=True, text=True)
+        ok_hook = r.returncode == 0 and '"ok": true' in r.stdout
+        check("§十一 external_truth 钩子放行合成封面", ok_hook,
+              (r.stdout or r.stderr)[:80].replace("\n", " "))
+        check("§十一 external_truth 记 cover_source=composer", '"composer"' in r.stdout)
+
+    ex = (PROJ / "src" / "pipeline" / "executors.py").read_text(encoding="utf-8")
+    check("§十一 A22 tech 链路不再渲 CoverStill", 'remotion("still"' not in ex)
+    rl = (PROJ / "scripts" / "render_landscape.py").read_text(encoding="utf-8")
+    check("§十一 A22 横版走 cover_composer", "cover_composer" in rl)
 
 
 def test_signals_are_readonly() -> None:
@@ -166,6 +246,7 @@ def main() -> int:
     test_r3_material_lock()
     test_cover_is_first_frame()
     test_guard_ocr_is_advisory()
+    test_cover_compose()
     test_signals_are_readonly()
     print(f"\n{'PASS' if not FAILED else 'FAIL'} {len(FAILED)} 项失败" + (f": {FAILED}" if FAILED else ""))
     return 0 if not FAILED else 1

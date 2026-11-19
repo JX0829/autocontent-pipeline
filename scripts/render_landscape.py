@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 PROJ = Path(__file__).resolve().parent.parent
 RENDERER = PROJ / "renderer"
@@ -34,6 +35,7 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
                      out_dir: str | Path | None = None,
                      expect_cover_text: str = "",
                      video_composition: str | None = None,
+                     cover_composer: "Callable[[Path, Path], Path] | None" = None,
                      cover_composition: str | None = None) -> dict:
     """横屏唯一入口。
 
@@ -83,25 +85,26 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
         f"--props={rel_props}", "--codec=h264", "--crf=18", "--pixel-format=yuv420p",
     ], cwd=str(RENDERER))
 
-    # SPEC-20261117 §八（A10）：横版封面 = video_16_9.mp4 的 COVER_FRAME 帧（默认第 54 帧）。
-    # 2026-11-18 修正：模板标题从第 18–48 帧才淡入，抽第 0 帧会得到没有文字的封面。
-    # 失败必须显式报错（不回落旧 CoverStill、不出空封面）；现场保留 video。
-    try:
-        _cover_frame = max(0, int(os.environ.get("COVER_FRAME") or 54))
-    except ValueError:
-        _cover_frame = 54
-    _ff = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"select=eq(n\\,{_cover_frame})",
-         "-frames:v", "1", str(cover)],
-        capture_output=True, text=True,
-    )
-    if _ff.returncode != 0 or not cover.exists() or cover.stat().st_size == 0:
-        raise LandscapeGuardError(
-            f"COVER_FRAME_EXTRACT_FAILED: 横版抽第 {_cover_frame} 帧失败 "
-            f"(rc={_ff.returncode}) {( _ff.stderr or '' ).strip().splitlines()[-2:]} | video={video}")
+    # SPEC-20261117 §十一 R13~R18：封面 = 成片截帧 + 渲染文案。
+    # 调用方给了 cover_composer（tech_story 链路）就用它；没给（课文本等老链路）仍抽第 0 帧。
+    if cover_composer is not None:
+        cover = Path(cover_composer(video, cover))
+    else:
+      # SPEC-20261117 §八（A10）：横版封面 = video_16_9.mp4 第 0 帧，不再单独渲封面构图。
+      # 失败必须显式报错（不回落旧 CoverStill、不出空封面）；现场保留 video。
+      _ff = subprocess.run(
+          ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0)",
+           "-frames:v", "1", str(cover)],
+          capture_output=True, text=True,
+      )
+      if _ff.returncode != 0 or not cover.exists() or cover.stat().st_size == 0:
+          raise LandscapeGuardError(
+              "COVER_FRAME_EXTRACT_FAILED: 横版抽第 0 帧失败 "
+              f"(rc={_ff.returncode}) {( _ff.stderr or '' ).strip().splitlines()[-2:]} | video={video}")
 
     from scripts.landscape_guard import check_landscape
-    ok, report = check_landscape(str(video), expect_cover_text, cover_path=str(cover))
+    ok, report = check_landscape(str(video), expect_cover_text, cover_path=str(cover),
+                                 compare_cover_frame=(cover_composer is None))
     report["cover_path"] = str(cover)
     report["video_path_generated"] = str(video)
     if not ok:

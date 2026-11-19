@@ -142,7 +142,7 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
   });
 
   return (
-    <div style={{ position: 'absolute', left: 88, right: 88, top: 190 }}>
+    <div style={{ position: 'absolute', left: 120, right: 120, top: 190 }}>
       <div style={{ fontFamily: FONT, fontSize: 24, letterSpacing: 8, color: ACCENT, opacity: t(8, 30) }}>
         {kicker}
       </div>
@@ -197,7 +197,7 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: 88, right: 88, top: 200,
+        position: 'absolute', left: 120, right: 120, top: 200,
         display: 'flex', alignItems: 'flex-start', gap: 26, opacity: t,
         transform: `translateY(${interpolate(t, [0, 1], [18, 0])}px)`,
       }}
@@ -242,7 +242,7 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: 70, right: 70, bottom: 168,
+        position: 'absolute', left: 120, right: 120, bottom: 168,
         display: 'flex', justifyContent: 'center', opacity: fadeIn * fadeOut,
       }}
     >
@@ -350,7 +350,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
 
       <div
         style={{
-          position: 'absolute', left: 88, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', left: 120, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >
@@ -358,7 +358,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
       </div>
       <div
         style={{
-          position: 'absolute', right: 88, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', right: 120, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >
