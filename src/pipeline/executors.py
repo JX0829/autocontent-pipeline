@@ -142,7 +142,8 @@ def _attach_assets(ctx: StepContext, props_data: dict[str, Any],
 
     sel = AssetManager().select(run_id=ctx.run_id, library=library,
                                 draft=draft, locked=locked)
-    props_data.update(sel.to_render_props())
+    # 水墨库要把 mid/end 真正交给渲染层（课文本靠它们播飞鸟/泼墨/残墨）
+    props_data.update(sel.to_render_props(inject_mid_end=(library == "ink_story")))
     audit = sel.to_audit()
     props_data["asset_binding"] = audit
     _write_json(ctx.run_root / "asset_binding.json", audit)
