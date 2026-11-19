@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -36,6 +37,53 @@ def _strip_tail_noise(s: str) -> str:
         out = out[:-1]
     return out
 
+
+def _caption_diff_report(expected: str, actual: str) -> dict:
+    """CAPTION_MISMATCH 现场：把 expected/filled/归一化/相似度/首个差异点全量落盘。
+
+    2026-11-19 事故：连续 3 次假红但现场只留 `filled[:120]`，使用侧无法自证差异。
+    """
+    import difflib
+
+    a, e = _normalize_caption(actual), _normalize_caption(expected)
+    ratio = difflib.SequenceMatcher(None, a, e).ratio() if (a or e) else 0.0
+    first_diff = -1
+    for i in range(min(len(a), len(e))):
+        if a[i] != e[i]:
+            first_diff = i
+            break
+    if first_diff < 0 and len(a) != len(e):
+        first_diff = min(len(a), len(e))
+    ctx = 40
+    lo = max(0, first_diff - ctx) if first_diff >= 0 else 0
+    return {
+        "expected_raw": expected,
+        "filled_raw": actual,
+        "expected_norm": e,
+        "filled_norm": a,
+        "len_expected": len(e),
+        "len_filled": len(a),
+        "ratio": round(ratio, 4),
+        "first_diff_index": first_diff,
+        "expected_window": e[lo:lo + 2 * ctx] if first_diff >= 0 else e[-80:],
+        "filled_window": a[lo:lo + 2 * ctx] if first_diff >= 0 else a[-80:],
+        "opcodes": [list(op) for op in difflib.SequenceMatcher(None, a, e).get_opcodes()
+                    if op[0] != "equal"],
+    }
+
+
+def _dump_caption_mismatch(report: dict) -> str:
+    """落盘到 output/douyin_diag/caption_mismatch_<ts>.json，返回路径（失败也不抛）。"""
+    import time as _time
+
+    try:
+        d = Path("output/douyin_diag")
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"caption_mismatch_{int(_time.time())}.json"
+        f.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(f)
+    except Exception:  # noqa: BLE001
+        return ""
 
 def _caption_matches(actual: str, expected: str) -> bool:
     """回读文本是否与期望一致。
@@ -88,8 +136,12 @@ PRIVACY_TARGETS = {
          'xpath=//label[contains(., "仅自己可见") or contains(., "私密")]'],
     ),
     "public_publish": (
-        "公开可见",
-        ['label:has-text("公开可见")',
+        "公开",
+        # 2026-11-19 真机实测：现版上传页的选项文案就是「公开」（不是「公开可见」），
+        # 且**默认就是 checked=true** —— 老代码拿 "公开可见" 找不到，退到 xpath 兜底命中
+        # 「公开」后又硬点一次 → Playwright 等可点条件 30s 超时，整条抖音发布挂掉。
+        ['label:has-text("公开")',
+         'label:has-text("公开可见")',
          'label:has-text("所有人可见")',
          'xpath=//label[contains(., "公开") or contains(., "所有人可见")]'],
     ),
@@ -97,16 +149,75 @@ PRIVACY_TARGETS = {
 
 
 def select_privacy(page, mode: str) -> tuple[bool, str]:
-    """按 publish_mode 勾选可见性。返回 (是否成功, 失败原因)。"""
+    """按 publish_mode 勾选可见性。返回 (是否成功, 失败原因)。
+
+    2026-11-19 P0：public_publish 分支卡在「公开可见」单选
+      —— 元素本来就是 `checked=true`，代码还硬 click，Playwright 等可点条件等到 30s 超时，
+      整条抖音发布挂掉（三次重试全是这个）。修法：
+        1. **先读状态**：已选中直接返回成功，绝不重复点；
+        2. 未选中优先 JS `input.click()`（绕开浮层遮挡），再回读状态；
+        3. JS 无效才退 Playwright 点击（短超时 + force），最后再回读一次；
+        4. 仍不成功 → 返回具体原因（含当前 checked），不静默。
+    """
     spec = PRIVACY_TARGETS.get(mode)
     if spec is None:
         return False, f"未知 publish_mode={mode}"
     label_name, selectors = spec
+
     for sel in selectors:
         loc = page.locator(sel).first
-        if loc.count() > 0:
-            loc.click()
+        try:
+            if loc.count() == 0:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+
+        # ① 先读 checked —— **只认真实控件状态**，不猜 className。
+        #    （2026-11-19 实测教训：用 /checked|selected|active/ 猜 class 会把普通 label
+        #     误判成「已选中」→ 隐私设置假绿。隐私项假绿比报错严重得多，必须 fail-closed。）
+        def _state() -> bool | None:
+            """True=已选中 / False=确定未选中 / None=读不到（未知，按未选中处理）。"""
+            try:
+                v = loc.evaluate(
+                    """(el) => {
+                      const inp = el.querySelector && el.querySelector('input[type=radio],input[type=checkbox]');
+                      if (inp) return !!inp.checked;
+                      const aria = el.getAttribute('aria-checked');
+                      if (aria === 'true') return true;
+                      if (aria === 'false') return false;
+                      return null;
+                    }""")
+                return None if v is None else bool(v)
+            except Exception:  # noqa: BLE001
+                return None
+
+        if _state() is True:
             return True, ""
+
+        # ② JS 点击（不受遮挡影响；触发 React 的 onClick）
+        try:
+            loc.evaluate("""(el) => {
+              const inp = el.querySelector && el.querySelector('input[type=radio],input[type=checkbox]');
+              (inp || el).click();
+            }""")
+            page.wait_for_timeout(400)
+            if _state() is True:
+                return True, ""
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ③ Playwright 兜底（短超时 + force，避免又等 30s）
+        try:
+            loc.click(timeout=4000, force=True)
+            page.wait_for_timeout(400)
+            if _state() is True:
+                return True, ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[douyin] 点击「{label_name}」仍失败：{type(exc).__name__}: {exc}")
+
+        return False, (f"「{label_name}」点击后仍未被选中"
+                       f"（selector={sel}，checked={_state()}）")
+
     return False, f"mode={mode} 未找到「{label_name}」选项"
 
 
@@ -510,19 +621,28 @@ class DouyinProvider(BaseSocialProvider):
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"正文（去芯片）回读失败，退回 innerText: {exc}")
                 if filled_text and not _caption_matches(_body_view, full_text):
-                    # 排障用：给出首个差异位置与两边真实长度（否则只看到被截断的前 120 字，猜不到原因）
-                    _i = next((i for i, (a, b) in enumerate(zip(_body_view, full_text)) if a != b),
-                              min(len(_body_view), len(full_text)))
+                    # 现场全量落盘（2026-11-19：连续 3 次假红但没法定差异）
+                    _rep = _caption_diff_report(full_text, _body_view)
+                    _rep["filled_inner_text"] = filled_text
+                    _rep["topics_landed"] = topics_landed
+                    _rep["topics_removed"] = _tp.get("removed") or []
+                    _dump = _dump_caption_mismatch(_rep)
                     logger.error(
-                        "CAPTION_MISMATCH: 回读与预期不符 "
-                        f"len(view)={len(_body_view)} len(expect)={len(full_text)} first_diff@{_i} "
-                        f"view[{max(0,_i-12)}:{_i+12}]={_body_view[max(0,_i-12):_i+12]!r} "
-                        f"expect[{max(0,_i-12)}:{_i+12}]={full_text[max(0,_i-12):_i+12]!r}")
+                        "CAPTION_MISMATCH: 回读与预期不符 | ratio=%.4f 首差下标=%s "
+                        "len(exp/filled)=%d/%d | 落盘=%s",
+                        _rep["ratio"], _rep["first_diff_index"],
+                        _rep["len_expected"], _rep["len_filled"], _dump or "（落盘失败）",
+                    )
+                    logger.error("  expected[:160]=%r", _rep["expected_norm"][:160])
+                    logger.error("  filled  [:160]=%r", _rep["filled_norm"][:160])
+                    logger.error("  差异窗口 exp=%r vs filled=%r",
+                                 _rep["expected_window"], _rep["filled_window"])
                     browser.close()
                     return {"success": False, "published": False,
                             "error": "CAPTION_MISMATCH",
-                            "expected": full_text[:200], "filled": filled_text[:200],
-                            "message": "简介回读与预期不符（乱码/话题错位/被重排），拒绝发布"}
+                            "expected": full_text, "filled": _body_view,
+                            "diagnostics": _rep, "diagnostics_path": _dump,
+                            "message": f"简介回读与预期不符（ratio={_rep['ratio']}），拒绝发布"}
                 # 3e. 话题终态（SPEC-20261118 R8）：真话题数 == 声明数 且 尾部无游离文本
                 if topics_declared and (_tp.get("stray") or not topics_ok):
                     _why = ("尾部残留游离文本 " + repr(_tp.get("stray"))) if _tp.get("stray") \
@@ -531,6 +651,7 @@ class DouyinProvider(BaseSocialProvider):
                     browser.close()
                     return {"success": False, "published": False,
                             "error": "TOPIC_TAIL_RESIDUE" if _tp.get("stray") else "TOPIC_COUNT_MISMATCH",
+                            "stage": "topics",
                             "expected": topics_declared, "filled": _tp,
                             "message": f"话题终态不合格（{_why}），拒绝发布"}
 
@@ -545,7 +666,7 @@ class DouyinProvider(BaseSocialProvider):
                     logger.error(f"COVER_UPLOAD_FAILED: {_cover.get('detail')}")
                     browser.close()
                     return {"success": False, "published": False,
-                            "error": "COVER_UPLOAD_FAILED",
+                            "error": "COVER_UPLOAD_FAILED", "stage": "cover",
                             "expected": str(cover_path or ""), "filled": _cover,
                             "message": f"封面没上传成功（{_cover.get('detail')}），拒绝发布"}
 
@@ -636,8 +757,46 @@ class DouyinProvider(BaseSocialProvider):
                                 "message": ("点发布前自证不通过（标题/正文读回为空或不符），"
                                             "拒绝发布，避免产出空标题作品")}
 
+                    # P0-1（SPEC-20261119 R1~R4）：点「发布」前先关掉遮挡弹层。
+                    # 真机踩坑：semi-modal-wrap 盖住按钮 → Playwright 报 subtree intercepts
+                    # pointer events → 30s 超时 EXIT=64；老脚本能发是因为点之前先处理了弹层。
+                    _blk = douyin_form.dismiss_blockers(page, log_obj=logger)
+                    if _blk["action"] != "none":
+                        logger.info(f"PRE_PUBLISH_BLOCKERS: {_blk['action']} "
+                                    f"cls={_blk['class'][:60]!r} by={_blk['closed_by']!r}")
+
                     logger.info("Clicking publish button for private video...")
-                    publish_btn.click()
+                    try:
+                        publish_btn.click(timeout=8000)
+                    except Exception as click_exc:  # noqa: BLE001 — 遮挡/重渲染都可能造成点不中
+                        obs = douyin_form.describe_obstruction(page)
+                        logger.error(f"PUBLISH_CLICK_BLOCKED: {type(click_exc).__name__} | "
+                                     f"挡住的元素 class={obs.get('class')!r} "
+                                     f"text={obs.get('text')!r}")
+                        _blk2 = douyin_form.dismiss_blockers(page, log_obj=logger)
+                        logger.info(f"PUBLISH_CLICK_RETRY: 关层结果 {_blk2['action']} "
+                                    f"cls={_blk2['class'][:60]!r}")
+                        try:
+                            publish_btn.click(timeout=8000)
+                            logger.info("PUBLISH_CLICK_RETRY_OK")
+                        except Exception as retry_exc:  # noqa: BLE001
+                            obs2 = douyin_form.describe_obstruction(page)
+                            logger.error(f"PUBLISH_CLICK_FAILED_TWICE: {type(retry_exc).__name__} | "
+                                         f"class={obs2.get('class')!r} text={obs2.get('text')!r}")
+                            diag = Path("output/douyin_diag")
+                            diag.mkdir(parents=True, exist_ok=True)
+                            try:
+                                page.screenshot(path=str(diag / f"publish_blocked_{int(time.time())}.png"),
+                                                full_page=True)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            browser.close()
+                            return {"success": False, "published": False,
+                                    "error": "PUBLISH_BUTTON_BLOCKED",
+                                    "obstruction": obs2,
+                                    "message": ("点「发布」被遮挡且重试仍失败："
+                                                f"class={obs2.get('class')!r} "
+                                                f"text={obs2.get('text')!r}")}
 
                     # 等待发布完成：只认「发布成功」提示或真实跳转，最长 90 秒
                     logger.info("Waiting for publish completion signal...")
@@ -702,6 +861,19 @@ class DouyinProvider(BaseSocialProvider):
                             "message": ("作品已在内容管理列表出现（按正文命中），但标题未落上："
                                         "有作品无标题，按 unverified 记账，需人工到平台补标题")
                         }
+                    if not verified.get("draft_id"):
+                        # R6：作品确实在列表里，但没有真实 ID → 只能 unverified，不能算 published
+                        return {
+                            "success": False,
+                            "published": True,
+                            "status": "PUBLISHED_NO_ID",
+                            "error": "POST_ID_UNAVAILABLE",
+                            "post_id": "",
+                            "signal": signal,
+                            "id_source": verified.get("id_source") or "unavailable",
+                            "message": ("作品已在内容管理列表出现，但拿不到真实 aweme_id："
+                                        "台账按 unverified 记账（禁止写 readback_<时间戳> 充数）"),
+                        }
                     return {
                         "success": True,
                         "draft_id": verified["draft_id"],
@@ -713,25 +885,23 @@ class DouyinProvider(BaseSocialProvider):
                     }
 
                 else:
-                    # 默认草稿模式
-                    save_draft_btn = page.locator('button:has-text("暂存离开"), button:has-text("存草稿"), button:has-text("保存草稿")').first
-                    if save_draft_btn.count() == 0:
-                        save_draft_btn = page.locator('xpath=//button[contains(., "暂存") or contains(., "草稿")]').first
-
-                    if save_draft_btn.count() == 0:
-                        logger.error("DRAFT_BUTTON_NOT_FOUND: Refusing to proceed to prevent accidental publish!")
-                        browser.close()
+                    # 默认草稿模式（2026-11-19 P0：三次重试都卡在 click 30s 超时）
+                    # 统一走 douyin_form.save_as_draft()：等上传完成 → 找可用按钮 →
+                    # JS/Playwright 双路点击 → 二次确认 → 自证 → 失败落盘。
+                    from src.providers import douyin_form as _df_draft
+                    _dr = _df_draft.save_as_draft(page, log_obj=logger)
+                    browser.close()
+                    if not _dr.get("ok"):
                         return {
                             "success": False,
-                            "error": "DRAFT_BUTTON_NOT_FOUND",
-                            "message": "安全策略拦截：未找到'暂存离开'或'存草稿'按钮，严禁执行发布！"
+                            "error": _dr.get("code") or "DRAFT_SAVE_FAILED",
+                            "stage": "draft",
+                            "detail": _dr.get("detail"),
+                            "debug_dir": _dr.get("debug_dir"),
+                            "topics_declared": topics_declared,
+                            "topics_landed": topics_landed,
+                            "message": f"存草稿失败（{_dr.get('code')}）：{_dr.get('detail')}",
                         }
-
-                    logger.info("Clicking 'Save Draft / 暂存离开' button...")
-                    save_draft_btn.click()
-                    time.sleep(5)
-
-                    browser.close()
                     return {
                         "success": True,
                         "draft_id": f"draft_{int(time.time())}",
@@ -743,8 +913,94 @@ class DouyinProvider(BaseSocialProvider):
             # CDP_UNAVAILABLE / CDP_BUSY / LOGIN_REQUIRED，不能被下面的大 except 吞成裸文案
             raise
         except Exception as e:
+            # 2026-11-19 事故：这里原来只返回 str(e) + 一句「保存草稿异常」，
+            # 连失败在哪一步、哪段 JS 报的 SyntaxError 都看不到。
+            # 现在：带 traceback 末段 + 现场落盘（截图/HTML），并把异常归类为
+            # DRAFT_SAVE_EXCEPTION，供上层与台账区分「发布侧异常」与「物料问题」。
+            import traceback as _tb
+
+            tb_tail = "".join(_tb.format_exception(type(e), e, e.__traceback__)[-4:])[-1600:]
             logger.exception(f"Error during Douyin draft saving: {e}")
-            return {"success": False, "error": str(e), "message": "保存抖音草稿异常"}
+            dbg = ""
+            _pg = locals().get("page")
+            try:
+                d = Path("output/douyin_diag") / f"draft_exc_{int(time.time())}"
+                d.mkdir(parents=True, exist_ok=True)
+                if _pg is not None:
+                    _pg.screenshot(path=str(d / "page.png"), full_page=True)
+                    (d / "page.html").write_text(_pg.content(), encoding="utf-8")
+                (d / "traceback.txt").write_text(tb_tail, encoding="utf-8")
+                dbg = str(d)
+                logger.error(f"[douyin] 草稿阶段异常现场已落盘：{dbg}")
+            except Exception:  # noqa: BLE001
+                pass
+            return {"success": False, "error": f"{type(e).__name__}: {e}",
+                    "error_code": "DRAFT_SAVE_EXCEPTION", "stage": "draft",
+                    "traceback_tail": tb_tail, "debug_dir": dbg,
+                    "message": f"保存抖音草稿异常（{type(e).__name__}），现场：{dbg or '落盘失败'}"}
+
+    # ── P0-2（SPEC-20261119 R5/R6）：成功凭证必须是**真实作品 ID** ──────────────
+    # 旧实现 `rid = f"readback_{int(time.time())}"` 把发布时刻当 draft_id 写进 publish.json，
+    # 台账记 published 但平台上根本没有这条作品（受害样本 denoise-nostore-1：63→63）。
+    # 现在只认三种来源，拿不到就返回 None，由调用方记 unverified + 原因：
+    #   ① 管理页作品卡片上的 /video/<id> 链接（最常见）
+    #   ② 卡片元素的 data-id / data-aweme-id 属性
+    #   ③ 创作者中心内部接口（浏览器上下文内 fetch，带登录态）
+    AWEME_ID_JS = r"""(title) => {
+      const norm = s => (s || '').replace(/\s+/g, '');
+      const want = norm(title);
+      const out = [];
+      const push = (id, txt, src) => {
+        if (id && /^\d{6,}$/.test(String(id))) out.push({id: String(id), text: (txt || '').slice(0, 80), src});
+      };
+      for (const a of document.querySelectorAll('a[href*="/video/"]')) {
+        const m = (a.getAttribute('href') || '').match(/\/video\/(\d{6,})/);
+        if (m) push(m[1], (a.closest('li,div') || a).innerText, 'href');
+      }
+      for (const el of document.querySelectorAll('[data-id], [data-aweme-id], [data-item-id]')) {
+        const id = el.getAttribute('data-aweme-id') || el.getAttribute('data-item-id') || el.getAttribute('data-id');
+        push(id, el.innerText, 'data-attr');
+      }
+      const hit = want ? out.find(o => norm(o.text).includes(want)) : out[0];
+      return {candidates: out.slice(0, 5), matched: hit || null};
+    }"""
+
+    def _extract_aweme_id(self, page, title: str) -> dict:
+        """返回 {"id": str|None, "source": str, "candidates": [...]}；拿不到 id 就是 None。"""
+        title = (title or "").strip()
+        # ①/② DOM
+        try:
+            got = page.evaluate(self.AWEME_ID_JS, title) or {}
+            if got.get("matched"):
+                return {"id": got["matched"]["id"], "source": f"dom:{got['matched']['src']}",
+                        "candidates": got.get("candidates") or []}
+            cands = got.get("candidates") or []
+            if len(cands) == 1:
+                return {"id": cands[0]["id"], "source": f"dom-only-1:{cands[0]['src']}",
+                        "candidates": cands}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"AWEME_ID_DOM_FAILED: {type(exc).__name__}: {exc}")
+
+        # ③ 创作者中心内部接口（带浏览器登录态）
+        for url in ("https://creator.douyin.com/web/api/media/aweme/post/?count=20&cursor=0",
+                    "https://creator.douyin.com/janus/douyin/creator/pc/work_list?count=20&cursor=0"):
+            try:
+                resp = page.request.get(url, timeout=15000)
+                if not resp.ok:
+                    continue
+                data = resp.json()
+                items = (data.get("aweme_list") or data.get("item_list")
+                         or (data.get("data") or {}).get("aweme_list") or [])
+                for it in items:
+                    desc = (it.get("desc") or it.get("title") or "")
+                    aid = it.get("aweme_id") or it.get("item_id") or it.get("id")
+                    if aid and (not title or title[:14] in desc):
+                        _ep = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1] or "list"
+                        return {"id": str(aid), "source": f"api:{_ep}",
+                                "candidates": []}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"AWEME_ID_API_MISS: {url} {type(exc).__name__}")
+        return {"id": None, "source": "unavailable", "candidates": []}
 
     def _verify_published(self, title: str, wait_sec: int = 45,
                           fallback_text: str = "") -> Dict[str, Any]:
@@ -811,14 +1067,20 @@ class DouyinProvider(BaseSocialProvider):
                         page.mouse.wheel(0, 3000)
                         page.wait_for_timeout(700)
                     txt = page.inner_text("body")
-                    browser.close()
                     last_count = txt.count("作品")
-                    rid = f"readback_{int(time.time())}"
                     found, title_ok, matched = self._match_readback(txt, key, fb)
                     if found:
-                        return {"found": True, "draft_id": rid,
+                        # R5/R6：成功凭证只认平台真实 aweme_id，绝不拿时间戳充数
+                        idg = self._extract_aweme_id(page, title or key)
+                        browser.close()
+                        if not idg.get("id"):
+                            logger.error(f"POST_ID_UNAVAILABLE: 回读命中但拿不到真实作品 ID "
+                                         f"source={idg.get('source')} candidates={idg.get('candidates')}")
+                        return {"found": True, "draft_id": idg.get("id"),
+                                "id_source": idg.get("source"),
                                 "title": key if title_ok else "",
                                 "title_ok": title_ok, "matched": matched}
+                    browser.close()
             except Exception as e:
                 logger.warning(f"read-back attempt failed: {e}")
             time.sleep(8)

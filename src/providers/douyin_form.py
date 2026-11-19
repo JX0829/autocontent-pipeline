@@ -13,10 +13,16 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
 import time
 
 logger = logging.getLogger(__name__)
+
+#: 封面回读 dHash 阈值（中心 84% 口径）。实测：同一张封面 dist=5，不同封面 25~28。
+COVER_DH_MAX = 18
 
 #: 抖音「作品标题」输入框的候选选择器（placeholder 会微调，多给几个兜底）
 TITLE_SELECTORS = (
@@ -157,6 +163,11 @@ def fill_caption(page, text: str) -> bool:
     return ok
 
 
+MAX_TOPICS = 5          # 用户口径 2026-11-19：抖音话题最多 5 个
+MIN_TOPICS = 2          # 移完不足 2 个就用兜底词补
+FALLBACK_TOPICS = ("AI", "科技", "人工智能")   # 兜底词（优先 #AI）
+
+
 def fill_topics(page, topics, log_obj=None) -> dict:
     """把 `#话题` 变成抖音的**真话题节点**（不是纯文本）。
 
@@ -166,13 +177,24 @@ def fill_topics(page, topics, log_obj=None) -> dict:
         <span data-mention="#"><span style="background: rgba(1,118,247,.12)">#大模型</span></span>
 
     所以这里逐个话题：敲 `#关键词` → 等联想项 → 点匹配项 → 数 `[data-mention="#"]` 增量。
-    没有匹配项时如实记录（不假装成功），并补一个空格让后续话题不粘连。
 
-    返回 {"declared": [...], "landed": [...], "ok": bool, "problems": [...]}
+    用户口径（2026-11-19）：
+      · **最多 5 个**话题；
+      · 联想列表里没有的直接**移除**，绝不留纯文本（纯文本话题本就不生效，只会留尾残渣）；
+      · 移除后不足 2 个 → 用 `#AI`/`#科技`/`#人工智能` 这类兜底词补到 2 个；
+      · `declared` **只报最终真正写进去的**（= landed），被移除的不再参与后续比对
+        （否则会被拿去比 CAPTION_MISMATCH，造成假红）。
+
+    返回 {"declared": [...], "landed": [...], "ok": bool, "problems": [...],
+          "removed": [...], "fallback_used": [...]}
     """
     log = log_obj or logger
     want = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()]
+    _dropped = want[MAX_TOPICS:]
+    want = want[:MAX_TOPICS]
     declared, landed, problems = list(want), [], []
+    if _dropped:
+        problems.append(f"超过 {MAX_TOPICS} 个，已截断：{_dropped}")
     if not want:
         return {"declared": [], "landed": [], "ok": True, "problems": []}
 
@@ -267,9 +289,12 @@ def fill_topics(page, topics, log_obj=None) -> dict:
         except Exception:  # noqa: BLE001
             return False
 
-    for tag in want:
-        got = False
-        for attempt in (1, 2):                   # 每个话题最多试两次（面板偶尔不刷新）
+    def _try_land(tag: str) -> bool:
+        """敲 `#tag` → 等联想面板 → 点匹配项 → 数芯片增量。落地返回 True。
+
+        无匹配时**只回退自己敲进去的纯文本**，绝不留尾巴（用户口径：没有就移除）。
+        """
+        for attempt in (1, 2):                   # 面板偶尔不刷新，最多两次
             before = _count()
             _caret_to_end()
             page.keyboard.type(f"#{tag}", delay=160)
@@ -293,42 +318,66 @@ def fill_topics(page, topics, log_obj=None) -> dict:
                 if clicked:
                     break
             page.wait_for_timeout(500)
-            _now = _count()
-            if _now > before:
-                landed.append(tag)
-                got = True
+            if _count() > before:
                 log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
-                break
-            # 没落地：只退掉刚敲的 #tag 纯文本再重试（不再盲按 Backspace）
+                # 芯片插入常常只吃掉 `#`+前几个字，剩下的挂在后面（如 ` 4 Neon`）。
+                # 落地即清，别等收尾统一扫 —— 一旦还有别的 tag 追加，尾部就不干净了。
+                _repair_tail(page, [tag], log)
+                return True
+            # 没落地：只退掉刚敲的 #tag 纯文本再重试（绝不盲按 Backspace）
             if not _drop_typed(tag):
                 log.warning(f"[douyin] #{tag} 未落地且无法安全回退，停止重试")
-                break
+                return False
             page.wait_for_timeout(300)
-        if not got:
-            # 2026-11-18 18:50 真机（作品 57《英伟达圣诞季送Steam现金》）：残留「#显卡 卡卡」
-            # 的正是在这条「联想列表无匹配」路径上 —— 敲进去的 #tag 是纯文本，平台的联想
-            # 插入逻辑只吃掉一部分，留下 `卡卡` 这种尾巴，而按 chip 设计的清理判据摸不到。
-            # 处置：**无匹配就不写纯文本**（纯文本话题本来也不生效，只会制造残渣）。
-            problems.append(f"#{tag} 无匹配联想项，已跳过（不写纯文本，避免尾部残渣）")
-            log.warning(f"[douyin] 话题 #{tag} 无匹配联想项，跳过不写（防尾部残渣）")
+        return False
+
+    fallback_used: list[str] = []
+    for tag in want:
+        if _try_land(tag):
+            landed.append(tag)
+        else:
+            problems.append(f"#{tag} 无匹配联想项，已移除（不写纯文本）")
+            log.warning(f"[douyin] 话题 #{tag} 无匹配联想项，已移除（不留纯文本残渣）")
+
+    # 用户口径：移除后不足 2 个 → 用兜底词补（优先 #AI）
+    if len(landed) < MIN_TOPICS:
+        for fb in FALLBACK_TOPICS:
+            if len(landed) >= MIN_TOPICS:
+                break
+            if fb in landed:
+                continue
+            if _try_land(fb):
+                landed.append(fb)
+                fallback_used.append(fb)
+                log.info(f"[douyin] 兜底话题 #{fb} 补位成功（现有 {len(landed)} 个）")
+            else:
+                log.warning(f"[douyin] 兜底话题 #{fb} 也无联想项，继续下一个")
+
+        if len(landed) < MIN_TOPICS:
+            problems.append(f"真话题只有 {len(landed)} 个（<{MIN_TOPICS}），兜底词也用尽")
+
+    # declared 只报最终真正写进去的 —— 被移除的不参与后续任何比对（防 CAPTION_MISMATCH 假红）
+    removed = [t for t in want if t not in landed]
+    declared = list(landed)
 
     # ── R7：清尾部游离文本（联想项只吃掉 `#`+首字符，余下如「据隐私」「wen4」残留）──
-    repaired = _repair_tail(page, want, log)
+    repaired = _repair_tail(page, landed, log)
 
     # ── R8：终态校验 —— 真话题数 == 声明数，且尾部无游离文本 ──
     final_count = _count()
     tail = _editor_tail(page)
-    stray = _stray_tail(tail, want)
+    stray = _stray_tail(tail, landed)
     # 真话题数不足：平台联想面板没给出该词（如 #Qwen4 无匹配）时属平台能力边界，
     # 记 problem 但不阻断发布；**尾部游离文本才是必须拦的**（用户截图里的 `据隐私`/`wen4`）。
-    if final_count < len(declared):
-        problems.append(f"真话题节点 {final_count} != 声明 {len(declared)}（按纯文本保留）")
+    if declared and final_count < len(declared):
+        problems.append(f"真话题节点 {final_count} != 已写入 {len(declared)}")
     if stray:
         problems.append(f"描述尾部残留游离文本 {stray!r}")
     ok = not stray
     if not ok:
         log.error(f"[douyin] 话题终态不合格：count={final_count}/{len(declared)} tail={tail!r} stray={stray!r}")
     return {"declared": declared, "landed": landed, "ok": ok, "problems": problems,
+            "removed": removed, "fallback_used": fallback_used,
             "count": final_count, "tail": tail, "tail_repaired": repaired, "stray": stray}
 
 
@@ -365,12 +414,17 @@ def _stray_tail(tail: str, tags) -> str:
     if not t:
         return ""
     for tag in tags:
-        for cut in (1, 2):
-            suf = str(tag)[cut:]
+        t2 = str(tag).strip()
+        if not t2:
+            continue
+        if t.endswith(t2):                # 整个 tag 都在（含 # 被吃掉的情况）
+            return t2
+        # 2026-11-19 真机：「#Gemini 4 Neon」被联想吃掉 "#Gemini"，尾部只剩 " 4 Neon"
+        # （= tag[7:]）。原先只试 cut∈{1,2}，这类长后缀直接漏判 → 残渣进描述。
+        for cut in range(1, max(2, len(t2) - 2)):
+            suf = t2[cut:]
             if len(suf) >= 3 and t.endswith(suf):
                 return suf
-        if t.endswith(str(tag)):          # 整个 tag 都在（含 # 被吃掉的情况）
-            return str(tag)
     return ""
 
 
@@ -387,7 +441,8 @@ def _repair_tail(page, tags, log) -> list:
     fixed = []
     for _ in range(3):
         tail = _editor_tail(page)
-        stray = _stray_tail(tail, tags)
+        # JS 侧比对前会 trim，所以这里也 trim（否则 ' 4 Neon' 的起始空格导致 endsWith 永不命中）
+        stray = (_stray_tail(tail, tags) or "").strip()
         if not stray:
             break
         before = _count_mentions(page)
@@ -512,6 +567,120 @@ def assert_form_ready(page, title: str, caption: str) -> tuple[bool, dict]:
 
 # ── 封面（SPEC-20261118 R1~R3）───────────────────────────────────────────────
 COVER_ENTRY_TEXTS = ("选择封面", "编辑封面", "更换封面", "设置封面", "上传封面")
+# ── P0-1（SPEC-20261119 R1~R4）：点「发布」前的遮挡弹层处理 ────────────────────
+# 真机现象：runner 路径点「发布」被 `<div role="modal" class="semi-modal-wrap">` 挡着，
+# Playwright 报 "subtree intercepts pointer events" → 30s 超时 → EXIT=64；
+# 同一时刻老脚本 `scripts/publish_douyin_cdp.py --force` 却能发出去，差别就在它点之前
+# 会先处理「上次未发布」这类弹层。这里把同一套策略搬过来（R4：不另写一套），
+# 并把白名单文案扩到上传页最常见的三个提示层（R1）。
+BLOCKER_WHITELIST = ("章节要点", "封面建议", "画质提示", "智能生成章节")
+BLOCKER_CLOSE_TEXTS = ("关闭", "知道了", "取消", "以后再说", "暂不需要", "不用了", "放弃")
+BLOCKER_SELECTORS = (
+    'div[role="modal"], div[class*="semi-modal-wrap"]',
+    'div[class*="semi-portal"]',
+    'div[class*="modal-wrap"]',
+    'div[class*="tooltip"]',
+)
+
+
+def _visible_overlays(page) -> list:
+    """当前真正挡住页面的遮罩层（可见 + 有内容），返回 [{cls, text, whitelisted}]。"""
+    out = []
+    for sel in BLOCKER_SELECTORS:
+        try:
+            loc = page.locator(sel)
+            for i in range(min(loc.count(), 8)):
+                el = loc.nth(i)
+                try:
+                    if not el.is_visible():
+                        continue
+                    txt = (el.inner_text() or "").strip()
+                except Exception:  # noqa: BLE001
+                    continue
+                if not txt:
+                    continue
+                try:
+                    cls = el.get_attribute("class") or ""
+                except Exception:  # noqa: BLE001
+                    cls = ""
+                out.append({"cls": cls, "text": txt,
+                            "whitelisted": any(w in txt for w in BLOCKER_WHITELIST)})
+        except Exception:  # noqa: BLE001 — 选择器在该版本页面不存在，跳过
+            continue
+    return out
+
+
+def dismiss_blockers(page, log_obj=None, *, rounds: int = 3) -> dict:
+    """关掉挡住「发布」按钮的提示层。**幂等**：没有遮挡就零操作、不报错（R2）。
+
+    返回 {"action": "none"|"dismissed"|"escape"|"blocked",
+          "class": str, "text": str, "closed_by": str}
+    - 白名单文案（章节要点/封面建议/画质提示）→ 点关闭类按钮，点不到按 Esc
+    - 非白名单遮挡 → 不动它，返回 blocked 并把 class/innerText 带出去（R3）
+    """
+    log = log_obj
+    found = _visible_overlays(page)
+    if not found:
+        return {"action": "none", "class": "", "text": "", "closed_by": ""}
+
+    target = next((o for o in found if o["whitelisted"]), None)
+    if target is None:
+        # 不认识的遮挡层不要乱点（可能是登录/验证码/风控），交给上层打日志判红
+        return {"action": "blocked", "class": target_cls(found[0]),
+                "text": found[0]["text"][:120], "closed_by": ""}
+
+    for _ in range(max(1, rounds)):
+        closed_by = ""
+        for text in BLOCKER_CLOSE_TEXTS:
+            for sel in (f'button:has-text("{text}")', f'div[role="button"]:has-text("{text}")',
+                        f'span:has-text("{text}")'):
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() and btn.is_visible():
+                        btn.click(timeout=2500)
+                        closed_by = sel
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if closed_by:
+                break
+        if not closed_by:
+            try:
+                page.keyboard.press("Escape")
+                closed_by = "Escape"
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            page.wait_for_timeout(600)
+        except Exception:  # noqa: BLE001
+            pass
+        remain = [o for o in _visible_overlays(page) if o["whitelisted"]]
+        if log:
+            log.info(f"[douyin] 关闭遮挡层（{closed_by or '无按钮'}），剩余白名单遮挡 {len(remain)} 个")
+        if not remain:
+            action = "dismissed" if closed_by and closed_by != "Escape" else "escape"
+            return {"action": action, "class": target["cls"], "text": target["text"][:120],
+                    "closed_by": closed_by}
+    return {"action": "blocked", "class": target["cls"], "text": target["text"][:120],
+            "closed_by": ""}
+
+
+def target_cls(overlay: dict) -> str:
+    """取最像「真正挡住点击」的那个 class（semi-modal-wrap 优先）。"""
+    cls = overlay.get("cls") or ""
+    parts = [c for c in cls.split() if "modal" in c or "portal" in c or "wrap" in c]
+    return (parts[0] if parts else cls)[:80]
+
+
+def describe_obstruction(page) -> dict:
+    """点不中时给出遮挡元素信息（R3）：class + innerText 前 120 字。"""
+    found = _visible_overlays(page)
+    if not found:
+        return {"class": "", "text": "", "found": False}
+    o = found[0]
+    return {"class": o["cls"][:120], "text": o["text"][:120], "found": True}
+
+
 COVER_DONE_TEXTS = ("确定", "完成", "确认", "保存")
 
 
@@ -530,6 +699,190 @@ def _dh_window(png_path) -> list:
 
 def _dh_dist(a, b) -> int:
     return sum(1 for x, y in zip(a, b) if x != y)
+
+
+
+# ── 存草稿：定位 / 等上传 / 点击 / 二次确认 / 自证（2026-11-19 P0）─────────────
+DRAFT_BTN_TEXTS = ("暂存离开", "存草稿", "保存草稿", "草稿箱")
+
+_DRAFT_BTN_JS = """() => {
+  const T = %s;
+  const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+  const all = [...document.querySelectorAll('button,[role=button],a,div,span')]
+    .filter(vis)
+    .map(e => {
+      const t = (e.innerText || '').trim();
+      return {tag: e.tagName, text: t, disabled: !!e.disabled
+                || e.getAttribute('aria-disabled') === 'true'
+                || /disabled/.test(e.className || ''),
+              cls: String(e.className || '').slice(0, 60)};
+    })
+    .filter(o => o.text && o.text.length <= 12 && T.some(k => o.text.includes(k)));
+  return all;
+}"""
+
+
+def _draft_buttons(page) -> list:
+    import json as _json
+    try:
+        return page.evaluate(_DRAFT_BTN_JS % _json.dumps(list(DRAFT_BTN_TEXTS))) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def save_as_draft(page, log_obj=None, *, wait_upload_sec: int = 180, click_sec: int = 8000) -> dict:
+    """点「暂存离开/存草稿」并自证。
+
+    2026-11-19 P0：三次重试都卡在「保存草稿 click 30s 超时」。真因通常是按钮在
+    **视频上传完成前是 disabled**（或被子层浮层遮住）——Playwright 的 click 会一直
+    等到超时都不知道为什么。这里改成：
+      1. 先等上传完成（轮询页面进度文案），日志打印进度；
+      2. JS 精确找到**可点且未 disabled** 的草稿按钮，附带 disabled 状态；
+      3. 点击优先 playwright（8s），失败退 `scroll_into_view` + JS `el.click()`；
+      4. 出现二次确认（暂存离开/保存/确定）就点掉；
+      5. 自证：URL 变化 或 出现「草稿/已保存」提示；
+      6. 全程失败 → 现场落盘（buttons/screenshot/html），返回 DRAFT_SAVE_FAILED。
+    """
+    log = log_obj or logger
+    import time as _time
+
+    deadline = _time.time() + max(30, wait_upload_sec)
+    progress = ""
+    # ① 等上传完成
+    while _time.time() < deadline:
+        try:
+            body = page.inner_text("body")
+        except Exception:  # noqa: BLE001
+            body = ""
+        progress = next((t for t in ("上传成功", "上传完成", "重新上传", "封面已上传",
+                                     "上传中", "正在上传", "处理中") if t in body), "")
+        if progress in ("上传成功", "上传完成", "重新上传", "封面已上传"):
+            log.info(f"[douyin] 视频上传完成（页面提示：{progress}）")
+            break
+        btns = _draft_buttons(page)
+        enabled = [b for b in btns if not b["disabled"]]
+        if enabled:
+            log.info(f"[douyin] 草稿按钮已可用（{enabled[0]['text']}），上传提示={progress or '无'}")
+            break
+        page.wait_for_timeout(2000)
+    else:
+        log.warning(f"[douyin] 等上传/按钮可用超时（{wait_upload_sec}s），当前提示={progress or '无'}")
+
+    # ② 定位按钮
+    btns = _draft_buttons(page)
+    if not btns:
+        return _draft_fail(page, log, "DRAFT_BUTTON_NOT_FOUND",
+                           f"没找到草稿按钮（页面提示={progress or '无'}）")
+
+    target = None
+    for b in btns:
+        if not b["disabled"] and b["text"] in ("暂存离开", "存草稿", "保存草稿"):
+            target = b
+            break
+    if target is None:
+        target = next((b for b in btns if not b["disabled"]), None)
+    if target is None:
+        return _draft_fail(page, log, "DRAFT_BUTTON_DISABLED",
+                           f"草稿按钮存在但一直 disabled（上传提示={progress or '无'}）：{btns[:4]}")
+
+    log.info(f"[douyin] 点击草稿按钮「{target['text']}」（{target['tag']}）")
+    clicked = False
+    try:
+        rs = page.evaluate(
+            """(txt) => {
+              const T = txt;
+              const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+              const cands = [...document.querySelectorAll('button,[role=button],a,div,span')]
+                .filter(vis).filter(e => {
+                  const t = (e.innerText || '').trim();
+                  return t === T;
+                });
+              if (!cands.length) return false;
+              const el = cands[cands.length - 1];
+              el.scrollIntoView({block: 'center'});
+              el.click();
+              return true;
+            }""",
+            target["text"],
+        )
+        clicked = bool(rs)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[douyin] JS 点击草稿按钮异常：{type(exc).__name__}: {exc}")
+
+    if not clicked:
+        try:
+            loc = page.get_by_text(target["text"], exact=True).last
+            loc.scroll_into_view_if_needed(timeout=5000)
+            loc.click(timeout=click_sec)
+            clicked = True
+        except Exception as exc:  # noqa: BLE001
+            return _draft_fail(page, log, "DRAFT_CLICK_TIMEOUT",
+                               f"点击「{target['text']}」失败（{click_sec}ms）：{type(exc).__name__}: {exc}")
+
+    # ③ 二次确认
+    page.wait_for_timeout(1500)
+    confirmed = False
+    try:
+        confirmed = bool(page.evaluate(
+            """() => {
+              const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+              const btns = [...document.querySelectorAll('button,[role=button]')].filter(vis);
+              const ok = btns.find(b => /^(暂存离开|保存草稿|确定|确认|保存)$/
+                        .test((b.innerText || '').trim()));
+              if (!ok) return false;
+              ok.click();
+              return true;
+            }"""))
+    except Exception:  # noqa: BLE001
+        confirmed = False
+    if confirmed:
+        log.info("[douyin] 已确认草稿弹窗")
+
+    # ④ 自证
+    for _ in range(10):
+        page.wait_for_timeout(1000)
+        try:
+            url = page.url
+            body = page.inner_text("body")
+        except Exception:  # noqa: BLE001
+            url, body = "", ""
+        if "content/manage" in url or "content/upload" not in url:
+            log.info(f"[douyin] 草稿已保存（URL 跳转 {url}）")
+            return {"ok": True, "detail": f"URL 跳转 {url}", "button": target["text"],
+                    "confirmed": confirmed, "upload_hint": progress}
+        if any(t in body for t in ("草稿保存成功", "已保存至草稿", "保存成功", "已存入草稿")):
+            log.info("[douyin] 草稿已保存（页面提示命中）")
+            return {"ok": True, "detail": "页面提示命中", "button": target["text"],
+                    "confirmed": confirmed, "upload_hint": progress}
+    return _draft_fail(page, log, "DRAFT_SAVE_UNCONFIRMED",
+                       f"点了「{target['text']}」但 10s 内没有保存证据（提示={progress or '无'}）")
+
+
+def _draft_fail(page, log, code: str, detail: str) -> dict:
+    """草稿阶段的失败现场：按钮清单 + 截图 + HTML。"""
+    import time as _time
+
+    dbg = ""
+    try:
+        d = os.path.join("output", "douyin_diag", f"draft_btn_{int(_time.time())}")
+        os.makedirs(d, exist_ok=True)
+        try:
+            page.screenshot(path=os.path.join(d, "page.png"), full_page=True)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            with open(os.path.join(d, "page.html"), "w", encoding="utf-8") as fh:
+                fh.write(page.content())
+        except Exception:  # noqa: BLE001
+            pass
+        btn_dump = _draft_buttons(page)
+        with open(os.path.join(d, "buttons.json"), "w", encoding="utf-8") as fh:
+            json.dump(btn_dump, fh, ensure_ascii=False, indent=2)
+        dbg = d
+    except Exception:  # noqa: BLE001
+        dbg = ""
+    log.error(f"[douyin] {code}: {detail}｜现场={dbg or '落盘失败'}")
+    return {"ok": False, "code": code, "detail": detail, "debug_dir": dbg}
 
 
 def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> dict:
@@ -645,18 +998,24 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
     if not verify:
         return {"ok": True, "code": "", "detail": "已上传（未做回读）", "dist": None}
 
-    # 回读校验：截当前封面缩略图区域 → dHash 与 cover.png 比
+    # ── 回读校验（SPEC-20261118 §八 R16~R18）──────────────────────────────
+    # 2026-11-18 事故：拿 1080×1920 的 cover.png 直接和「发布页小尺寸裁剪预览」比 dHash，
+    # 口径不同必然恒红（实测距离 28/36 > 14），整条片发不出去。
+    # 现在：先按预览元素显示比例把 cover.png 做**同样的中心裁切**，再比 dHash。
+    # 失败时把预览截图 / cover / 裁切图落盘，并把 w×h、裁剪比、两种距离都带出来。
     dist = None
+    dist_full = None
+    pw, ph = int(max(8, preview.get("w") or 0)), int(max(8, preview.get("h") or 0))
     try:
         shot_dir = tempfile.mkdtemp()
         shot = os.path.join(shot_dir, "cover_preview.png")
         page.screenshot(path=shot, clip={"x": preview["x"], "y": preview["y"],
-                                         "width": max(8, preview["w"]), "height": max(8, preview["h"])})
+                                         "width": pw, "height": ph})
         # 同一裁切口径：预览是 w:h 窗口，cover.png 按同一比例**中心裁**
         from PIL import Image as _Image
         with _Image.open(path) as _im:
             W, H = _im.size
-            target = max(0.05, preview["w"] / float(max(1, preview["h"])))
+            target = max(0.05, pw / float(max(1, ph)))
             if W / float(H) > target:                 # 原图更宽 → 裁左右
                 nw, nh = int(round(H * target)), H
             else:                                     # 原图更高 → 裁上下
@@ -666,9 +1025,9 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
             _im.crop((left, top, left + nw, top + nh)).save(crop_path)
         crop_ratio = round((nw * nh) / float(W * H), 4)    # 保留面积比，一眼看出裁掉多少
 
-        # 再各取**中心 84%** 比对：抖音预览缩略图带一圈白边框/圆角，直接比整图会多出 3~5 bit
-        # （实测同一张封面 dist 16~17 → 误判「没上传」）。中心 84% 后：同一张 dist=5，
-        # 另一条片的封面 dist=25~28 → 阈值 14 依然分得开，且不再被边框骗（2026-11-19 离线实测）。
+        # 再各取**中心 84%** 比对（2026-11-19 实测口径）：
+        # 抖音预览缩略图带一圈白边框/圆角，直接比整图同一张封面也有 16~17 的距离（旧阈值 14 直接假红）。
+        # 中心 84% 后：同一张 dist=5~9，另一条片的封面 dist=25~31 —— 阈值取 18 两头都留足余量。
         def _inner(src: str, dst: str, frac: float = 0.84) -> str:
             with _Image.open(src) as im2:
                 w2, h2 = im2.size
@@ -680,16 +1039,50 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
         shot_inner = _inner(shot, os.path.join(shot_dir, "preview_inner.png"))
         crop_inner = _inner(crop_path, os.path.join(shot_dir, "cover_cropped_inner.png"))
         dist = _dh_dist(_dh_window(shot_inner), _dh_window(crop_inner))
+        # 历史口径（整图比）只做诊断记录，不参与判红
+        dist_full = _dh_dist(_dh_window(shot), _dh_window(path))
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[douyin] 封面回读截图失败：{type(exc).__name__}: {exc}")
         return {"ok": False, "code": "COVER_UPLOAD_FAILED",
                 "detail": f"封面回读失败（无法截图比对）: {exc}"}
 
-    ok = dist is not None and dist <= 14
+    # 阈值（2026-11-19 实测标定）：同一张封面中心84%后 dist=5~9；另一条片的封面 dist=25~31。
+    # 取 18 —— 既躲开预览缩略图的渲染噪声（旧口径 14 时实测 18 就假红），
+    # 也远低于「换了一张图」的下界 25（真错封面依然拦得住）。
+    ok = dist is not None and dist <= COVER_DH_MAX
     if not ok:
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面回读不一致（中心84% dHash 距离 {dist} > 14，裁切保留 {crop_ratio}）",
-                "dist": dist, "crop_ratio": crop_ratio}
-    log.info(f"[douyin] 封面已上传并回读通过（中心84% dHash 距离 {dist}，裁切保留 {crop_ratio}）")
-    return {"ok": True, "code": "", "detail": f"中心84% dHash 距离 {dist}（裁切保留 {crop_ratio}）",
-            "dist": dist, "crop_ratio": crop_ratio}
+        # 失败现场落盘（R17/R18）：预览 / cover / 中心裁切 / 中心84% 各一张 + info.json
+        dbg_path = ""
+        try:
+            dbg = os.path.join("output", "douyin_diag", f"cover_dbg_{int(time.time())}")
+            os.makedirs(dbg, exist_ok=True)
+            for src, name in (
+                (shot, "preview.png"),
+                (path, "cover.png"),
+                (os.path.join(shot_dir, "cover_cropped.png"), "cover_cropped.png"),
+                (os.path.join(shot_dir, "preview_inner.png"), "preview_inner.png"),
+                (os.path.join(shot_dir, "cover_cropped_inner.png"), "cover_cropped_inner.png"),
+            ):
+                if os.path.exists(src):
+                    shutil.copyfile(src, os.path.join(dbg, name))
+            with open(os.path.join(dbg, "info.json"), "w", encoding="utf-8") as fh:
+                json.dump({"preview": f"{pw}x{ph}", "crop_ratio": crop_ratio,
+                           "dist_center84": dist, "dist_full_image": dist_full,
+                           "threshold": COVER_DH_MAX, "cover": str(path)},
+                          fh, ensure_ascii=False, indent=2)
+            dbg_path = str(dbg)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"[douyin] 封面失败现场落盘失败：{type(exc).__name__}: {exc}")
+        log.error(f"[douyin] 封面回读不一致：preview={pw}×{ph} 裁剪比={crop_ratio} "
+                  f"dist(中心84%)={dist} dist(全图)={dist_full} 阈值={COVER_DH_MAX} "
+                  f"落盘={dbg_path or '失败'}")
+        return {"ok": False, "code": "COVER_UPLOAD_FAILED", "dist": dist,
+                "dist_full": dist_full, "preview": f"{pw}x{ph}", "crop_ratio": crop_ratio,
+                "debug_dir": dbg_path,
+                "detail": f"封面回读不一致（中心84% 距离 {dist} > {COVER_DH_MAX}；"
+                          f"全图距离 {dist_full}；preview {pw}×{ph}；裁剪比 {crop_ratio}）"}
+    log.info(f"[douyin] 封面已上传并回读通过（中心84% dHash 距离 {dist}，"
+             f"阈值 {COVER_DH_MAX}，裁切保留 {crop_ratio}）")
+    return {"ok": True, "code": "", "dist": dist, "dist_full": dist_full,
+            "preview": f"{pw}x{ph}", "crop_ratio": crop_ratio,
+            "detail": f"中心84% dHash 距离 {dist}（阈值 {COVER_DH_MAX}，裁剪比 {crop_ratio}）"}
