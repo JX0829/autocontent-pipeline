@@ -127,8 +127,10 @@ class Selection:
                 "bg": self.bg.src,
                 "open_start_from": (self.open.extra.get("start_from") if self.open else 0) or 0,
                 "cover_mode": self.cover_mode,
-                "mid": self.mid.src if self.mid else None,
-                "end": self.end.src if self.end else None,
+                # 2026-11-19 回滚：mid/end 素材开头是黑场，压场景交界会全黑闪断，
+                # 暂不注入渲染（选材记录保留在 audit 里，方便以后做无黑场素材再开）。
+                "mid": None,
+                "end": None,
             },
             "bgm_src": self.bgm.src if self.bgm else "",
             "bgm_volume": self.volume,

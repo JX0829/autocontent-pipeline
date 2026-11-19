@@ -128,8 +128,7 @@ $PY scripts/test_cover_34_safe.py      # 3:4 安全区 + 虚化结构 + 底图�
 | 随机种子 | `run_id`（同 run 重渲 → 同一批素材，可复现） |
 | `open` | 4 条开场素材逐条随机（4 条都会轮到） |
 | `bg` | 按**视觉族**随机：`circuit` / `litho` / `neural_mesh` / `server_aisle`（同族有 `_loop` 片段则用 `_loop`） |
-| `mid` | 4 条幕间转场随机，插在每个场景交界 0.5s（**只覆盖不改时间轴**，口播不脱轨） |
-| `end` | 片尾收尾片段，最后 1.2s 覆盖 |
+| `mid` / `end` | ⛔ **2026-11-19 已回滚**：素材开头是黑场，压在场景交界会造成 0.3~0.5s 全黑闪断（实测 7.0~7.2s 亮度 0.0）。选材仍记录在 `asset_binding.json`，但不注入渲染 |
 | `bgm` | 3 条舒缓 BGM 随机 |
 | 语义匹配不到 | 按全池随机（不再像旧版那样留空） |
 
@@ -167,7 +166,7 @@ $PY -c "import json;d=json.load(open('output/<日期>/<run-id>/asset_binding.jso
 自检（2 条命令，各 3 秒）：
 
 ```bash
-$PY scripts/test_asset_rotation.py      # ASSET ROTATION OK（幂等/覆盖/bg 不锁死/Geek 下线）
+$PY scripts/test_asset_rotation.py      # ASSET ROTATION OK（幂等/覆盖/bg 不锁死/Geek 下线；断言 mid/end 不再注入）
 $PY scripts/test_landscape_assets.py    # 11/11 PASS（含 T9：mid/end 也换横版副本）
 ```
 
