@@ -389,6 +389,99 @@ class DouyinProvider(BaseSocialProvider):
                     logger.warning(f"[douyin] 话题未全部落地 landed={topics_landed} "
                                    f"declared={topics_declared}：{'; '.join(_tp['problems'])}")
 
+                # 3c.5 清尾部残渣（R7）：抖音给话题 chip 前后塞 \u200b/\xa0，
+                # 敲了一半没落地的话题还会留下 " 4" 这类纯文本碎片。它们不属于正文，
+                # 必须在**回读比对之前**清掉 —— 否则 CAPTION_MISMATCH 会把残渣算成「简介写错」，
+                # 真机上表现为「简介回读与预期不符」但其实正文一个字都没错（2026-11-19 实测）。
+                if _tp.get("stray") or topics_declared:
+                    try:
+                        _cleaned = page.evaluate(
+                            """([invisible, stray]) => {
+                              const ed = document.querySelector('div[contenteditable="true"]');
+                              if (!ed) return 0;
+                              const re = new RegExp('[' + invisible + ']', 'g');
+                              const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+                              let n = 0, node;
+                              while ((node = walker.nextNode())) {
+                                const p = node.parentElement;
+                                if (p && p.closest('[data-mention], span.topic, span[data-type="topic"]')) continue;
+                                const before = node.textContent || '';
+                                let after = before.replace(re, '').replace(/[ \t]+$/, '');
+                                // 敲了一半的话题碎片（如 "#Gemini 4 Neon" 留下的 " 4"）也算残渣
+                                if (stray && after.endsWith(stray)) {
+                                  after = after.slice(0, -stray.length).replace(/[ \t]+$/, '');
+                                }
+                                if (after !== before) { node.textContent = after; n++; }
+                              }
+                              return n;
+                            }""",
+                            [_INVISIBLE, _tp.get("stray") or ""],
+                        )
+                        if _cleaned:
+                            logger.info(f"[douyin] 已清尾部零宽/多余空白文本节点 {_cleaned} 个")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"[douyin] 尾部残渣清理失败（继续，交给回读判）：{exc}")
+
+                # 3c.6 尾部多余文本兜底：话题 chip 敲一半会漏出 "4 Neon" 这类碎片，
+                # 形状千变万化，与其按模式猜，不如**以正文为唯一真值**：
+                # 回读若 = 正文 + 小尾巴（≤24 字），就把这个尾巴从 DOM 里删掉再回读。
+                try:
+                    def _body_view_now() -> str:
+                        return str(page.evaluate(
+                            """() => {
+                              const ed = document.querySelector('div[contenteditable="true"]');
+                              if (!ed) return '';
+                              const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+                              let out = '', node;
+                              while ((node = walker.nextNode())) {
+                                const p = node.parentElement;
+                                if (p && p.closest('[data-mention], span.topic, span[data-type="topic"]')) continue;
+                                out += node.textContent || '';
+                              }
+                              return out;
+                            }"""
+                        ) or "").strip()
+
+                    for _ in range(3):                       # 最多修 3 轮，防死循环
+                        _view = _body_view_now()
+                        _want = full_text.strip()
+                        if _view == _want:
+                            break
+                        if _view.startswith(_want):
+                            _extra = _view[len(_want):]
+                            if not _extra or len(_extra) > 24:
+                                break
+                            _gone = page.evaluate(
+                                """(suffix) => {
+                                  const ed = document.querySelector('div[contenteditable="true"]');
+                                  if (!ed) return false;
+                                  const nodes = [];
+                                  const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+                                  let node;
+                                  while ((node = walker.nextNode())) {
+                                    const p = node.parentElement;
+                                    if (p && p.closest('[data-mention], span.topic, span[data-type="topic"]')) continue;
+                                    nodes.push(node);
+                                  }
+                                  for (let i = nodes.length - 1; i >= 0; i--) {
+                                    const t = nodes[i].textContent || '';
+                                    if (t.endsWith(suffix)) {
+                                      nodes[i].textContent = t.slice(0, -suffix.length).replace(/[ \t]+$/, '');
+                                      return true;
+                                    }
+                                  }
+                                  return false;
+                                }""",
+                                _extra,
+                            )
+                            logger.warning(f"[douyin] 清掉话题尾部碎片 {_extra!r} → {bool(_gone)}")
+                            if not _gone:
+                                break
+                        else:
+                            break
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"[douyin] 尾部碎片兜底清理失败（交给回读判）：{exc}")
+
                 # 3d. 回读简介真实内容（发布前自证：乱码/错位/截断都在这里暴露）
                 filled_text = ""
                 try:
@@ -417,7 +510,14 @@ class DouyinProvider(BaseSocialProvider):
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"正文（去芯片）回读失败，退回 innerText: {exc}")
                 if filled_text and not _caption_matches(_body_view, full_text):
-                    logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:120]!r}")
+                    # 排障用：给出首个差异位置与两边真实长度（否则只看到被截断的前 120 字，猜不到原因）
+                    _i = next((i for i, (a, b) in enumerate(zip(_body_view, full_text)) if a != b),
+                              min(len(_body_view), len(full_text)))
+                    logger.error(
+                        "CAPTION_MISMATCH: 回读与预期不符 "
+                        f"len(view)={len(_body_view)} len(expect)={len(full_text)} first_diff@{_i} "
+                        f"view[{max(0,_i-12)}:{_i+12}]={_body_view[max(0,_i-12):_i+12]!r} "
+                        f"expect[{max(0,_i-12)}:{_i+12}]={full_text[max(0,_i-12):_i+12]!r}")
                     browser.close()
                     return {"success": False, "published": False,
                             "error": "CAPTION_MISMATCH",

@@ -590,19 +590,36 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
                 "detail": f"封面 set_input_files 失败: {type(exc).__name__}: {exc}"}
 
     # 等预览出现
+    # 2026-11-19 事故：原来取「最后一个 blob/douyinpic 的 img」，实际抓到了 104×78 的头像/图标
+    # → 与 cover 比 dHash 距离 33，误判「封面没上传」（整条片发不出去）。
+    # 现在：先按**封面宽高比**过滤（±0.18），再取**面积最大**的那个。
+    try:
+        from PIL import Image as _Im
+        with _Im.open(path) as _im:
+            cover_aspect = _im.size[0] / float(_im.size[1])
+    except Exception:  # noqa: BLE001
+        cover_aspect = 1080 / 1920.0
+
     preview = None
     for _ in range(40):
         page.wait_for_timeout(500)
         preview = page.evaluate(
-            """() => {
+            """(aspect) => {
               const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
               const imgs = [...document.querySelectorAll('img')].filter(i => vis(i)
                   && i.naturalWidth > 60 && /blob:|douyinpic|byteimg/.test(i.currentSrc || i.src || ''));
               if (!imgs.length) return null;
-              const i = imgs[imgs.length - 1];
-              const r = i.getBoundingClientRect();
-              return {src: (i.currentSrc || i.src || '').slice(0, 80), x: r.x, y: r.y, w: r.width, h: r.height};
-            }"""
+              const cands = imgs.map(i => {
+                const r = i.getBoundingClientRect();
+                return {src: (i.currentSrc || i.src || '').slice(0, 80),
+                        x: r.x, y: r.y, w: r.width, h: r.height,
+                        ar: r.height > 0 ? r.width / r.height : 0};
+              }).filter(c => c.w >= 80 && c.h >= 80 && Math.abs(c.ar - aspect) <= 0.18);
+              if (!cands.length) return null;
+              cands.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+              return cands[0];
+            }""",
+            cover_aspect,
         )
         if preview:
             break
@@ -631,10 +648,38 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
     # 回读校验：截当前封面缩略图区域 → dHash 与 cover.png 比
     dist = None
     try:
-        shot = os.path.join(tempfile.mkdtemp(), "cover_preview.png")
+        shot_dir = tempfile.mkdtemp()
+        shot = os.path.join(shot_dir, "cover_preview.png")
         page.screenshot(path=shot, clip={"x": preview["x"], "y": preview["y"],
                                          "width": max(8, preview["w"]), "height": max(8, preview["h"])})
-        dist = _dh_dist(_dh_window(shot), _dh_window(path))
+        # 同一裁切口径：预览是 w:h 窗口，cover.png 按同一比例**中心裁**
+        from PIL import Image as _Image
+        with _Image.open(path) as _im:
+            W, H = _im.size
+            target = max(0.05, preview["w"] / float(max(1, preview["h"])))
+            if W / float(H) > target:                 # 原图更宽 → 裁左右
+                nw, nh = int(round(H * target)), H
+            else:                                     # 原图更高 → 裁上下
+                nw, nh = W, int(round(W / target))
+            left, top = (W - nw) // 2, (H - nh) // 2
+            crop_path = os.path.join(shot_dir, "cover_cropped.png")
+            _im.crop((left, top, left + nw, top + nh)).save(crop_path)
+        crop_ratio = round((nw * nh) / float(W * H), 4)    # 保留面积比，一眼看出裁掉多少
+
+        # 再各取**中心 84%** 比对：抖音预览缩略图带一圈白边框/圆角，直接比整图会多出 3~5 bit
+        # （实测同一张封面 dist 16~17 → 误判「没上传」）。中心 84% 后：同一张 dist=5，
+        # 另一条片的封面 dist=25~28 → 阈值 14 依然分得开，且不再被边框骗（2026-11-19 离线实测）。
+        def _inner(src: str, dst: str, frac: float = 0.84) -> str:
+            with _Image.open(src) as im2:
+                w2, h2 = im2.size
+                nw2, nh2 = max(8, int(w2 * frac)), max(8, int(h2 * frac))
+                l2, t2 = (w2 - nw2) // 2, (h2 - nh2) // 2
+                im2.crop((l2, t2, l2 + nw2, t2 + nh2)).save(dst)
+            return dst
+
+        shot_inner = _inner(shot, os.path.join(shot_dir, "preview_inner.png"))
+        crop_inner = _inner(crop_path, os.path.join(shot_dir, "cover_cropped_inner.png"))
+        dist = _dh_dist(_dh_window(shot_inner), _dh_window(crop_inner))
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[douyin] 封面回读截图失败：{type(exc).__name__}: {exc}")
         return {"ok": False, "code": "COVER_UPLOAD_FAILED",
@@ -643,6 +688,8 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
     ok = dist is not None and dist <= 14
     if not ok:
         return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面回读不一致（dHash 距离 {dist} > 14）", "dist": dist}
-    log.info(f"[douyin] 封面已上传并回读通过（dHash 距离 {dist}）")
-    return {"ok": True, "code": "", "detail": f"dHash 距离 {dist}", "dist": dist}
+                "detail": f"封面回读不一致（中心84% dHash 距离 {dist} > 14，裁切保留 {crop_ratio}）",
+                "dist": dist, "crop_ratio": crop_ratio}
+    log.info(f"[douyin] 封面已上传并回读通过（中心84% dHash 距离 {dist}，裁切保留 {crop_ratio}）")
+    return {"ok": True, "code": "", "detail": f"中心84% dHash 距离 {dist}（裁切保留 {crop_ratio}）",
+            "dist": dist, "crop_ratio": crop_ratio}
