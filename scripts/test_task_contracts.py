@@ -119,7 +119,25 @@ def test_t41() -> None:
         skip("真实 run 的 props 隔离", "没有历史产物")
         skip("runs/<run_id> 软链指向 props", "没有历史产物")
         return
-    props_json = runs[0]
+    # 2026-11-19：原来只取「最新一条 run」。别的流水线（水墨)刚出的 run 也可能落在
+    # output/ 里且 template_id 仍是 tech_story、却没有 bgm_src，于是本测试被别人的产物拖红。
+    # 现在取「最近一条 tech_story 且真带 bgm_src 的 run」；一条都没有才 SKIP（判据不变，只挑样本）。
+    def _load(p):
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {}
+
+    props_json = None
+    for cand in runs:
+        d = _load(cand)
+        if (d.get("template_id") or "").strip() == "tech_story" and (d.get("bgm_src") or "").strip():
+            props_json = cand
+            break
+    if props_json is None:
+        skip("真实 run 的 props 隔离", "没有带 bgm 的 tech_story 历史产物")
+        skip("runs/<run_id> 软链指向 props", "没有带 bgm 的 tech_story 历史产物")
+        return
     run_root = props_json.parent.parent
     rid = run_root.name
     data = json.loads(props_json.read_text(encoding="utf-8"))
