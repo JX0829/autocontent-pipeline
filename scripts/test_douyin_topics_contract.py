@@ -46,14 +46,20 @@ def main() -> int:
           'page.keyboard.press("Enter")' in FORM)
     check("④ 每个话题最多重试两次（面板偶尔不刷新）",
           "for attempt in (1, 2):" in FORM)
-    check("⑤ 未落地如实记录，不虚报成功",
-          "无匹配联想项，已按纯文本留下" in FORM and "topics_ok" in PROV)
+    # 2026-11-18 口径变更（287f68b）：无匹配联想项 → **不写纯文本**（纯文本话题不生效，只会留残渣），
+    # 直接丢弃并记账。原断言「已按纯文本留下」对应的正是「#显卡 卡卡」残渣的老行为。
+    check("⑤ 未落地如实记录、不虚报、也不留残渣（无匹配项直接丢弃）",
+          ("无匹配联想项" in FORM and "不写纯文本" in FORM) and "topics_ok" in PROV)
     check("⑥ 结果带 topics_declared/topics_landed/topics_ok",
           all(k in PROV for k in ('"topics_declared"', '"topics_landed"', '"topics_ok"')))
     check("⑦ 正文校验用 ACE DOM 判据（innerText 无 \\n 不算失败）",
           "ace-line" in FORM and "DOM 校验" in FORM)
-    check("⑧ 回读比对时先切掉话题段（话题是真节点，会多出 #词）",
-          '.split("#")[0]' in PROV)
+    # 2026-11-18：`split("#")[0]` 在「芯片文字不以 # 开头」时会漏字 → CAPTION_MISMATCH 假红。
+    # 现在改成「只取芯片之外的文本节点」拼正文再比，话题生效与否由 topics_ok 单独判。
+    # 注：注释里会保留「原先用 split('#')[0]」的说明，判据必须先剥掉注释行再看代码
+    _prov_code = "\n".join(l for l in PROV.splitlines() if not l.strip().startswith("#"))
+    check("⑧ 回读比对只取芯片外文本（不用 split('#')，避免假红）",
+          "SHOW_TEXT" in _prov_code and 'split("#")[0]' not in _prov_code)
     check("⑨ 重试前清空描述框（否则正文会叠成两遍）",
           "Meta+A" in FORM and "_clear()" in FORM)
 
