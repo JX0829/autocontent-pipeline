@@ -785,7 +785,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="强制从指定步骤重跑（之前步骤 SKIP）。补发/单项重跑用，"
                          "如 --from-step publish 只重做发布")
     ap.add_argument("--db", default=str(DEFAULT_DB), help="状态库路径")
+    ap.add_argument("--no-sync", action="store_true",
+                    help="跳过启动时的代码自动同步（默认会把 checkout 追平 origin/develop，"
+                         "保证谁跑都是最新代码；离线时自动沿用本地）")
     args = ap.parse_args(argv)
+
+    # 0. 代码版本自愈（2026-11-19）：共享 checkout 被切到别人分支时，
+    #    后面的人出片会静默吃旧代码 —— 这里 fail-closed。
+    if not args.no_sync:
+        from src.pipeline.code_sync import StaleCheckoutError, ensure_latest_code
+        try:
+            ensure_latest_code()
+        except StaleCheckoutError as exc:
+            print(f"[preflight] {exc}", file=sys.stderr)
+            return EXIT_CONTRACT
 
     # 加载声明文件
     try:
