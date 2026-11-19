@@ -47,3 +47,35 @@ libraries:
         volume: 0.22         # ≈ BGM -34 dB，口播 -16 LUFS 之上
         duck_volume: 0.12    # 口播在场时 ≈ -42 dB
         max_duration_shortfall_s: 0    # BGM 短于成片时需要 loop，记 warning
+
+  # ------------------------------------------------------------------ 水墨 / 课文古风（2026-11-19，SPEC 方案 C）
+  ink_story:
+    name: "课文古风 · 水墨视频素材库"
+    root: "renderer/public/ink"
+    manifest: "renderer/public/ink/manifest.yaml"
+    enabled: true
+    slots:
+      open:                 # 开场：墨滴入纸 / 笔触落下
+        required: false
+        pick: random_seeded
+        no_repeat_window: 2
+      reveal:               # 揭示：雾散 / 水波扩散
+        required: false
+        pick: random_seeded
+        no_repeat_window: 2
+      bg:                   # 正文底：远山 / 竹林 / 江面（必须有一条，否则整库不可用）
+        required: true
+        pick: random_seeded
+        no_repeat_window: 3
+      mid:                  # 幕间转场：泼墨 / 飘叶
+        required: false
+        pick: random_seeded
+        no_repeat_window: 2
+      end:                  # 收尾底：空白宣纸 / 残墨
+        required: false
+        pick: random_seeded
+        no_repeat_window: 1
+      tex:                  # 纸纹叠加（宣纸纤维）
+        required: false
+        pick: random_seeded
+        no_repeat_window: 0

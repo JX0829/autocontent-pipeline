@@ -877,6 +877,66 @@ bash scripts/verify_all.sh --fast      # 全量门禁
 
 ---
 
+## 5.7 水墨模板（ink_story，2026-11-19 SPE C）
+
+**素材放哪**：`renderer/public/ink/`（不是 assets/tech），命名 `<slot>_<family>_v<N>.mp4`。
+
+**6 个素材位**（与 `config/assets.yaml` 的 `ink_story.slots` 一一对应）：
+
+| 槽位 | 作用 | 缺失时 |
+|---|---|---|
+| `open` | 开场：墨滴入纸 / 笔触落下 | 退程序化墨滴 |
+| `reveal` | 揭示：雾散 / 水波扩散 | 退软边墨晕遮罩 |
+| `bg` | 正文底：远山 / 竹林 / 江面 | **required，缺了整库不可用** |
+| `mid` | 幕间转场：泼墨 / 飘叶 | 整段跳过 |
+| `end` | 收尾底：空白宣纸 / 残墨 | 退纯纸色 |
+| `tex` | 纸纹叠加：宣纸纤维 | 退 SVG 程序纹理 |
+
+**加素材三步**（零代码）：
+
+```bash
+cp ~/你的/水墨风/xxx.mp4 renderer/public/ink/ink_bamboo_sway_v1.mp4   # ① 放文件
+# ② 在 renderer/public/ink/manifest.yaml 加一条（id 同文件主干，license 必填，slot 填对）
+$PY scripts/verify_assets.py                                          # ③ 校验，不过不许出片
+$PY tools/ink_asset_check.py renderer/public/ink/ink_bamboo_sway_v1.mp4   # 水墨专项 6 判据
+```
+
+**水墨素材 6 项硬判据**（`tools/ink_asset_check.py`，任何一条不过就不许入库）：
+
+| 判据 | 标准 |
+|---|---|
+| 规格 | 竖版 9:16、时长 ≥4s、帧率 ≥24fps |
+| 无字 | OCR 识别到任何文字 → FAIL |
+| 墨色 | 中位饱和度 ≤25（不能出现鲜艳彩色） |
+| 画面在动 | 帧差 ≥1.0（<1 视为死片） |
+| 无黑边 | 四边不得有黑边（横版塞竖屏的典型症状） |
+| 可循环 | 首末帧相似度 ≥0.6（铺底不闪断） |
+
+**谁在用这些素材**：
+
+| 模板 | 用法 |
+|---|---|
+| `ink_story` → `InkStoryVideo` | 6 槽全用：bg 铺底、tex 叠纸纹、open 开场、mid 转场 |
+| `textbook_story` → `TextbookStoryVideo` | 用 `bg` 当水墨底、`tex` 当纸纹；其余槽位不用（课文版式是竖排正文） |
+
+**渲染层实现**：`renderer/src/ink/InkBackdrop.tsx` 的 `InkBackdropLayer`
+（外层 A`bsoluteFill` + `OffthreadVideo`，bg 默认不透明度 0.42、tex 0.16 且 `mix-blend-mode: multiply`）。
+**缺素材时组件直接 `return null`**，外层保留原本的纸色纯色底 —— 不黑屏、不报错。
+
+**契约自检**：
+
+```bash
+$PY scripts/test_ink_template.py     # 15 条：库注册 / 6 槽声明 / bg 必填 / reveal+tex 注入 / 映射 / 组件挂载 / 素材竖版
+```
+
+已挂进 `bash scripts/verify_all.sh`，回归时自动跑。
+
+**已知限制（别踩）**：
+
+- 课文本封面还是旧版式（`TextbookCoverStill`），未迁到 `tech/coverFrame.ts` 常量，抖音 3:4 裁剪可能切字
+- `InkStoryVideo` 的正文/落款时序写死（S1 0–120 / S2 120–420 / S4 420–480），接长文时总帧数不够会被截
+- 水墨素材目前**全部**需要人工产出，没有程序化兜底视频（缺就是纯纸色）
+
 ## 6. 三平台发布（现状必须分清）
 
 **发布入口现在收口在 pipeline 内**：`deliver → approval → publish`（`publish.enabled` 默认 false）。

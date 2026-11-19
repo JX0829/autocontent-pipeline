@@ -25,6 +25,8 @@ import {
  *   把每字做成独立容器再横向排列 = 视觉上变成横排单字列，且会溢出画面被裁切。
  */
 
+import { InkBackdropLayer } from './InkBackdrop';
+
 export type InkLine = {
   text: string;
   /** 小字释义，可空 */
@@ -41,9 +43,17 @@ export type InkStoryProps = {
   ink?: string;
   cinnabar?: string;
   assets?: {
-    drop: string | null;
-    mountains: string | null;
-    splash: string | null;
+    // 2026-11-19（方案 C）：素材库 6 槽位
+    open?: string | null;     // 开场：墨滴入纸/笔触
+    reveal?: string | null;   // 揭示：雾散/水波
+    bg?: string | null;       // 正文底：山水/竹林/江面
+    mid?: string | null;      // 幕间转场：泼墨/飘叶
+    end?: string | null;      // 收尾底：空白纸/残墨
+    tex?: string | null;      // 纸纹叠加
+    // 旧三槽（Root.tsx 默认值仍在用，保留兼容）
+    drop?: string | null;
+    mountains?: string | null;
+    splash?: string | null;
   };
 };
 
@@ -144,7 +154,7 @@ const Opening: React.FC<{ props: InkStoryProps }> = ({ props }) => {
     <AbsoluteFill>
       {props.assets?.drop ? (
         <OffthreadVideo
-          src={staticFile(props.assets.drop)}
+          src={staticFile(props.assets?.open ?? props.assets?.drop)}
           muted
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         />
@@ -193,7 +203,7 @@ const Splash: React.FC<{ props: InkStoryProps }> = ({ props }) => (
   <AbsoluteFill style={{ background: '#000' }}>
     {props.assets?.splash ? (
       <OffthreadVideo
-        src={staticFile(props.assets.splash)}
+        src={staticFile(props.assets?.mid ?? props.assets?.splash)}
         startFrom={240}
         muted
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -243,7 +253,7 @@ const Body: React.FC<{ props: InkStoryProps }> = ({ props }) => {
       <AbsoluteFill style={{ maskImage: revealMask, WebkitMaskImage: revealMask }}>
         {props.assets?.mountains ? (
           <OffthreadVideo
-            src={staticFile(props.assets.mountains)}
+            src={staticFile(props.assets?.bg ?? props.assets?.mountains)}
             muted
             style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: enter }}
           />
@@ -381,6 +391,8 @@ const Colophon: React.FC<{ props: InkStoryProps }> = ({ props }) => {
 
 export const InkStoryVideo: React.FC<InkStoryProps> = (props) => (
   <AbsoluteFill style={{ background: props.paper || PAPER }}>
+    {/* 方案 C：素材库水墨底（bg）+ 纸纹（tex）；缺素材时什么都不画，保留纯纸色 */}
+    <InkBackdropLayer bg={props.assets?.bg ?? props.assets?.mountains} tex={props.assets?.tex} />
     <Sequence from={0} durationInFrames={120} name="S1 开场">
       <Opening props={props} />
     </Sequence>

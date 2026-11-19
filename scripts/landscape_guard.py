@@ -55,6 +55,24 @@ def _frame_gray(video: str, ts: float) -> tuple[bytes, int, int]:
     return raw, w, h
 
 
+def _frame_gray_at_frame(video: str, frame_no: int) -> tuple[bytes, int, int]:
+    """按**帧号**取一帧灰度数据（不是 -ss 跳秒）。
+
+    -ss 会落到最近关键帧，和 select=eq(n\,N) 抽出来的封面帧不是同一帧，
+    实测课文本（24fps/GOP 大）差 11.7 灰度级 → 守卫误判。这里统一用帧号选帧。
+    """
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        png = tf.name
+    subprocess.check_call(["ffmpeg", "-y", "-v", "error", "-i", video,
+                           "-vf", f"select=eq(n\\,{max(0, int(frame_no))})",
+                           "-frames:v", "1", png])
+    raw = subprocess.check_output(["ffmpeg", "-v", "error", "-i", png,
+                                   "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+    w, h = _probe_png(png)
+    Path(png).unlink(missing_ok=True)
+    return raw, w, h
+
+
 def _probe_png(path: str) -> tuple[int, int]:
     out = subprocess.check_output([
         "ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -114,7 +132,28 @@ def text_hit(want: str, got: str, min_ratio: float = 0.70) -> tuple[bool, float]
     return ratio >= min_ratio, ratio
 
 
-def _cover_frame_ts() -> float:
+def _video_fps(video: str) -> float:
+    """读视频真实帧率 —— 科技模板 30fps、课文本 24/25fps，写死 30 会算错时间戳。"""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", video],
+            capture_output=True, text=True).stdout.strip()
+        num, den = out.split("/")
+        fps = float(num) / float(den)
+        return fps if fps > 0 else 30.0
+    except Exception:
+        return 30.0
+
+
+def _cover_frame_no() -> int:
+    try:
+        return max(0, int(os.environ.get("COVER_FRAME") or 54))
+    except ValueError:
+        return 54
+
+
+def _cover_frame_ts(video: str = "") -> float:
     """封面帧对应的时间戳（秒）。
 
     2026-11-18：封面不再固定取第 0 帧 —— 模板标题从第 18–48 帧才淡入，
@@ -125,13 +164,13 @@ def _cover_frame_ts() -> float:
         frame_no = max(0, int(os.environ.get("COVER_FRAME") or 54))
     except ValueError:
         frame_no = 54
-    return frame_no / 30.0
+    return frame_no / (_video_fps(video) if video else 30.0)
 
 
 def _frame_diff(a: str, b: str) -> float:
     """两帧灰度平均绝对差（0=完全一致）。用于确认「成片封面帧就是那张封面图」。"""
     try:
-        ra, _wa, _ha = _frame_gray(a, _cover_frame_ts())
+        ra, _wa, _ha = _frame_gray_at_frame(a, _cover_frame_no())
         rb, _wb, _hb = _frame_gray(b, 0.0)
     except Exception:
         return 255.0
