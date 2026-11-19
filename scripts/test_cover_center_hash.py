@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJ))
 
 from PIL import Image  # noqa: E402
 
-from src.providers.douyin_form import _dh_dist, _dh_window  # noqa: E402
+from src.providers.douyin_form import COVER_DH_MAX, _dh_dist, _dh_window  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -106,10 +106,10 @@ def main() -> int:
     print(f"  新口径（中心84%）同图距离: {new_same}")
     print(f"  新口径 异图距离          : {new_diff}")
 
-    check("同图（含白边框预览）新口径距离 ≤ 14", new_same <= 14, f"dist={new_same}")
-    check("异图新口径距离 > 14", new_diff > 14, f"dist={new_diff}")
+    check(f"同图（含白边框预览）新口径距离 ≤ {COVER_DH_MAX}", new_same <= COVER_DH_MAX, f"dist={new_same}")
+    check(f"异图新口径距离 > {COVER_DH_MAX}", new_diff > COVER_DH_MAX, f"dist={new_diff}")
     check("新口径比旧口径明显收紧", new_same < raw_same, f"new={new_same} raw={raw_same}")
-    check("异图 / 同图 有足够间隔（≥2 倍）", new_diff >= max(2 * new_same, 15),
+    check("异图 / 同图 有足够间隔（≥2 倍）", new_diff >= max(2 * new_same, COVER_DH_MAX + 1),
           f"diff={new_diff} same={new_same}")
 
     print(f"\nCOVER CENTER-HASH {PASS} PASS / {FAIL} FAIL")
