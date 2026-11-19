@@ -13,7 +13,10 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
 import time
 
 logger = logging.getLogger(__name__)
@@ -157,6 +160,11 @@ def fill_caption(page, text: str) -> bool:
     return ok
 
 
+MAX_TOPICS = 5          # 用户口径 2026-11-19：抖音话题最多 5 个
+MIN_TOPICS = 2          # 移完不足 2 个就用兜底词补
+FALLBACK_TOPICS = ("AI", "科技", "人工智能")   # 兜底词（优先 #AI）
+
+
 def fill_topics(page, topics, log_obj=None) -> dict:
     """把 `#话题` 变成抖音的**真话题节点**（不是纯文本）。
 
@@ -166,13 +174,24 @@ def fill_topics(page, topics, log_obj=None) -> dict:
         <span data-mention="#"><span style="background: rgba(1,118,247,.12)">#大模型</span></span>
 
     所以这里逐个话题：敲 `#关键词` → 等联想项 → 点匹配项 → 数 `[data-mention="#"]` 增量。
-    没有匹配项时如实记录（不假装成功），并补一个空格让后续话题不粘连。
 
-    返回 {"declared": [...], "landed": [...], "ok": bool, "problems": [...]}
+    用户口径（2026-11-19）：
+      · **最多 5 个**话题；
+      · 联想列表里没有的直接**移除**，绝不留纯文本（纯文本话题本就不生效，只会留尾残渣）；
+      · 移除后不足 2 个 → 用 `#AI`/`#科技`/`#人工智能` 这类兜底词补到 2 个；
+      · `declared` **只报最终真正写进去的**（= landed），被移除的不再参与后续比对
+        （否则会被拿去比 CAPTION_MISMATCH，造成假红）。
+
+    返回 {"declared": [...], "landed": [...], "ok": bool, "problems": [...],
+          "removed": [...], "fallback_used": [...]}
     """
     log = log_obj or logger
     want = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()]
+    _dropped = want[MAX_TOPICS:]
+    want = want[:MAX_TOPICS]
     declared, landed, problems = list(want), [], []
+    if _dropped:
+        problems.append(f"超过 {MAX_TOPICS} 个，已截断：{_dropped}")
     if not want:
         return {"declared": [], "landed": [], "ok": True, "problems": []}
 
@@ -267,9 +286,12 @@ def fill_topics(page, topics, log_obj=None) -> dict:
         except Exception:  # noqa: BLE001
             return False
 
-    for tag in want:
-        got = False
-        for attempt in (1, 2):                   # 每个话题最多试两次（面板偶尔不刷新）
+    def _try_land(tag: str) -> bool:
+        """敲 `#tag` → 等联想面板 → 点匹配项 → 数芯片增量。落地返回 True。
+
+        无匹配时**只回退自己敲进去的纯文本**，绝不留尾巴（用户口径：没有就移除）。
+        """
+        for attempt in (1, 2):                   # 面板偶尔不刷新，最多两次
             before = _count()
             _caret_to_end()
             page.keyboard.type(f"#{tag}", delay=160)
@@ -293,42 +315,66 @@ def fill_topics(page, topics, log_obj=None) -> dict:
                 if clicked:
                     break
             page.wait_for_timeout(500)
-            _now = _count()
-            if _now > before:
-                landed.append(tag)
-                got = True
+            if _count() > before:
                 log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
-                break
-            # 没落地：只退掉刚敲的 #tag 纯文本再重试（不再盲按 Backspace）
+                # 芯片插入常常只吃掉 `#`+前几个字，剩下的挂在后面（如 ` 4 Neon`）。
+                # 落地即清，别等收尾统一扫 —— 一旦还有别的 tag 追加，尾部就不干净了。
+                _repair_tail(page, [tag], log)
+                return True
+            # 没落地：只退掉刚敲的 #tag 纯文本再重试（绝不盲按 Backspace）
             if not _drop_typed(tag):
                 log.warning(f"[douyin] #{tag} 未落地且无法安全回退，停止重试")
-                break
+                return False
             page.wait_for_timeout(300)
-        if not got:
-            # 2026-11-18 18:50 真机（作品 57《英伟达圣诞季送Steam现金》）：残留「#显卡 卡卡」
-            # 的正是在这条「联想列表无匹配」路径上 —— 敲进去的 #tag 是纯文本，平台的联想
-            # 插入逻辑只吃掉一部分，留下 `卡卡` 这种尾巴，而按 chip 设计的清理判据摸不到。
-            # 处置：**无匹配就不写纯文本**（纯文本话题本来也不生效，只会制造残渣）。
-            problems.append(f"#{tag} 无匹配联想项，已跳过（不写纯文本，避免尾部残渣）")
-            log.warning(f"[douyin] 话题 #{tag} 无匹配联想项，跳过不写（防尾部残渣）")
+        return False
+
+    fallback_used: list[str] = []
+    for tag in want:
+        if _try_land(tag):
+            landed.append(tag)
+        else:
+            problems.append(f"#{tag} 无匹配联想项，已移除（不写纯文本）")
+            log.warning(f"[douyin] 话题 #{tag} 无匹配联想项，已移除（不留纯文本残渣）")
+
+    # 用户口径：移除后不足 2 个 → 用兜底词补（优先 #AI）
+    if len(landed) < MIN_TOPICS:
+        for fb in FALLBACK_TOPICS:
+            if len(landed) >= MIN_TOPICS:
+                break
+            if fb in landed:
+                continue
+            if _try_land(fb):
+                landed.append(fb)
+                fallback_used.append(fb)
+                log.info(f"[douyin] 兜底话题 #{fb} 补位成功（现有 {len(landed)} 个）")
+            else:
+                log.warning(f"[douyin] 兜底话题 #{fb} 也无联想项，继续下一个")
+
+        if len(landed) < MIN_TOPICS:
+            problems.append(f"真话题只有 {len(landed)} 个（<{MIN_TOPICS}），兜底词也用尽")
+
+    # declared 只报最终真正写进去的 —— 被移除的不参与后续任何比对（防 CAPTION_MISMATCH 假红）
+    removed = [t for t in want if t not in landed]
+    declared = list(landed)
 
     # ── R7：清尾部游离文本（联想项只吃掉 `#`+首字符，余下如「据隐私」「wen4」残留）──
-    repaired = _repair_tail(page, want, log)
+    repaired = _repair_tail(page, landed, log)
 
     # ── R8：终态校验 —— 真话题数 == 声明数，且尾部无游离文本 ──
     final_count = _count()
     tail = _editor_tail(page)
-    stray = _stray_tail(tail, want)
+    stray = _stray_tail(tail, landed)
     # 真话题数不足：平台联想面板没给出该词（如 #Qwen4 无匹配）时属平台能力边界，
     # 记 problem 但不阻断发布；**尾部游离文本才是必须拦的**（用户截图里的 `据隐私`/`wen4`）。
-    if final_count < len(declared):
-        problems.append(f"真话题节点 {final_count} != 声明 {len(declared)}（按纯文本保留）")
+    if declared and final_count < len(declared):
+        problems.append(f"真话题节点 {final_count} != 已写入 {len(declared)}")
     if stray:
         problems.append(f"描述尾部残留游离文本 {stray!r}")
     ok = not stray
     if not ok:
         log.error(f"[douyin] 话题终态不合格：count={final_count}/{len(declared)} tail={tail!r} stray={stray!r}")
     return {"declared": declared, "landed": landed, "ok": ok, "problems": problems,
+            "removed": removed, "fallback_used": fallback_used,
             "count": final_count, "tail": tail, "tail_repaired": repaired, "stray": stray}
 
 
@@ -365,12 +411,17 @@ def _stray_tail(tail: str, tags) -> str:
     if not t:
         return ""
     for tag in tags:
-        for cut in (1, 2):
-            suf = str(tag)[cut:]
+        t2 = str(tag).strip()
+        if not t2:
+            continue
+        if t.endswith(t2):                # 整个 tag 都在（含 # 被吃掉的情况）
+            return t2
+        # 2026-11-19 真机：「#Gemini 4 Neon」被联想吃掉 "#Gemini"，尾部只剩 " 4 Neon"
+        # （= tag[7:]）。原先只试 cut∈{1,2}，这类长后缀直接漏判 → 残渣进描述。
+        for cut in range(1, max(2, len(t2) - 2)):
+            suf = t2[cut:]
             if len(suf) >= 3 and t.endswith(suf):
                 return suf
-        if t.endswith(str(tag)):          # 整个 tag 都在（含 # 被吃掉的情况）
-            return str(tag)
     return ""
 
 
@@ -387,7 +438,8 @@ def _repair_tail(page, tags, log) -> list:
     fixed = []
     for _ in range(3):
         tail = _editor_tail(page)
-        stray = _stray_tail(tail, tags)
+        # JS 侧比对前会 trim，所以这里也 trim（否则 ' 4 Neon' 的起始空格导致 endsWith 永不命中）
+        stray = (_stray_tail(tail, tags) or "").strip()
         if not stray:
             break
         before = _count_mentions(page)
@@ -628,21 +680,71 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
     if not verify:
         return {"ok": True, "code": "", "detail": "已上传（未做回读）", "dist": None}
 
-    # 回读校验：截当前封面缩略图区域 → dHash 与 cover.png 比
+    # ── 回读校验（SPEC-20261118 §八 R16~R18）──────────────────────────────
+    # 2026-11-18 事故：拿 1080×1920 的 cover.png 直接和「发布页小尺寸裁剪预览」比 dHash，
+    # 口径不同必然恒红（实测距离 28/36 > 14），整条片发不出去。
+    # 现在：先按预览元素显示比例把 cover.png 做**同样的中心裁切**，再比 dHash。
+    # 失败时把预览截图 / cover / 裁切图落盘，并把 w×h、裁剪比、两种距离都带出来。
     dist = None
+    dist_full = None
+    pw, ph = int(max(8, preview.get("w") or 0)), int(max(8, preview.get("h") or 0))
     try:
-        shot = os.path.join(tempfile.mkdtemp(), "cover_preview.png")
+        from PIL import Image
+
+        shot_dir = os.path.join(tempfile.mkdtemp(), "cover_preview")
+        os.makedirs(shot_dir, exist_ok=True)
+        shot = os.path.join(shot_dir, "preview.png")
         page.screenshot(path=shot, clip={"x": preview["x"], "y": preview["y"],
-                                         "width": max(8, preview["w"]), "height": max(8, preview["h"])})
-        dist = _dh_dist(_dh_window(shot), _dh_window(path))
+                                         "width": pw, "height": ph})
+        dist_full = _dh_dist(_dh_window(shot), _dh_window(path))
+
+        # 同 crop 口径：预览是 w:h 的裁剪窗口，cover 按同一比例中心裁
+        with Image.open(path) as im:
+            W, H = im.size
+            target = pw / ph
+            if W / H > target:                 # 原图更宽 → 裁左右
+                nw, nh = int(round(H * target)), H
+            else:                              # 原图更高 → 裁上下
+                nw, nh = W, int(round(W / target))
+            left, top = (W - nw) // 2, (H - nh) // 2
+            cropped = im.crop((left, top, left + nw, top + nh))
+            crop_path = os.path.join(shot_dir, "cover_cropped.png")
+            cropped.save(crop_path)
+        dist = _dh_dist(_dh_window(shot), _dh_window(crop_path))
+        crop_ratio = round((nw * nh) / float(W * H), 4)   # 保留面积比，一眼看出裁掉多少
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[douyin] 封面回读截图失败：{type(exc).__name__}: {exc}")
         return {"ok": False, "code": "COVER_UPLOAD_FAILED",
                 "detail": f"封面回读失败（无法截图比对）: {exc}"}
 
-    ok = dist is not None and dist <= 14
-    if not ok:
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面回读不一致（dHash 距离 {dist} > 14）", "dist": dist}
-    log.info(f"[douyin] 封面已上传并回读通过（dHash 距离 {dist}）")
-    return {"ok": True, "code": "", "detail": f"dHash 距离 {dist}", "dist": dist}
+    if dist is not None and dist <= 14:
+        log.info(f"[douyin] 封面已上传并回读通过（dHash 距离 {dist}，"
+                 f"preview {pw}×{ph}，裁剪比 {crop_ratio}）")
+        return {"ok": True, "code": "", "dist": dist, "dist_full": dist_full,
+                "preview": f"{pw}x{ph}", "crop_ratio": crop_ratio,
+                "detail": f"dHash 距离 {dist}（同 crop 口径）"}
+
+    # 失败：落盘三张图 + 结构化信息（R17/R18）
+    try:
+        dbg = os.path.join("output", "douyin_diag", f"cover_dbg_{int(time.time())}")
+        os.makedirs(dbg, exist_ok=True)
+        for src, name in ((shot, "preview.png"), (path, "cover.png"),
+                          (os.path.join(shot_dir, "cover_cropped.png"), "cover_cropped.png")):
+            if os.path.exists(src):
+                shutil.copyfile(src, os.path.join(dbg, name))
+        with open(os.path.join(dbg, "info.json"), "w", encoding="utf-8") as fh:
+            json.dump({"preview": f"{pw}x{ph}", "crop_ratio": crop_ratio,
+                       "dist_same_crop": dist, "dist_full_image": dist_full,
+                       "cover": str(path)}, fh, ensure_ascii=False, indent=2)
+        dbg_path = str(dbg)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[douyin] 封面失败现场落盘失败：{type(exc).__name__}: {exc}")
+        dbg_path = ""
+
+    log.error(f"[douyin] 封面回读不一致：preview={pw}×{ph} 裁剪比={crop_ratio} "
+              f"dist(同crop)={dist} dist(全图)={dist_full} 落盘={dbg_path or '失败'}")
+    return {"ok": False, "code": "COVER_UPLOAD_FAILED", "dist": dist,
+            "dist_full": dist_full, "preview": f"{pw}x{ph}", "crop_ratio": crop_ratio,
+            "debug_dir": dbg_path,
+            "detail": f"封面回读不一致（同crop距离 {dist} > 14；全图距离 {dist_full}；"
+                      f"preview {pw}×{ph}；裁剪比 {crop_ratio}）"}

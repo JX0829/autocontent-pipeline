@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -36,6 +37,53 @@ def _strip_tail_noise(s: str) -> str:
         out = out[:-1]
     return out
 
+
+def _caption_diff_report(expected: str, actual: str) -> dict:
+    """CAPTION_MISMATCH 现场：把 expected/filled/归一化/相似度/首个差异点全量落盘。
+
+    2026-11-19 事故：连续 3 次假红但现场只留 `filled[:120]`，使用侧无法自证差异。
+    """
+    import difflib
+
+    a, e = _normalize_caption(actual), _normalize_caption(expected)
+    ratio = difflib.SequenceMatcher(None, a, e).ratio() if (a or e) else 0.0
+    first_diff = -1
+    for i in range(min(len(a), len(e))):
+        if a[i] != e[i]:
+            first_diff = i
+            break
+    if first_diff < 0 and len(a) != len(e):
+        first_diff = min(len(a), len(e))
+    ctx = 40
+    lo = max(0, first_diff - ctx) if first_diff >= 0 else 0
+    return {
+        "expected_raw": expected,
+        "filled_raw": actual,
+        "expected_norm": e,
+        "filled_norm": a,
+        "len_expected": len(e),
+        "len_filled": len(a),
+        "ratio": round(ratio, 4),
+        "first_diff_index": first_diff,
+        "expected_window": e[lo:lo + 2 * ctx] if first_diff >= 0 else e[-80:],
+        "filled_window": a[lo:lo + 2 * ctx] if first_diff >= 0 else a[-80:],
+        "opcodes": [list(op) for op in difflib.SequenceMatcher(None, a, e).get_opcodes()
+                    if op[0] != "equal"],
+    }
+
+
+def _dump_caption_mismatch(report: dict) -> str:
+    """落盘到 output/douyin_diag/caption_mismatch_<ts>.json，返回路径（失败也不抛）。"""
+    import time as _time
+
+    try:
+        d = Path("output/douyin_diag")
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"caption_mismatch_{int(_time.time())}.json"
+        f.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(f)
+    except Exception:  # noqa: BLE001
+        return ""
 
 def _caption_matches(actual: str, expected: str) -> bool:
     """回读文本是否与期望一致。
@@ -417,12 +465,28 @@ class DouyinProvider(BaseSocialProvider):
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"正文（去芯片）回读失败，退回 innerText: {exc}")
                 if filled_text and not _caption_matches(_body_view, full_text):
-                    logger.error(f"CAPTION_MISMATCH: 回读与预期不符 filled={filled_text[:120]!r}")
+                    # 现场全量落盘（2026-11-19：连续 3 次假红但没法定差异）
+                    _rep = _caption_diff_report(full_text, _body_view)
+                    _rep["filled_inner_text"] = filled_text
+                    _rep["topics_landed"] = topics_landed
+                    _rep["topics_removed"] = _tp.get("removed") or []
+                    _dump = _dump_caption_mismatch(_rep)
+                    logger.error(
+                        "CAPTION_MISMATCH: 回读与预期不符 | ratio=%.4f 首差下标=%s "
+                        "len(exp/filled)=%d/%d | 落盘=%s",
+                        _rep["ratio"], _rep["first_diff_index"],
+                        _rep["len_expected"], _rep["len_filled"], _dump or "（落盘失败）",
+                    )
+                    logger.error("  expected[:160]=%r", _rep["expected_norm"][:160])
+                    logger.error("  filled  [:160]=%r", _rep["filled_norm"][:160])
+                    logger.error("  差异窗口 exp=%r vs filled=%r",
+                                 _rep["expected_window"], _rep["filled_window"])
                     browser.close()
                     return {"success": False, "published": False,
                             "error": "CAPTION_MISMATCH",
-                            "expected": full_text[:200], "filled": filled_text[:200],
-                            "message": "简介回读与预期不符（乱码/话题错位/被重排），拒绝发布"}
+                            "expected": full_text, "filled": _body_view,
+                            "diagnostics": _rep, "diagnostics_path": _dump,
+                            "message": f"简介回读与预期不符（ratio={_rep['ratio']}），拒绝发布"}
                 # 3e. 话题终态（SPEC-20261118 R8）：真话题数 == 声明数 且 尾部无游离文本
                 if topics_declared and (_tp.get("stray") or not topics_ok):
                     _why = ("尾部残留游离文本 " + repr(_tp.get("stray"))) if _tp.get("stray") \
