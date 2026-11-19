@@ -13,7 +13,7 @@ import { AbsoluteFill, Audio, Sequence, staticFile, useVideoConfig, useCurrentFr
 import { AlignedRenderPayload } from '../types';
 import { InkScene, InkSubtitle, InkBackdrop, Seal } from './InkScenes';
 import { ink, splitPoemColumns } from './theme';
-import { InkBackdropLayer } from '../ink/InkBackdrop';
+import { InkBackdropLayer, InkOverlays } from '../ink/InkBackdrop';
 
 const COVER_FRAMES = 15;
 
@@ -312,10 +312,16 @@ export const TextbookStoryVideo: React.FC<AlignedRenderPayload> = (props) => {
   const { width, height } = useVideoConfig();
   return (
     <AbsoluteFill style={{ background: ink.paper }}>
-      {/* 方案 C：水墨素材库底（bg）+ 纸纹（tex），压在正文之下；缺素材时保留纯纸色 */}
+      {/* 方案 C v2：水墨素材当画面底（0.92 + 对比校正 + 循环），不是淡叠加 */}
       <InkBackdropLayer bg={props.assets?.bg} tex={props.assets?.tex} />
       {props.bgm_src ? <Audio src={staticFile(props.bgm_src)} volume={0.05} loop /> : null}
       <SceneBody props={props} landscape={false} />
+      {/* 分幕空镜：开场墨滴 / 场景交界飞鸟泼墨 / 结尾残墨（v1 完全没接，飞鸟永远不出现） */}
+      <InkOverlays
+        assets={props.assets}
+        sceneStarts={(props.scenes || []).map((sc) => Number((sc as { start_frame?: number }).start_frame || 0))}
+        totalFrames={Number(props.total_duration_in_frames || 0) || 3000}
+      />
       <Sequence from={0} durationInFrames={COVER_FRAMES}>
         <AbsoluteFill style={{ width, height }}>
           <CoverVertical props={props} />
@@ -329,7 +335,7 @@ export const TextbookLandscapeVideo: React.FC<AlignedRenderPayload> = (props) =>
   const { width, height } = useVideoConfig();
   return (
     <AbsoluteFill style={{ background: ink.paper }}>
-      {/* 方案 C：横版同样挂水墨底（横版素材走 _landscape 副本） */}
+      {/* 回滚用：课文本默认只出竖版（pipeline.yaml aspects_by_template），此分支不再参与生产 */}
       <InkBackdropLayer bg={props.assets?.bg} tex={props.assets?.tex} />
       {props.bgm_src ? <Audio src={staticFile(props.bgm_src)} volume={0.05} loop /> : null}
       <SceneBody props={props} landscape />

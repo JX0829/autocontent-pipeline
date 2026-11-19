@@ -198,6 +198,13 @@ inputs:
     default: [vertical, landscape]
 
 # 封面卡片数据源：消除组件内 [0,1,3] 魔数（T4.4 #6，对标 C8）
+# 画幅策略（2026-11-19）：默认按 inputs.aspects（横竖都要）。
+# 课文本（课后古诗 / 水墨）布局是**竖排**的，只出竖版 —— 横版等于把竖排字塞进横画布，
+# 既不是真横版布局，又白烧一半渲染时间（实测横版单独 13 分钟）。
+aspects_by_template:
+  textbook_story: [vertical]
+  ink_story: [vertical]
+
 cover:
   card_source: [0, 1, 3]        # 取 scenes 的哪几镜作为右侧三卡
   missing_policy: warn          # 缺 highlight_text 时告警占位，禁止静默消失
