@@ -49,6 +49,7 @@ run "竖版安全边距巡检"    "$PY" scripts/audit_safe_area.py
 run "封面片头 0.5s"       "$PY" scripts/test_cover_prepend.py
 run "封面 3:4 不裁字"      "$PY" scripts/test_cover_34_safe.py
 run "封面规范(全模板)"    "$PY" scripts/audit_cover_standard.py
+run "素材轮换(随机)"      "$PY" scripts/test_asset_rotation.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send
 run "封面硬编码扫描"      "$PY" scripts/check_cover_hardcode.py
 run "发布入口收口审计"    "$PY" scripts/audit_publish_entrypoints.py

@@ -46,23 +46,24 @@ def main() -> int:
     for theme, want in expect.items():
         check(f"theme={theme}", tm.resolve_template_id(theme=theme, payload_template="auto"), want)
 
-    print("\n=== 显式指定优先（回滚/对照用）===")
-    check("payload=editorial_news",
-          tm.resolve_template_id(theme="breaking-news", payload_template="editorial_news"),
-          "editorial_news")
-    check("payload=linear_obsidian",
-          tm.resolve_template_id(theme="breaking-news", payload_template="linear_obsidian"),
-          "linear_obsidian")
+    print("\n=== 退役模板（2026-11-18 起 T1~T5 退休，旧物料必须被收敛）===")
+    retired = sorted(tid for tid, meta in (cfg.get("templates") or {}).items()
+                     if isinstance(meta, dict) and meta.get("retired"))
+    for tid in retired:
+        check(f"payload={tid} → 收敛到可用模板",
+              tm.resolve_template_id(theme="breaking-news", payload_template=tid),
+              "tech_story")
+    check("退役模板已 enabled:false", str([t for t in retired if t in tm.list_enabled_templates()]), "[]")
 
     print("\n=== composition 映射 ===")
     from src.pipeline.executors import COMPOSITION_BY_TEMPLATE, DEFAULT_VERTICAL_COMPOSITION
     for tid in expect.values():
         want = COMPOSITION_BY_TEMPLATE.get(tid, DEFAULT_VERTICAL_COMPOSITION)
         check(f"{tid} → composition", want, COMPOSITION_BY_TEMPLATE.get(tid, DEFAULT_VERTICAL_COMPOSITION))
-    # 老模板必须回落 GeekShortVideo（归档仍可用）
-    check("editorial_news → composition",
-          COMPOSITION_BY_TEMPLATE.get("editorial_news", DEFAULT_VERTICAL_COMPOSITION),
-          DEFAULT_VERTICAL_COMPOSITION)
+    # 旧 Geek 排版模板已下线：T1~T5 必须也有明确映射且不得指向 GeekShortVideo
+    for tid in ("editorial_news", "cupertino_glass", "neo_brutalism", "notion_craft", "linear_obsidian"):
+        comp = COMPOSITION_BY_TEMPLATE.get(tid, DEFAULT_VERTICAL_COMPOSITION)
+        check(f"{tid} → 不再是 GeekShortVideo", str(comp != "GeekShortVideo"), "True")
 
     print(f"\n结论: {'PASS' if FAIL == 0 else 'FAIL'}（{PASS} 通过 / {FAIL} 失败）")
     return 0 if FAIL == 0 else 1

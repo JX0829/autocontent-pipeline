@@ -38,31 +38,41 @@ templates:
     composition: "TechStoryVideo"
 
   editorial_news:
+    # ⛔ 2026-11-18 退休：T1 瑞士报刊风（旧 GeekShortVideo 排版模板，用户要求下线）
+    retired: true
     name: "T1 · 瑞士先锋报刊风 (Editorial Paper)"
     description: "暖米白羊皮纸底色 + 国际朱砂红重点色 + 粗黑社论衬线标题 + 3px 严谨网格线"
     recommended_themes: ["breaking-news", "tech-github"]
-    enabled: true
+    enabled: false
 
   cupertino_glass:
+    # ⛔ 2026-11-18 退休：T2 Apple 毛玻璃（旧 GeekShortVideo 排版模板，用户要求下线）
+    retired: true
     name: "T2 · Apple 毛玻璃流光风 (Cupertino Glass)"
     description: "深空午夜蓝极光流体渐变 + VisionOS 高透磨砂玻璃 + Bento 便当盒 36px 大圆角"
     recommended_themes: ["ai-product"]
-    enabled: true
+    enabled: false
 
   neo_brutalism:
+    # ⛔ 2026-11-18 退休：T3 波普粗野（旧 GeekShortVideo 排版模板，用户要求下线）
+    retired: true
     name: "T3 · 多巴胺波普粗野风 (Neo-Brutalism Pop)"
     description: "高明度柠檬黄底色 + 电光紫/糖果粉/薄荷绿撞色 + 4px 纯黑描边与 12px 硬朗错位阴影"
     recommended_themes: ["ai-product", "breaking-news", "tech-github"]
-    enabled: true
+    enabled: false
 
   notion_craft:
+    # ⛔ 2026-11-18 退休：T4 Notion 手账（旧 GeekShortVideo 排版模板，用户要求下线）
+    retired: true
     name: "T4 · Notion 暖调手账风 (Notion Warm Craft)"
     description: "护眼燕麦奶白点阵纸 + 森林鼠尾草绿 + 暖黄荧光笔半透明涂抹高亮 + Callout 笔记块"
     recommended_themes: ["tech-github", "ai-product"]
-    enabled: true
+    enabled: false
 
   linear_obsidian:
+    # ⛔ 2026-11-18 退休：T5 Linear 钛黑（旧 GeekShortVideo 排版模板，用户要求下线）
+    retired: true
     name: "T5 · Linear 钛黑流光风 (Linear Obsidian)"
     description: "深曜石黑底色 + 顶部星云聚光灯 + 1px 钛金属微光渐变切线 + 冰蓝与极光紫双色"
     recommended_themes: ["tech-github"]
-    enabled: true
+    enabled: false

@@ -96,8 +96,15 @@ def _remotion(*args: str, timeout: int = 900) -> None:
 COMPOSITION_BY_TEMPLATE = {
     "tech_story": "TechStoryVideo",
     "textbook_story": "TextbookStoryVideo",
+    # 2026-11-18 用户要求下线旧 GeekShortVideo 排版模板：T1~T5 一律落到 tech_story，
+    # 不再有任何路径渲染 GeekShortVideo（文件保留，回滚=删这几行）。
+    "editorial_news": "TechStoryVideo",
+    "cupertino_glass": "TechStoryVideo",
+    "neo_brutalism": "TechStoryVideo",
+    "notion_craft": "TechStoryVideo",
+    "linear_obsidian": "TechStoryVideo",
 }
-DEFAULT_VERTICAL_COMPOSITION = "GeekShortVideo"
+DEFAULT_VERTICAL_COMPOSITION = "TechStoryVideo"
 
 
 def _composition_for(props_data: dict[str, Any]) -> str:
@@ -138,7 +145,9 @@ def _attach_assets(ctx: StepContext, props_data: dict[str, Any]) -> None:
     for w in sel.warnings:
         print(f"[assets] WARN {w}")
     print(f"[assets] 档位={sel.domain or '未判定'} 封面形态={sel.cover_mode} "
-          f"open={sel.open.id if sel.open else '（无）'} bg={sel.bg.id}")
+          f"open={sel.open.id if sel.open else '（无）'} bg={sel.bg.id} "
+          f"mid={sel.mid.id if sel.mid else '（无）'} end={sel.end.id if sel.end else '（无）'} "
+          f"bgm={sel.bgm.id if sel.bgm else '（无）'}")
 
 
 # ---------------------------------------------------------------- 执行体
