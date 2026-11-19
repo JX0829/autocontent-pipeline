@@ -497,11 +497,26 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     except Exception as exc:  # noqa: BLE001
         raise ExecutorError(f"横版 props 解析失败: {props}: {exc}") from exc
     tech_landscape = (not textbook) and _composition_for(_pd) == "TechStoryVideo"
+
+    # 2026-11-19 修复回归：efa3a98（封面改成成片截帧）把这段横版副本替换逻辑删掉了，
+    # 于是 11-18 起横版又回去「竖版素材中心裁成 16:9」（1080x1920 裁完只剩 1080x608，
+    # 上下各丢 34%）。这里恢复并把 mid/end 一并纳入：开场/背景/幕间/片尾都优先用原生 16:9 副本。
+    props_for_render = props
+    if tech_landscape:
+        from src.assets_manager import with_landscape_assets
+        _lp, _lrep = with_landscape_assets(_pd)
+        _used = sorted((_lrep.get("used") or {}).keys())
+        print(f"[assets] aspect=landscape 原生 16:9 副本: {_used or '（无）'} "
+              f"回落竖版裁切: {_lrep.get('fallback') or '（无）'}")
+        if _used:
+            land_props = Path(ctx.run_root) / "props" / "aligned_render_landscape.json"
+            land_props.write_text(json.dumps(_lp, ensure_ascii=False, indent=2), encoding="utf-8")
+            props_for_render = str(land_props)
     def _landscape_cover(video_path: Path, cover_path: Path) -> Path:
         from src.pipeline.cover_compose import compose_cover
         return compose_cover(video_path, cover_path, props=_pd, run_id=ctx.run_id, aspect="landscape")
 
-    info = render_landscape(ctx.task_id, props_json=props, out_dir=str(ctx.run_root),
+    info = render_landscape(ctx.task_id, props_json=props_for_render, out_dir=str(ctx.run_root),
                             expect_cover_text=str(draft.get("cover_main_text") or ""),
                             cover_composer=_landscape_cover if tech_landscape else None,
                             video_composition=("TextbookLandscapeVideo" if textbook else
@@ -513,9 +528,11 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     # R9：横版也打一行，方便回归时与竖版一眼对齐（素材来自同一份 Selection：props 里已注入）
     _a = (_pd.get("asset_binding") or {})
     _op, _bg = (_a.get("open") or {}), (_a.get("bg") or {})
+    _mid, _end = (_a.get("mid") or {}), (_a.get("end") or {})
     print(f"[assets] aspect=landscape 档位={_a.get('domain') or '未判定'} "
           f"封面形态={_a.get('cover_mode') or 'none'} 封面=首帧 "
           f"open={_op.get('id') or '（无）'} bg={_bg.get('id') or '（无）'} "
+          f"mid={_mid.get('id') or '（无）'} end={_end.get('id') or '（无）'} "
           f"模板={'TechStoryLandscapeVideo' if tech_landscape else ('TextbookLandscapeVideo' if textbook else '旧横版')}")
     return {"video_16_9": str(video), "cover_16_9": str(cover)}
 

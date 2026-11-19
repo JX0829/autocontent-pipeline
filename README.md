@@ -108,6 +108,7 @@ disagrees with the declaration fails the gate instead of silently drifting.
 | **抖音标题/正文/话题** | 标题进独立「作品标题」框；正文与话题**一次原子插入**；回读比对先切掉话题段 | `test_douyin_topics_contract.py` |
 | **视频号收回流水线** | 删 `publish_channels.py`，只读排障用 `probe_channels.py`；账号级 `headless` 生效但**视频号禁止无头**；`objectId` 当凭证 + 回执三态（published/unverified/failed） | `audit_channels_headful.py`、`test_channels_stability.py`、`audit_publish_entrypoints.py` |
 | **素材轮换真正生效** | ① bg 随机单位改成**视觉族**（旧实现把池缩成带 `_loop` 的族 ⇒ 每条片子都是同一张电路板）② 新增 `mid` 幕间转场（场景交界 0.5s 覆盖）与 `end` 片尾收尾（最后 1.2s 覆盖），**只覆盖不改时间轴**，口播不脱轨 ③ 语义域判不出时按全池随机，不再留空 | `test_asset_rotation.py` |
+| **横版原生 16:9 副本恢复** | `efa3a98` 曾把横版素材替换逻辑删掉，11-18 起横版又回到「竖版素材裁 16:9」（1080×1920 裁完只剩 1080×608）。已恢复并把 `mid/end` 纳入：开场/背景/幕间/片尾都优先用 `*_landscape.mp4`，无副本才回落并打日志 | `test_landscape_assets.py`（11 项） |
 | **旧 Geek 模板下线** | `GeekShortVideo` 不再有任何入口（`DEFAULT_VERTICAL_COMPOSITION` → `TechStoryVideo`，T1~T5 标 `retired` + `enabled:false`），文件保留可回滚 | `test_asset_rotation.py` |
 | **物料硬约束** | `title` 用物料原值（>20 字报 `TITLE_TOO_LONG`）；`tags` = 物料 + 生成去重取前 6（物料在前，超限报 `TAGS_OVER_LIMIT`） | `test_material_binding.py` |
 
