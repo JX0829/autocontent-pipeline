@@ -30,7 +30,13 @@ SPAN_SAMPLES = (0.2, 1.0, 2.0, 3.5)
 COVER_TEXT_SAMPLES = (0.05, 0.15, 0.25, 0.35, 0.45)
 MIN_COVERAGE = 0.55   # 总覆盖率下限（实测：正当成片 0.672~0.969 / 竖版居中 0.396）
 MIN_EDGE = 0.05       # 左右各 8% 带宽覆盖率下限（实测：正当 0.516~1.000 / 竖版居中 0.000）★主判据
-MAX_FRAME_DIFF = 8.0  # 视频首帧与封面静帧的灰度平均差上限（同画面实测 0.45）
+MAX_FRAME_DIFF = 8.0   # 灰度平均差上限（仅辅助信息，不再做硬判）
+# 封面「是不是从这条成片抽的」改用 dHash 汉明距离：均值差对 h264 重编码 + 文案叠加太敏感
+# （实测同图 11.7~11.8 → 被 8.0 误杀），dHash 同图 0~13、异图 25~28，取 20 在两者之间。
+DHASH_MAX = 20
+# 候选抽帧位：0（旧口径抽首帧）与 COVER_FRAME（54=1.8s，标题淡入后）；有 binding 时再加 binding.frame。
+# 为什么给多个：同一批成片里 0 帧口径与 54 帧口径并存，只比一个位置必然误杀另一批。
+COVER_FRAME_CANDIDATES = (0, 54)
 
 
 def _probe(path: str) -> tuple[int, int]:
@@ -56,7 +62,7 @@ def _frame_gray(video: str, ts: float) -> tuple[bytes, int, int]:
 
 
 def _frame_gray_at_frame(video: str, frame_no: int) -> tuple[bytes, int, int]:
-    """按**帧号**取一帧灰度数据（不是 -ss 跳秒）。
+    r"""按**帧号**取一帧灰度数据（不是 -ss 跳秒）。
 
     -ss 会落到最近关键帧，和 select=eq(n\,N) 抽出来的封面帧不是同一帧，
     实测课文本（24fps/GOP 大）差 11.7 灰度级 → 守卫误判。这里统一用帧号选帧。
@@ -179,7 +185,66 @@ def _frame_diff(a: str, b: str) -> float:
     return sum(abs(x - y) for x, y in zip(ra, rb)) / len(ra)
 
 
-def _cover_binding(cover: str | None) -> dict | None:
+def _dhash_png(path: str) -> list[int] | None:
+    """9x8 灰度 → 64 位差分行哈希。同图 0~13，异图 25~28（2026-11-19 实测）。"""
+    try:
+        raw = subprocess.check_output(["ffmpeg", "-v", "error", "-i", path, "-vf",
+                                       "scale=9:8:flags=area", "-f", "rawvideo",
+                                       "-pix_fmt", "gray", "-"])
+    except Exception:  # noqa: BLE001
+        return None
+    if len(raw) < 72:
+        return None
+    bits: list[int] = []
+    for y in range(8):
+        row = raw[y * 9:(y + 1) * 9]
+        for x in range(8):
+            bits.append(1 if row[x] < row[x + 1] else 0)
+    return bits
+
+
+def _dhash_video_frame(video: str, ts: float) -> list[int] | None:
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        png = tf.name
+    try:
+        subprocess.check_call(["ffmpeg", "-y", "-ss", str(ts), "-i", video, "-vframes", "1",
+                               png, "-loglevel", "error"])
+        return _dhash_png(png)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        Path(png).unlink(missing_ok=True)
+
+
+def _match_cover_frame(video: str, cover: str, extra_frame: int | None = None) -> dict:
+    """在候选帧里找「封面出自哪一帧」，返回 {frame, dhash, best_mean_diff}。
+
+    只有 dHash 命中才算同图；平均差只作辅助信息（h264 重编码会把它抬到 11+）。
+    """
+    ch = _dhash_png(cover)
+    cands = list(COVER_FRAME_CANDIDATES)
+    if extra_frame is not None and extra_frame not in cands:
+        cands.append(int(extra_frame))
+    best: dict = {"frame": None, "dhash": 255, "best_mean_diff": None}
+    for fr in cands:
+        vh = _dhash_video_frame(video, fr / 30.0)
+        if vh is None or ch is None:
+            continue
+        dist = sum(1 for a, b in zip(vh, ch) if a != b)
+        if dist < best["dhash"]:
+            ts = fr / 30.0
+            try:
+                ra, _w, _h = _frame_gray(video, ts)
+                rb, _w2, _h2 = _frame_gray(cover, 0.0)
+                md = round(sum(abs(x - y) for x, y in zip(ra, rb)) / len(ra), 2) if len(ra) == len(rb) else None
+            except Exception:  # noqa: BLE001
+                md = None
+            best = {"frame": fr, "dhash": dist, "best_mean_diff": md}
+    return best
+
+
+def _cover_binding(cover: str | None, video: str | None = None,
+                   want_aspect: str | None = None) -> dict | None:
     """读取 cover_compose 落的绑定证据（SPEC-20261117 §十一）。
 
     有绑定且底图 hash 与记录一致 → 说明「这张封面」的底图确实是该成片的某一帧，
@@ -194,6 +259,17 @@ def _cover_binding(cover: str | None) -> dict | None:
         return None
     try:
         bind = json.loads(bp.read_text(encoding="utf-8"))
+        # 绑定必须属于「正在检查的这条成片」：只校验 base 的 sha 是不够的 ——
+        # 拿 A 片的封面去检查 B 片，A 的 binding 自身完全自洽，会被误当成 composer 证据放行
+        # （实测：ink-c-yuanri3 的视频 + silent-consensus-1 的封面 → 旧代码判 OK）。
+        if video and bind.get("video"):
+            try:
+                if Path(bind["video"]).resolve() != Path(video).resolve():
+                    return None
+            except OSError:
+                return None
+        if want_aspect and bind.get("aspect") and bind["aspect"] != want_aspect:
+            return None
         base = Path(bind.get("base") or "")
         if not base.exists():
             return None
@@ -250,16 +326,45 @@ def check_landscape(video: str, expect_text: str = "",
     #  · 再校验「视频首帧 ≈ 封面」，确保投放时首帧画面就是这张海报（A3 的本意）
     if expect_text or cover_path:
         cover_ok = bool(cover_path and Path(cover_path).exists())
+        if cover_ok:
+            try:
+                cw, chh = _probe_png(str(cover_path)) if str(cover_path).lower().endswith(".png") else _probe(str(cover_path))
+                rep["cover_size"] = f"{cw}x{chh}"
+                if chh > cw:
+                    rep["reason"] = f"封面是竖版 {cw}x{chh}，不能作为横版（16:9）封面"
+                    return False, rep
+            except Exception:  # noqa: BLE001
+                rep["cover_size"] = "unknown"
+        bind = _cover_binding(cover_path, video=video, want_aspect="landscape") if cover_ok else None
         if cover_ok and not compare_cover_frame:
             rep["cover_source"] = "composer"
             rep["cover_frame_diff"] = None
         elif cover_ok:
-            diff = _frame_diff(video, str(cover_path))
-            rep["cover_frame_diff"] = round(diff, 2)
-            if diff > MAX_FRAME_DIFF:
-                rep["reason"] = (f"视频封面帧与封面图不一致（平均差 {diff:.1f} > "
-                                 f"{MAX_FRAME_DIFF}）→ 封面图不是从成片抽的")
+            # 判据从「平均差 ≤8」换成「dHash 命中任一候选帧」：
+            #  · 平均差对 h264 重编码 + 文案叠加太敏感，同图实测 11.7~11.8 → 被 8.0 误杀；
+            #  · 只比一个帧位也不成立：库里的成片存在「0 帧口径」和「54 帧口径」两批，
+            #    只比 54 会把 0 帧口径的成片全判死（实测 anthropic-ipo-1 dHash(vs 0 帧)=4、
+            #    ink-c-yuanri3 dHash(vs 0 帧)=0，都是同图，却被平均差拦下）。
+            extra = None
+            if bind and bind.get("frame") is not None:
+                extra = int(bind["frame"])
+            match = _match_cover_frame(video, str(cover_path), extra_frame=extra)
+            rep["cover_frame_match"] = match
+            rep["cover_frame_diff"] = match.get("best_mean_diff")
+            if bind is None:
+                bpath = Path(cover_path).parent / (
+                    "cover_binding_landscape.json" if "16_9" in Path(cover_path).name
+                    else "cover_binding_portrait.json")
+                rep["binding_state"] = "missing" if not bpath.exists() else "base_missing"
+            best = match.get("dhash")
+            if best is None:
+                rep["reason"] = "封面图无法解码，无法验证是否出自成片"
                 return False, rep
+            if best > DHASH_MAX:
+                rep["reason"] = (f"封面与成片任何候选帧都不匹配（最小 dHash 距离 {best} > {DHASH_MAX}）"
+                                 f"→ 封面图不是从这条成片抽的")
+                return False, rep
+            rep["cover_source"] = "frame"
         if expect_text:
             src = Path(cover_path) if cover_ok else Path(video)
             samples = None if cover_ok else COVER_TEXT_SAMPLES
@@ -318,7 +423,7 @@ def _hook_mode() -> int:
                          ensure_ascii=False))
         return 1
 
-    _bind = _cover_binding(cover)
+    _bind = _cover_binding(cover, video=video, want_aspect="landscape")
     ok, rep = check_landscape(video, str(ctx.get("expect_text") or ""),
                               cover_path=cover if cover and Path(cover).exists() else None,
                               compare_cover_frame=(_bind is None))
@@ -337,7 +442,7 @@ if __name__ == "__main__":
     video = sys.argv[1]
     expect = sys.argv[2] if len(sys.argv) > 2 else ""
     cover = sys.argv[3] if len(sys.argv) > 3 else None
-    _bind = _cover_binding(cover)
+    _bind = _cover_binding(cover, video=video, want_aspect="landscape")
     ok, report = check_landscape(video, expect, cover_path=cover,
                                  compare_cover_frame=(_bind is None))
     if _bind:
