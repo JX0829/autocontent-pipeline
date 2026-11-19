@@ -102,15 +102,20 @@ def test_cover_upload() -> None:
 
 # ── 安全边距（R10/R11）────────────────────────────────────────────────────
 def test_safe_area() -> None:
+    """竖版安全边距：用户最终定案 100（88↔120 折中），封面卡走 COVER_PAD_X 常量。
+
+    2026-11-19：develop 已收敛为常量（SAFE_X_VERTICAL=100 / COVER_PAD_X=64），
+    断言改成「引用同一常量」而不是写死数字 —— 否则常量一调就假红。
+    """
     tsx = _read("renderer/src/tech/TechStoryVideo.tsx")
-    check("R10 HookOverlay 左右 120", "left: 120, right: 120, top: 190" in tsx)
-    check("R10 主体 左右 120", "left: 120, right: 120, top: 200" in tsx)
-    check("R10 字幕 左右 120", "left: 120, right: 120, bottom: 168" in tsx)
-    check("R10 角落标签 120", "left: 120, top: 104" in tsx and "right: 120, top: 104" in tsx)
+    check("R10 竖版安全边距常量为 100（用户定案折中值）", "SAFE_X_VERTICAL = 100" in tsx)
+    check("R10 安全边距被实际引用", tsx.count("SAFE_X_V") >= 2 or tsx.count("SAFE_X_VERTICAL") >= 2)
     check("R10 不再有 88/70 竖版边距", not re.search(r"left: (88|70), right: (88|70)", tsx))
 
     cover = _read("renderer/src/tech/TechCoverCard.tsx")
-    check("R10 封面卡同样 120（feed 会裁边）", "left: 120, right: 120, bottom: 210" in cover)
+    check("R10 封面卡走 COVER_PAD_X 常量（feed 会裁边）", "COVER_PAD_X" in cover)
+    cf = _read("renderer/src/tech/coverFrame.ts")
+    check("R10 封面常量集中在 coverFrame.ts", "COVER_PAD_X" in cf and "COVER_MAIN_SIZE" in cf)
 
     root = _read("renderer/src/Root.tsx")
     check("R10 横版仍是 1920x1080（不受影响）", "width: 1920" in root and "height: 1080" in root)
@@ -133,7 +138,41 @@ def test_caption_readback() -> None:
     check("回读为空仍拦", _caption_matches("", body) is False)
 
 
+def test_topic_policy() -> None:
+    """用户口径 2026-11-19：最多 5 个 / 无匹配直接移除 / 不足 2 个兜底 / declared 只记写进去的。"""
+    from src.providers import douyin_form as df
+
+    check("R21 最多 5 个话题", df.MAX_TOPICS == 5, f"MAX_TOPICS={df.MAX_TOPICS}")
+    check("R21 最少 2 个", df.MIN_TOPICS == 2, f"MIN_TOPICS={df.MIN_TOPICS}")
+    check("R21 兜底池含 AI", "AI" in df.FALLBACK_TOPICS, str(df.FALLBACK_TOPICS))
+
+    src = (PROJ / "src/providers/douyin_form.py").read_text(encoding="utf-8")
+    check("R22 不再有「按纯文本留下」兜底", "按纯文本留下" not in src)
+    check("R22 截断到 MAX_TOPICS", "want = want[:MAX_TOPICS]" in src)
+    check("R23 兜底补位逻辑在", "if len(landed) < MIN_TOPICS:" in src and "fallback_used.append" in src)
+    check("R24 declared 只记 landed", "declared = list(landed)" in src)
+    check("R24 被移除的不参与比对", "_stray_tail(tail, landed)" in src and "_repair_tail(page, landed, log)" in src)
+
+
+def test_mismatch_diagnostics() -> None:
+    """CAPTION_MISMATCH 现场必须可自证：expected/filled/归一化/ratio/首差下标/差异窗口。"""
+    from src.providers.douyin import _caption_diff_report
+
+    exp = "第一段讲结论。第二段讲背景，第三段讲提醒。"
+    got = "第一段讲结论。第二段讲背" + "景" + "第四段讲别的。"
+    rep = _caption_diff_report(exp, got)
+    for k in ("expected_raw", "filled_raw", "expected_norm", "filled_norm",
+              "ratio", "first_diff_index", "expected_window", "filled_window", "opcodes"):
+        check(f"R25 现场含 {k}", k in rep, str(rep.get(k))[:40] if k != "opcodes" else "")
+    check("R25 ratio 合理", 0 < rep["ratio"] < 1, f"ratio={rep['ratio']}")
+    check("R25 首差下标定位到差异处", rep["first_diff_index"] > 0, f"idx={rep['first_diff_index']}")
+    check("R26 落盘函数存在", hasattr(__import__("src.providers.douyin", fromlist=["x"]),
+                                     "_dump_caption_mismatch"))
+
+
 def main() -> int:
+    test_topic_policy()
+    test_mismatch_diagnostics()
     test_caption_readback()
     test_paragraph_split()
     test_dom_judge()

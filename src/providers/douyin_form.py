@@ -18,6 +18,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
+#: 封面回读 dHash 阈值（中心 84% 口径）。实测：同一张封面 dist=5，不同封面 25~28。
+COVER_DH_MAX = 18
+
 #: 抖音「作品标题」输入框的候选选择器（placeholder 会微调，多给几个兜底）
 TITLE_SELECTORS = (
     'input[placeholder*="标题"]',
@@ -685,10 +688,14 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
         return {"ok": False, "code": "COVER_UPLOAD_FAILED",
                 "detail": f"封面回读失败（无法截图比对）: {exc}"}
 
-    ok = dist is not None and dist <= 14
+    # 阈值（2026-11-19 实测标定）：同一张封面中心84%后 dist=5；另一条片的封面 dist=25~28。
+    # 取 18 —— 既不会被预览缩略图的渲染噪声假红（旧口径 14 时实测 18 就打红），
+    # 也远低于「换了一张图」的下界 25（A12 依然能拦住真错封面）。
+    ok = dist is not None and dist <= COVER_DH_MAX
     if not ok:
         return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面回读不一致（中心84% dHash 距离 {dist} > 14，裁切保留 {crop_ratio}）",
+                "detail": f"封面回读不一致（中心84% dHash 距离 {dist} > {COVER_DH_MAX}，"
+                          f"裁切保留 {crop_ratio}）",
                 "dist": dist, "crop_ratio": crop_ratio}
     log.info(f"[douyin] 封面已上传并回读通过（中心84% dHash 距离 {dist}，裁切保留 {crop_ratio}）")
     return {"ok": True, "code": "", "detail": f"中心84% dHash 距离 {dist}（裁切保留 {crop_ratio}）",

@@ -531,6 +531,7 @@ class DouyinProvider(BaseSocialProvider):
                     browser.close()
                     return {"success": False, "published": False,
                             "error": "TOPIC_TAIL_RESIDUE" if _tp.get("stray") else "TOPIC_COUNT_MISMATCH",
+                            "stage": "topics",
                             "expected": topics_declared, "filled": _tp,
                             "message": f"话题终态不合格（{_why}），拒绝发布"}
 
@@ -545,7 +546,7 @@ class DouyinProvider(BaseSocialProvider):
                     logger.error(f"COVER_UPLOAD_FAILED: {_cover.get('detail')}")
                     browser.close()
                     return {"success": False, "published": False,
-                            "error": "COVER_UPLOAD_FAILED",
+                            "error": "COVER_UPLOAD_FAILED", "stage": "cover",
                             "expected": str(cover_path or ""), "filled": _cover,
                             "message": f"封面没上传成功（{_cover.get('detail')}），拒绝发布"}
 
@@ -743,8 +744,31 @@ class DouyinProvider(BaseSocialProvider):
             # CDP_UNAVAILABLE / CDP_BUSY / LOGIN_REQUIRED，不能被下面的大 except 吞成裸文案
             raise
         except Exception as e:
+            # 2026-11-19 事故：这里原来只返回 str(e) + 一句「保存草稿异常」，
+            # 连失败在哪一步、哪段 JS 报的 SyntaxError 都看不到。
+            # 现在：带 traceback 末段 + 现场落盘（截图/HTML），并把异常归类为
+            # DRAFT_SAVE_EXCEPTION，供上层与台账区分「发布侧异常」与「物料问题」。
+            import traceback as _tb
+
+            tb_tail = "".join(_tb.format_exception(type(e), e, e.__traceback__)[-4:])[-1600:]
             logger.exception(f"Error during Douyin draft saving: {e}")
-            return {"success": False, "error": str(e), "message": "保存抖音草稿异常"}
+            dbg = ""
+            _pg = locals().get("page")
+            try:
+                d = Path("output/douyin_diag") / f"draft_exc_{int(time.time())}"
+                d.mkdir(parents=True, exist_ok=True)
+                if _pg is not None:
+                    _pg.screenshot(path=str(d / "page.png"), full_page=True)
+                    (d / "page.html").write_text(_pg.content(), encoding="utf-8")
+                (d / "traceback.txt").write_text(tb_tail, encoding="utf-8")
+                dbg = str(d)
+                logger.error(f"[douyin] 草稿阶段异常现场已落盘：{dbg}")
+            except Exception:  # noqa: BLE001
+                pass
+            return {"success": False, "error": f"{type(e).__name__}: {e}",
+                    "error_code": "DRAFT_SAVE_EXCEPTION", "stage": "draft",
+                    "traceback_tail": tb_tail, "debug_dir": dbg,
+                    "message": f"保存抖音草稿异常（{type(e).__name__}），现场：{dbg or '落盘失败'}"}
 
     def _verify_published(self, title: str, wait_sec: int = 45,
                           fallback_text: str = "") -> Dict[str, Any]:
