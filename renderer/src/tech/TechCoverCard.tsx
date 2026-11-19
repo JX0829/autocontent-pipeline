@@ -1,17 +1,29 @@
 import React from 'react';
 import { AbsoluteFill, Img, staticFile } from 'remotion';
+import {
+  COVER_KICKER_SIZE,
+  COVER_MAIN_SIZE,
+  COVER_OFFSET_Y,
+  COVER_PAD_X,
+  COVER_SUB_SIZE,
+} from './coverFrame';
+
+const ACCENT = '#5ED8FF';
 
 /**
  * 封面卡片（SPEC-20261117 §十一 R13~R18）
  *
- * 底图 = 从**成片里截的一帧真实画面**（由构建侧 ffmpeg 截好后放进 public/runs/<run>/），
- * 文案 = 由我们渲染上去（同 tech_story 的字体族 / 强调色 / 左下版位 / 渐变压暗）。
+ * 底图 = **无文字素材/背景 loop 的一帧**（由 cover_compose.pick_clean_source 挑好、
+ * 居中裁成 3:4 后放进 public/runs/<run>/），文案 = 这里渲染上去。
  *
- * 为什么不用 CoverStill / BilibiliLandscapeCover：那是「海报」版式，与 tech_story 正文
- * 完全不搭（用户 2026-11-18 明确否决）。这里只复刻 HookOverlay 的文字语汇。
+ * 版式一律吃 ../tech/coverFrame.ts 的统一常量（居中 / 下移 32 / 边距 ≥64 / 字号 76-28-20），
+ * 新模板请复用同一组常量，不要抄数字。
  */
+export {
+  COVER_SAFE_34_TOP,
+  COVER_SAFE_34_BOTTOM,
+} from './coverFrame';
 
-const ACCENT = '#5ED8FF';
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
 
 const KICKER: Record<string, string> = {
@@ -21,7 +33,7 @@ const KICKER: Record<string, string> = {
 };
 
 export type TechCoverProps = {
-  /** 底图（相对 renderer/public 的路径，由构建侧截帧后写入） */
+  /** 底图（相对 renderer/public 的路径；由 cover_compose 从无字素材/背景 loop 截出并裁好 3:4） */
   bg: string;
   main: string;
   sub?: string;
@@ -34,9 +46,11 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
   const portrait = (aspect ?? 'portrait') !== 'landscape';
   const kickerText = kicker || KICKER[theme || ''] || '科技速递';
   const insets = portrait
-    ? { left: 120, right: 120, bottom: 210 }
+    ? { left: COVER_PAD_X, right: COVER_PAD_X, bottom: 96 }
     : { left: 96, right: 96, bottom: 96 };
-  const mainSize = portrait ? 88 : 84;
+  const mainSize = portrait ? COVER_MAIN_SIZE : 84;
+  const subSize = portrait ? COVER_SUB_SIZE : 32;
+  const kickerSize = portrait ? COVER_KICKER_SIZE : 22;
 
   return (
     <AbsoluteFill style={{ background: '#04060a' }}>
@@ -51,8 +65,24 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
         }}
       />
 
-      <div style={{ position: 'absolute', left: insets.left, right: insets.right, bottom: insets.bottom }}>
-        <div style={{ fontFamily: FONT, fontSize: 22, letterSpacing: 8, color: ACCENT }}>{kickerText}</div>
+      <div
+        style={portrait
+          ? {
+              position: 'absolute', inset: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }
+          : { position: 'absolute', left: insets.left, right: insets.right, bottom: insets.bottom }}
+      >
+        <div
+          style={portrait
+            ? {
+                width: '100%', paddingLeft: insets.left, paddingRight: insets.right,
+                textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center',
+                transform: `translateY(${COVER_OFFSET_Y}px)`,
+              }
+            : undefined}
+        >
+        <div style={{ fontFamily: FONT, fontSize: kickerSize, letterSpacing: 8, color: ACCENT }}>{kickerText}</div>
 
         <div
           style={{
@@ -69,13 +99,15 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
         {sub ? (
           <div
             style={{
-              marginTop: 20, fontFamily: FONT, fontSize: 32, lineHeight: 1.5, color: '#E4EEF7',
+              marginTop: 20, fontFamily: FONT, fontSize: subSize, lineHeight: 1.5, color: '#E4EEF7',
               textShadow: '0 4px 22px rgba(0,0,0,0.9)',
+              maxWidth: 900, whiteSpace: 'pre-wrap',
             }}
           >
             {sub}
           </div>
         ) : null}
+        </div>
       </div>
     </AbsoluteFill>
   );

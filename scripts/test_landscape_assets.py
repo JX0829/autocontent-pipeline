@@ -96,6 +96,18 @@ def main() -> int:
     check("T8 深拷贝：改横版 props 不回流竖版",
           deep == deep_before, str(deep["scenes"]))
 
+    # T9（2026-11-19）：mid/end 也要换横版副本，否则幕间/片尾插的是竖版片段被硬裁
+    base9 = {"assets": {
+        "bg": "assets/tech/video/bg/bg_server_aisle_v1.mp4",
+        "mid": "assets/tech/video/mid/mid_iris_v1.mp4",
+        "end": "assets/tech/video/end/end_wafer_dim_v1.mp4",
+    }}
+    out9, _rep9 = with_landscape_assets(base9)
+    check("T9 mid/end 换横版副本",
+          out9["assets"].get("mid", "").endswith("_landscape.mp4")
+          and out9["assets"].get("end", "").endswith("_landscape.mp4"),
+          f"mid={out9['assets'].get('mid')} end={out9['assets'].get('end')}")
+
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     for name, ok, detail in RESULTS:
         print(f"  {'✅' if ok else '❌'} {name}" + (f"  [{detail}]" if detail and not ok else ""))

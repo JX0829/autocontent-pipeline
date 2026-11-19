@@ -7,6 +7,7 @@ import {
   Sequence,
   staticFile,
   useCurrentFrame,
+  useVideoConfig,
   Easing,
 } from 'remotion';
 import TL from './tech_scene_timeline.json';
@@ -34,6 +35,20 @@ const ACCENT = '#5ED8FF';
 const FONT = "'PingFang SC','Hiragino Sans GB','Helvetica Neue',sans-serif";
 const PAD_FRAMES = 14; // 段落尾部留白（与 build 侧 PAD 一致，用于口播避让判断）
 
+/**
+ * 左右安全边距（2026-11-18）
+ *
+ * 竖版 1080 宽：抖音信息流会把左右各裁掉约 9%，原来的 88/70 被裁完就贴边了
+ * （用户原话「视频号有边距、抖音没有」——同一条视频，抖音把留白裁没了）。
+ * 折中定 100（9.3%）：裁 9% 后还剩约 3px 缓冲，视觉上比 88 明显宽松，又不至于
+ * 把正文压得太窄。抖音和视频号都吃竖版，一处改两平台生效。
+ * 横版 1920 宽维持 88 不变，避免无谓改动影响 B站。
+ */
+const SAFE_X_VERTICAL = 100;
+const SAFE_X_LANDSCAPE = 88;
+const useSafeX = (): number =>
+  (useVideoConfig().width >= 1600 ? SAFE_X_LANDSCAPE : SAFE_X_VERTICAL);
+
 type SceneLike = {
   index: number;
   narration: string;
@@ -56,7 +71,11 @@ export type TechProps = {
   bgm_duck_volume?: number;
   assets?: { open?: string | null; bg?: string; open_start_from?: number;
     /** asset=用素材帧做封面（默认）；typographic=纯排版卡片封面（无实拍画面，R5 回退） */
-    cover_mode?: 'none' | 'asset' | 'typographic' };
+    cover_mode?: 'none' | 'asset' | 'typographic';
+    /** 幕间转场片段（每个场景交界插 0.5s 全屏覆盖，不改时间轴，2026-11-18） */
+    mid?: string | null;
+    /** 片尾收尾片段（最后 1.2s 全屏覆盖，不改时间轴，2026-11-18） */
+    end?: string | null };
   scenes?: Array<{
     scene_index: number;
     segment_narration: string;
@@ -92,6 +111,8 @@ const normalize = (props: TechProps) => {
       openStart: props.assets?.open_start_from ?? 40,
       coverMode: props.assets?.cover_mode ?? 'none',
       bg: props.assets?.bg || DEFAULTS.bg,
+      mid: props.assets?.mid ?? null,
+      end: props.assets?.end ?? null,
       bgm: props.bgm_src || '',
       bgmVolume: props.bgm_volume ?? 0.22,
       bgmDuck: props.bgm_duck_volume ?? 0.12,
@@ -135,6 +156,7 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
   title, subtitle, kicker, take,
 }) => {
   const frame = useCurrentFrame();
+  const safeX = useSafeX();
   const t = (a: number, b: number) =>
     interpolate(frame, [a, b], [0, 1], { easing: Easing.out(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const lineW = interpolate(frame, [40, 74], [0, 150], {
@@ -142,7 +164,7 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
   });
 
   return (
-    <div style={{ position: 'absolute', left: 120, right: 120, top: 190 }}>
+    <div style={{ position: 'absolute', left: safeX, right: safeX, top: 190 }}>
       <div style={{ fontFamily: FONT, fontSize: 24, letterSpacing: 8, color: ACCENT, opacity: t(8, 30) }}>
         {kicker}
       </div>
@@ -193,11 +215,12 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
     easing: Easing.out(Easing.cubic), extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
   const no = String(scene.index).padStart(2, '0');
+  const safeX = useSafeX();
 
   return (
     <div
       style={{
-        position: 'absolute', left: 120, right: 120, top: 200,
+        position: 'absolute', left: safeX, right: safeX, top: 200,
         display: 'flex', alignItems: 'flex-start', gap: 26, opacity: t,
         transform: `translateY(${interpolate(t, [0, 1], [18, 0])}px)`,
       }}
@@ -235,6 +258,7 @@ const SceneTag: React.FC<{ scene: SceneLike }> = ({ scene }) => {
 /* ── 底部字幕 ── */
 const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   const frame = useCurrentFrame();
+  const safeX = useSafeX();
   const fadeIn = interpolate(frame, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const fadeOut = interpolate(frame, [scene.frames - 10, scene.frames], [1, 0], {
     extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
@@ -242,7 +266,7 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: 120, right: 120, bottom: 168,
+        position: 'absolute', left: safeX, right: safeX, bottom: 168,
         display: 'flex', justifyContent: 'center', opacity: fadeIn * fadeOut,
       }}
     >
@@ -265,6 +289,36 @@ const Subtitles: React.FC<{ scene: SceneLike }> = ({ scene }) => {
   );
 };
 
+/* ── 幕间/片尾覆盖片段（2026-11-18）─────────────────────────────────────────
+   只做**覆盖**，不移动时间轴：口播、BGM、字幕、进度条全部按原帧号走，
+   所以插入转场不会让口播脱轨（这是最容易被改坏的地方）。
+   淡入 6 帧 / 淡出 6 帧，中间保持不透明；muted，不抢口播。 */
+const MID_FRAMES = 15;      // 0.5s @30fps
+const MID_LEAD_FRAMES = 8;  // 场景切换前 8 帧开始压
+const END_FRAMES = 36;      // 1.2s @30fps
+
+const OverlayClip: React.FC<{ src: string; frames: number; startFrom?: number }> = ({
+  src, frames, startFrom = 0,
+}) => {
+  const f = useCurrentFrame();
+  const fade = Math.min(6, Math.max(1, Math.floor(frames / 3)));
+  const opacity = Math.min(
+    interpolate(f, [0, fade], [0, 1], { extrapolateRight: 'clamp' }),
+    interpolate(f, [frames - fade, frames], [1, 0], { extrapolateLeft: 'clamp' }),
+  );
+  return (
+    <AbsoluteFill style={{ opacity, background: '#04060a' }}>
+      <OffthreadVideo
+        src={staticFile(src)}
+        startFrom={startFrom}
+        muted
+        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+      />
+      <AbsoluteFill style={{ background: 'rgba(3,5,9,0.28)' }} />
+    </AbsoluteFill>
+  );
+};
+
 const Progress: React.FC<{ total: number }> = ({ total }) => {
   const frame = useCurrentFrame();
   return (
@@ -275,6 +329,7 @@ const Progress: React.FC<{ total: number }> = ({ total }) => {
 };
 
 export const TechStoryVideo: React.FC<TechProps> = (props) => {
+  const safeX2 = useSafeX();
   const cfg = normalize(props);
   const first = cfg.scenes[0];
   const bodyStart = first ? first.frames : 0;
@@ -346,11 +401,30 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
         </Sequence>
       ))}
 
+      {/* 幕间转场（0.5s 全屏覆盖，不改时间轴）：每个非首场景交界处压一段素材 */}
+      {cfg.mid
+        ? cfg.scenes.slice(1).map((s, i) => {
+            const from = Math.max(0, s.start - MID_LEAD_FRAMES);
+            return (
+              <Sequence key={`mid-${i}`} from={from} durationInFrames={MID_FRAMES}>
+                <OverlayClip src={cfg.mid as string} frames={MID_FRAMES} />
+              </Sequence>
+            );
+          })
+        : null}
+
+      {/* 片尾收尾（1.2s 全屏覆盖，不改时间轴） */}
+      {cfg.end ? (
+        <Sequence from={Math.max(0, cfg.total - END_FRAMES)} durationInFrames={END_FRAMES}>
+          <OverlayClip src={cfg.end} frames={END_FRAMES} startFrom={8} />
+        </Sequence>
+      ) : null}
+
       <Progress total={cfg.total} />
 
       <div
         style={{
-          position: 'absolute', left: 120, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', left: safeX2, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >
@@ -358,7 +432,7 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
       </div>
       <div
         style={{
-          position: 'absolute', right: 120, top: 104, fontFamily: FONT, fontSize: 18,
+          position: 'absolute', right: 88, top: 104, fontFamily: FONT, fontSize: 18,
           letterSpacing: 3, color: 'rgba(255,255,255,0.42)',
         }}
       >

@@ -101,6 +101,10 @@ class Selection:
     open: Optional[AssetChoice]
     bg: AssetChoice
     bgm: Optional[AssetChoice]
+    #: 幕间转场片段（2026-11-18）：场景交界处插 0.5s 全屏覆盖，不改时间轴
+    mid: Optional[AssetChoice] = None
+    #: 片尾收尾片段（2026-11-18）：最后 1.2s 全屏覆盖，不改时间轴
+    end: Optional[AssetChoice] = None
     volume: float = 0.22
     duck_volume: float = 0.12
     rejected: list[str] = field(default_factory=list)
@@ -123,6 +127,8 @@ class Selection:
                 "bg": self.bg.src,
                 "open_start_from": (self.open.extra.get("start_from") if self.open else 0) or 0,
                 "cover_mode": self.cover_mode,
+                "mid": self.mid.src if self.mid else None,
+                "end": self.end.src if self.end else None,
             },
             "bgm_src": self.bgm.src if self.bgm else "",
             "bgm_volume": self.volume,
@@ -166,7 +172,9 @@ def with_landscape_assets(props: dict[str, Any],
     lp = copy.deepcopy(props)
     assets = lp.get("assets") or {}
     report: dict[str, Any] = {"aspect": "landscape", "used": {}, "fallback": []}
-    for slot in ("open", "bg"):
+    # 2026-11-19：mid/end 也要换横版副本，否则横版会在幕间/片尾插入竖版素材，
+    # 被 objectFit=cover 硬裁成 16:9（画面主体被切掉）。竖版没有副本时保留原片并记 fallback。
+    for slot in ("open", "bg", "mid", "end"):
         cur = assets.get(slot)
         if not cur:
             continue
@@ -230,10 +238,18 @@ class AssetManager:
         except Exception:
             return {"picks": []}
 
-    def recent_ids(self, window: int, slot: str) -> set[str]:
+    def recent_ids(self, window: int, slot: str, exclude_run_id: str | None = None) -> set[str]:
+        """最近 window 条成片用过的该槽位素材。
+
+        `exclude_run_id`：重选同一个 run（幂等重渲）时必须排除自己的历史记录，
+        否则第一次选的素材会被自己"挤掉"，同物料重渲选到不同素材（2026-11-18 实测踩到，
+        直接违反"同 run_id 可复现"）。
+        """
         hist = self._load_history()
+        recs = [r for r in hist.get("picks", [])
+                if not (exclude_run_id and r.get("run_id") == exclude_run_id)]
         ids: set[str] = set()
-        for rec in hist.get("picks", [])[-window:]:
+        for rec in recs[-window:]:
             for s, v in (rec.get("by_slot") or {}).items():
                 if s == slot and v:
                     ids.add(v)
@@ -257,12 +273,20 @@ class AssetManager:
             warnings.append(f"素材位 {slot} 无素材，已跳过")
             return None
 
-        # 优先用衍生版（如 _loop 无缝循环）
+        # 衍生版（如 _loop 无缝循环）语义（2026-11-18 修两次）：
+        #   · 旧实现把候选池缩成「带 _loop 的素材」→ 只有 circuit 一族有 loop ⇒ 12/12 全是 circuit。
+        #   · 中间实现「先随机再同族升级」→ circuit 一族有 3 条副本(v1/v1_loop/v2)，概率被放大到 44%。
+        #   · 现实现：**按 family 去重**后再随机（每族只留一个代表，有衍生版就用衍生版）
+        #     ⇒ 随机单位是「视觉族」而不是「文件」，抽到的族天然不重复。
         prefer = slot_cfg.get("prefer_derived")
         if prefer:
-            derived = [a for a in pool if prefer in str(a.get("id", ""))]
-            if derived:
-                pool = derived
+            fam_pool: dict[str, dict] = {}
+            for a in pool:
+                fam = str(a.get("family") or a["id"])
+                cur = fam_pool.get(fam)
+                if cur is None or (prefer in str(a.get("id", "")) and prefer not in str(cur.get("id", ""))):
+                    fam_pool[fam] = a
+            pool = list(fam_pool.values())
 
         fresh = [a for a in pool if a["id"] not in recent]
         if not fresh:
@@ -320,23 +344,25 @@ class AssetManager:
             else:
                 # 池里没有任何本档素材 → R5：不借用别的档位凑封面
                 warnings.append(f"{NO_MATCHING_ASSET_FALLBACK}: 素材池无「{domain}」档（现有: "
-                                f"{sorted({asset_domain(a) or '未标注' for a in assets})}）")
-                by_domain["open"] = []
+                                f"{sorted({asset_domain(a) or '未标注' for a in assets})}）"
+                                f" → 按全池随机（2026-11-18 放宽，不再留空）")
+                by_domain["open"] = assets
                 cover_mode = "none"
         else:
-            warnings.append(f"{NO_DOMAIN_SIGNAL}: 选题判不出语义档位，封面回退纯排版")
-            by_domain["open"] = []
+            warnings.append(f"{NO_DOMAIN_SIGNAL}: 选题判不出语义档位，封面回退纯排版"
+                            f" → 开场素材按全池随机")
+            by_domain["open"] = assets
             cover_mode = "none"
 
         picked: dict[str, Optional[AssetChoice]] = {}
-        for slot in ("open", "bg", "bgm"):
+        for slot in ("open", "bg", "bgm", "mid", "end"):
             cfg = slots.get(slot) or {}
             window = int(cfg.get("no_repeat_window", 0))
             pool_size = len([a for a in assets if a.get("slot") == slot])
             if window and pool_size:
                 # 永远至少留一个新鲜素材可选，避免池子小的时候每轮都告警
                 window = min(window, max(0, pool_size - 1))
-            recent = self.recent_ids(window, slot) if window else set()
+            recent = self.recent_ids(window, slot, exclude_run_id=run_id) if window else set()
             # R3：物料显式锁定优先（按 id 精确命中，命中不到就报错，不静默换）
             want_id = locked.get(slot)
             if want_id:
@@ -365,6 +391,7 @@ class AssetManager:
         sel = Selection(
             library=name, seed=_seed_of(run_id),
             open=picked["open"], bg=picked["bg"], bgm=picked["bgm"],
+            mid=picked.get("mid"), end=picked.get("end"),
             volume=float(bgm_cfg.get("volume", 0.22)),
             duck_volume=float(bgm_cfg.get("duck_volume", 0.12)),
             rejected=sorted(set(rejected)), warnings=warnings,
