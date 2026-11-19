@@ -757,8 +757,46 @@ class DouyinProvider(BaseSocialProvider):
                                 "message": ("点发布前自证不通过（标题/正文读回为空或不符），"
                                             "拒绝发布，避免产出空标题作品")}
 
+                    # P0-1（SPEC-20261119 R1~R4）：点「发布」前先关掉遮挡弹层。
+                    # 真机踩坑：semi-modal-wrap 盖住按钮 → Playwright 报 subtree intercepts
+                    # pointer events → 30s 超时 EXIT=64；老脚本能发是因为点之前先处理了弹层。
+                    _blk = douyin_form.dismiss_blockers(page, log_obj=logger)
+                    if _blk["action"] != "none":
+                        logger.info(f"PRE_PUBLISH_BLOCKERS: {_blk['action']} "
+                                    f"cls={_blk['class'][:60]!r} by={_blk['closed_by']!r}")
+
                     logger.info("Clicking publish button for private video...")
-                    publish_btn.click()
+                    try:
+                        publish_btn.click(timeout=8000)
+                    except Exception as click_exc:  # noqa: BLE001 — 遮挡/重渲染都可能造成点不中
+                        obs = douyin_form.describe_obstruction(page)
+                        logger.error(f"PUBLISH_CLICK_BLOCKED: {type(click_exc).__name__} | "
+                                     f"挡住的元素 class={obs.get('class')!r} "
+                                     f"text={obs.get('text')!r}")
+                        _blk2 = douyin_form.dismiss_blockers(page, log_obj=logger)
+                        logger.info(f"PUBLISH_CLICK_RETRY: 关层结果 {_blk2['action']} "
+                                    f"cls={_blk2['class'][:60]!r}")
+                        try:
+                            publish_btn.click(timeout=8000)
+                            logger.info("PUBLISH_CLICK_RETRY_OK")
+                        except Exception as retry_exc:  # noqa: BLE001
+                            obs2 = douyin_form.describe_obstruction(page)
+                            logger.error(f"PUBLISH_CLICK_FAILED_TWICE: {type(retry_exc).__name__} | "
+                                         f"class={obs2.get('class')!r} text={obs2.get('text')!r}")
+                            diag = Path("output/douyin_diag")
+                            diag.mkdir(parents=True, exist_ok=True)
+                            try:
+                                page.screenshot(path=str(diag / f"publish_blocked_{int(time.time())}.png"),
+                                                full_page=True)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            browser.close()
+                            return {"success": False, "published": False,
+                                    "error": "PUBLISH_BUTTON_BLOCKED",
+                                    "obstruction": obs2,
+                                    "message": ("点「发布」被遮挡且重试仍失败："
+                                                f"class={obs2.get('class')!r} "
+                                                f"text={obs2.get('text')!r}")}
 
                     # 等待发布完成：只认「发布成功」提示或真实跳转，最长 90 秒
                     logger.info("Waiting for publish completion signal...")
@@ -822,6 +860,19 @@ class DouyinProvider(BaseSocialProvider):
                             "signal": signal,
                             "message": ("作品已在内容管理列表出现（按正文命中），但标题未落上："
                                         "有作品无标题，按 unverified 记账，需人工到平台补标题")
+                        }
+                    if not verified.get("draft_id"):
+                        # R6：作品确实在列表里，但没有真实 ID → 只能 unverified，不能算 published
+                        return {
+                            "success": False,
+                            "published": True,
+                            "status": "PUBLISHED_NO_ID",
+                            "error": "POST_ID_UNAVAILABLE",
+                            "post_id": "",
+                            "signal": signal,
+                            "id_source": verified.get("id_source") or "unavailable",
+                            "message": ("作品已在内容管理列表出现，但拿不到真实 aweme_id："
+                                        "台账按 unverified 记账（禁止写 readback_<时间戳> 充数）"),
                         }
                     return {
                         "success": True,
@@ -888,6 +939,69 @@ class DouyinProvider(BaseSocialProvider):
                     "traceback_tail": tb_tail, "debug_dir": dbg,
                     "message": f"保存抖音草稿异常（{type(e).__name__}），现场：{dbg or '落盘失败'}"}
 
+    # ── P0-2（SPEC-20261119 R5/R6）：成功凭证必须是**真实作品 ID** ──────────────
+    # 旧实现 `rid = f"readback_{int(time.time())}"` 把发布时刻当 draft_id 写进 publish.json，
+    # 台账记 published 但平台上根本没有这条作品（受害样本 denoise-nostore-1：63→63）。
+    # 现在只认三种来源，拿不到就返回 None，由调用方记 unverified + 原因：
+    #   ① 管理页作品卡片上的 /video/<id> 链接（最常见）
+    #   ② 卡片元素的 data-id / data-aweme-id 属性
+    #   ③ 创作者中心内部接口（浏览器上下文内 fetch，带登录态）
+    AWEME_ID_JS = r"""(title) => {
+      const norm = s => (s || '').replace(/\s+/g, '');
+      const want = norm(title);
+      const out = [];
+      const push = (id, txt, src) => {
+        if (id && /^\d{6,}$/.test(String(id))) out.push({id: String(id), text: (txt || '').slice(0, 80), src});
+      };
+      for (const a of document.querySelectorAll('a[href*="/video/"]')) {
+        const m = (a.getAttribute('href') || '').match(/\/video\/(\d{6,})/);
+        if (m) push(m[1], (a.closest('li,div') || a).innerText, 'href');
+      }
+      for (const el of document.querySelectorAll('[data-id], [data-aweme-id], [data-item-id]')) {
+        const id = el.getAttribute('data-aweme-id') || el.getAttribute('data-item-id') || el.getAttribute('data-id');
+        push(id, el.innerText, 'data-attr');
+      }
+      const hit = want ? out.find(o => norm(o.text).includes(want)) : out[0];
+      return {candidates: out.slice(0, 5), matched: hit || null};
+    }"""
+
+    def _extract_aweme_id(self, page, title: str) -> dict:
+        """返回 {"id": str|None, "source": str, "candidates": [...]}；拿不到 id 就是 None。"""
+        title = (title or "").strip()
+        # ①/② DOM
+        try:
+            got = page.evaluate(self.AWEME_ID_JS, title) or {}
+            if got.get("matched"):
+                return {"id": got["matched"]["id"], "source": f"dom:{got['matched']['src']}",
+                        "candidates": got.get("candidates") or []}
+            cands = got.get("candidates") or []
+            if len(cands) == 1:
+                return {"id": cands[0]["id"], "source": f"dom-only-1:{cands[0]['src']}",
+                        "candidates": cands}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"AWEME_ID_DOM_FAILED: {type(exc).__name__}: {exc}")
+
+        # ③ 创作者中心内部接口（带浏览器登录态）
+        for url in ("https://creator.douyin.com/web/api/media/aweme/post/?count=20&cursor=0",
+                    "https://creator.douyin.com/janus/douyin/creator/pc/work_list?count=20&cursor=0"):
+            try:
+                resp = page.request.get(url, timeout=15000)
+                if not resp.ok:
+                    continue
+                data = resp.json()
+                items = (data.get("aweme_list") or data.get("item_list")
+                         or (data.get("data") or {}).get("aweme_list") or [])
+                for it in items:
+                    desc = (it.get("desc") or it.get("title") or "")
+                    aid = it.get("aweme_id") or it.get("item_id") or it.get("id")
+                    if aid and (not title or title[:14] in desc):
+                        _ep = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1] or "list"
+                        return {"id": str(aid), "source": f"api:{_ep}",
+                                "candidates": []}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"AWEME_ID_API_MISS: {url} {type(exc).__name__}")
+        return {"id": None, "source": "unavailable", "candidates": []}
+
     def _verify_published(self, title: str, wait_sec: int = 45,
                           fallback_text: str = "") -> Dict[str, Any]:
         """权威回读：打开内容管理列表，确认标题真实出现（唯一成功判据）。
@@ -953,14 +1067,20 @@ class DouyinProvider(BaseSocialProvider):
                         page.mouse.wheel(0, 3000)
                         page.wait_for_timeout(700)
                     txt = page.inner_text("body")
-                    browser.close()
                     last_count = txt.count("作品")
-                    rid = f"readback_{int(time.time())}"
                     found, title_ok, matched = self._match_readback(txt, key, fb)
                     if found:
-                        return {"found": True, "draft_id": rid,
+                        # R5/R6：成功凭证只认平台真实 aweme_id，绝不拿时间戳充数
+                        idg = self._extract_aweme_id(page, title or key)
+                        browser.close()
+                        if not idg.get("id"):
+                            logger.error(f"POST_ID_UNAVAILABLE: 回读命中但拿不到真实作品 ID "
+                                         f"source={idg.get('source')} candidates={idg.get('candidates')}")
+                        return {"found": True, "draft_id": idg.get("id"),
+                                "id_source": idg.get("source"),
                                 "title": key if title_ok else "",
                                 "title_ok": title_ok, "matched": matched}
+                    browser.close()
             except Exception as e:
                 logger.warning(f"read-back attempt failed: {e}")
             time.sleep(8)

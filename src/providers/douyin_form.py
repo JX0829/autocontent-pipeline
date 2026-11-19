@@ -567,6 +567,120 @@ def assert_form_ready(page, title: str, caption: str) -> tuple[bool, dict]:
 
 # ── 封面（SPEC-20261118 R1~R3）───────────────────────────────────────────────
 COVER_ENTRY_TEXTS = ("选择封面", "编辑封面", "更换封面", "设置封面", "上传封面")
+# ── P0-1（SPEC-20261119 R1~R4）：点「发布」前的遮挡弹层处理 ────────────────────
+# 真机现象：runner 路径点「发布」被 `<div role="modal" class="semi-modal-wrap">` 挡着，
+# Playwright 报 "subtree intercepts pointer events" → 30s 超时 → EXIT=64；
+# 同一时刻老脚本 `scripts/publish_douyin_cdp.py --force` 却能发出去，差别就在它点之前
+# 会先处理「上次未发布」这类弹层。这里把同一套策略搬过来（R4：不另写一套），
+# 并把白名单文案扩到上传页最常见的三个提示层（R1）。
+BLOCKER_WHITELIST = ("章节要点", "封面建议", "画质提示", "智能生成章节")
+BLOCKER_CLOSE_TEXTS = ("关闭", "知道了", "取消", "以后再说", "暂不需要", "不用了", "放弃")
+BLOCKER_SELECTORS = (
+    'div[role="modal"], div[class*="semi-modal-wrap"]',
+    'div[class*="semi-portal"]',
+    'div[class*="modal-wrap"]',
+    'div[class*="tooltip"]',
+)
+
+
+def _visible_overlays(page) -> list:
+    """当前真正挡住页面的遮罩层（可见 + 有内容），返回 [{cls, text, whitelisted}]。"""
+    out = []
+    for sel in BLOCKER_SELECTORS:
+        try:
+            loc = page.locator(sel)
+            for i in range(min(loc.count(), 8)):
+                el = loc.nth(i)
+                try:
+                    if not el.is_visible():
+                        continue
+                    txt = (el.inner_text() or "").strip()
+                except Exception:  # noqa: BLE001
+                    continue
+                if not txt:
+                    continue
+                try:
+                    cls = el.get_attribute("class") or ""
+                except Exception:  # noqa: BLE001
+                    cls = ""
+                out.append({"cls": cls, "text": txt,
+                            "whitelisted": any(w in txt for w in BLOCKER_WHITELIST)})
+        except Exception:  # noqa: BLE001 — 选择器在该版本页面不存在，跳过
+            continue
+    return out
+
+
+def dismiss_blockers(page, log_obj=None, *, rounds: int = 3) -> dict:
+    """关掉挡住「发布」按钮的提示层。**幂等**：没有遮挡就零操作、不报错（R2）。
+
+    返回 {"action": "none"|"dismissed"|"escape"|"blocked",
+          "class": str, "text": str, "closed_by": str}
+    - 白名单文案（章节要点/封面建议/画质提示）→ 点关闭类按钮，点不到按 Esc
+    - 非白名单遮挡 → 不动它，返回 blocked 并把 class/innerText 带出去（R3）
+    """
+    log = log_obj
+    found = _visible_overlays(page)
+    if not found:
+        return {"action": "none", "class": "", "text": "", "closed_by": ""}
+
+    target = next((o for o in found if o["whitelisted"]), None)
+    if target is None:
+        # 不认识的遮挡层不要乱点（可能是登录/验证码/风控），交给上层打日志判红
+        return {"action": "blocked", "class": target_cls(found[0]),
+                "text": found[0]["text"][:120], "closed_by": ""}
+
+    for _ in range(max(1, rounds)):
+        closed_by = ""
+        for text in BLOCKER_CLOSE_TEXTS:
+            for sel in (f'button:has-text("{text}")', f'div[role="button"]:has-text("{text}")',
+                        f'span:has-text("{text}")'):
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() and btn.is_visible():
+                        btn.click(timeout=2500)
+                        closed_by = sel
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if closed_by:
+                break
+        if not closed_by:
+            try:
+                page.keyboard.press("Escape")
+                closed_by = "Escape"
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            page.wait_for_timeout(600)
+        except Exception:  # noqa: BLE001
+            pass
+        remain = [o for o in _visible_overlays(page) if o["whitelisted"]]
+        if log:
+            log.info(f"[douyin] 关闭遮挡层（{closed_by or '无按钮'}），剩余白名单遮挡 {len(remain)} 个")
+        if not remain:
+            action = "dismissed" if closed_by and closed_by != "Escape" else "escape"
+            return {"action": action, "class": target["cls"], "text": target["text"][:120],
+                    "closed_by": closed_by}
+    return {"action": "blocked", "class": target["cls"], "text": target["text"][:120],
+            "closed_by": ""}
+
+
+def target_cls(overlay: dict) -> str:
+    """取最像「真正挡住点击」的那个 class（semi-modal-wrap 优先）。"""
+    cls = overlay.get("cls") or ""
+    parts = [c for c in cls.split() if "modal" in c or "portal" in c or "wrap" in c]
+    return (parts[0] if parts else cls)[:80]
+
+
+def describe_obstruction(page) -> dict:
+    """点不中时给出遮挡元素信息（R3）：class + innerText 前 120 字。"""
+    found = _visible_overlays(page)
+    if not found:
+        return {"class": "", "text": "", "found": False}
+    o = found[0]
+    return {"class": o["cls"][:120], "text": o["text"][:120], "found": True}
+
+
 COVER_DONE_TEXTS = ("确定", "完成", "确认", "保存")
 
 
@@ -585,6 +699,190 @@ def _dh_window(png_path) -> list:
 
 def _dh_dist(a, b) -> int:
     return sum(1 for x, y in zip(a, b) if x != y)
+
+
+
+# ── 存草稿：定位 / 等上传 / 点击 / 二次确认 / 自证（2026-11-19 P0）─────────────
+DRAFT_BTN_TEXTS = ("暂存离开", "存草稿", "保存草稿", "草稿箱")
+
+_DRAFT_BTN_JS = """() => {
+  const T = %s;
+  const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+  const all = [...document.querySelectorAll('button,[role=button],a,div,span')]
+    .filter(vis)
+    .map(e => {
+      const t = (e.innerText || '').trim();
+      return {tag: e.tagName, text: t, disabled: !!e.disabled
+                || e.getAttribute('aria-disabled') === 'true'
+                || /disabled/.test(e.className || ''),
+              cls: String(e.className || '').slice(0, 60)};
+    })
+    .filter(o => o.text && o.text.length <= 12 && T.some(k => o.text.includes(k)));
+  return all;
+}"""
+
+
+def _draft_buttons(page) -> list:
+    import json as _json
+    try:
+        return page.evaluate(_DRAFT_BTN_JS % _json.dumps(list(DRAFT_BTN_TEXTS))) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def save_as_draft(page, log_obj=None, *, wait_upload_sec: int = 180, click_sec: int = 8000) -> dict:
+    """点「暂存离开/存草稿」并自证。
+
+    2026-11-19 P0：三次重试都卡在「保存草稿 click 30s 超时」。真因通常是按钮在
+    **视频上传完成前是 disabled**（或被子层浮层遮住）——Playwright 的 click 会一直
+    等到超时都不知道为什么。这里改成：
+      1. 先等上传完成（轮询页面进度文案），日志打印进度；
+      2. JS 精确找到**可点且未 disabled** 的草稿按钮，附带 disabled 状态；
+      3. 点击优先 playwright（8s），失败退 `scroll_into_view` + JS `el.click()`；
+      4. 出现二次确认（暂存离开/保存/确定）就点掉；
+      5. 自证：URL 变化 或 出现「草稿/已保存」提示；
+      6. 全程失败 → 现场落盘（buttons/screenshot/html），返回 DRAFT_SAVE_FAILED。
+    """
+    log = log_obj or logger
+    import time as _time
+
+    deadline = _time.time() + max(30, wait_upload_sec)
+    progress = ""
+    # ① 等上传完成
+    while _time.time() < deadline:
+        try:
+            body = page.inner_text("body")
+        except Exception:  # noqa: BLE001
+            body = ""
+        progress = next((t for t in ("上传成功", "上传完成", "重新上传", "封面已上传",
+                                     "上传中", "正在上传", "处理中") if t in body), "")
+        if progress in ("上传成功", "上传完成", "重新上传", "封面已上传"):
+            log.info(f"[douyin] 视频上传完成（页面提示：{progress}）")
+            break
+        btns = _draft_buttons(page)
+        enabled = [b for b in btns if not b["disabled"]]
+        if enabled:
+            log.info(f"[douyin] 草稿按钮已可用（{enabled[0]['text']}），上传提示={progress or '无'}")
+            break
+        page.wait_for_timeout(2000)
+    else:
+        log.warning(f"[douyin] 等上传/按钮可用超时（{wait_upload_sec}s），当前提示={progress or '无'}")
+
+    # ② 定位按钮
+    btns = _draft_buttons(page)
+    if not btns:
+        return _draft_fail(page, log, "DRAFT_BUTTON_NOT_FOUND",
+                           f"没找到草稿按钮（页面提示={progress or '无'}）")
+
+    target = None
+    for b in btns:
+        if not b["disabled"] and b["text"] in ("暂存离开", "存草稿", "保存草稿"):
+            target = b
+            break
+    if target is None:
+        target = next((b for b in btns if not b["disabled"]), None)
+    if target is None:
+        return _draft_fail(page, log, "DRAFT_BUTTON_DISABLED",
+                           f"草稿按钮存在但一直 disabled（上传提示={progress or '无'}）：{btns[:4]}")
+
+    log.info(f"[douyin] 点击草稿按钮「{target['text']}」（{target['tag']}）")
+    clicked = False
+    try:
+        rs = page.evaluate(
+            """(txt) => {
+              const T = txt;
+              const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+              const cands = [...document.querySelectorAll('button,[role=button],a,div,span')]
+                .filter(vis).filter(e => {
+                  const t = (e.innerText || '').trim();
+                  return t === T;
+                });
+              if (!cands.length) return false;
+              const el = cands[cands.length - 1];
+              el.scrollIntoView({block: 'center'});
+              el.click();
+              return true;
+            }""",
+            target["text"],
+        )
+        clicked = bool(rs)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[douyin] JS 点击草稿按钮异常：{type(exc).__name__}: {exc}")
+
+    if not clicked:
+        try:
+            loc = page.get_by_text(target["text"], exact=True).last
+            loc.scroll_into_view_if_needed(timeout=5000)
+            loc.click(timeout=click_sec)
+            clicked = True
+        except Exception as exc:  # noqa: BLE001
+            return _draft_fail(page, log, "DRAFT_CLICK_TIMEOUT",
+                               f"点击「{target['text']}」失败（{click_sec}ms）：{type(exc).__name__}: {exc}")
+
+    # ③ 二次确认
+    page.wait_for_timeout(1500)
+    confirmed = False
+    try:
+        confirmed = bool(page.evaluate(
+            """() => {
+              const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+              const btns = [...document.querySelectorAll('button,[role=button]')].filter(vis);
+              const ok = btns.find(b => /^(暂存离开|保存草稿|确定|确认|保存)$/
+                        .test((b.innerText || '').trim()));
+              if (!ok) return false;
+              ok.click();
+              return true;
+            }"""))
+    except Exception:  # noqa: BLE001
+        confirmed = False
+    if confirmed:
+        log.info("[douyin] 已确认草稿弹窗")
+
+    # ④ 自证
+    for _ in range(10):
+        page.wait_for_timeout(1000)
+        try:
+            url = page.url
+            body = page.inner_text("body")
+        except Exception:  # noqa: BLE001
+            url, body = "", ""
+        if "content/manage" in url or "content/upload" not in url:
+            log.info(f"[douyin] 草稿已保存（URL 跳转 {url}）")
+            return {"ok": True, "detail": f"URL 跳转 {url}", "button": target["text"],
+                    "confirmed": confirmed, "upload_hint": progress}
+        if any(t in body for t in ("草稿保存成功", "已保存至草稿", "保存成功", "已存入草稿")):
+            log.info("[douyin] 草稿已保存（页面提示命中）")
+            return {"ok": True, "detail": "页面提示命中", "button": target["text"],
+                    "confirmed": confirmed, "upload_hint": progress}
+    return _draft_fail(page, log, "DRAFT_SAVE_UNCONFIRMED",
+                       f"点了「{target['text']}」但 10s 内没有保存证据（提示={progress or '无'}）")
+
+
+def _draft_fail(page, log, code: str, detail: str) -> dict:
+    """草稿阶段的失败现场：按钮清单 + 截图 + HTML。"""
+    import time as _time
+
+    dbg = ""
+    try:
+        d = os.path.join("output", "douyin_diag", f"draft_btn_{int(_time.time())}")
+        os.makedirs(d, exist_ok=True)
+        try:
+            page.screenshot(path=os.path.join(d, "page.png"), full_page=True)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            with open(os.path.join(d, "page.html"), "w", encoding="utf-8") as fh:
+                fh.write(page.content())
+        except Exception:  # noqa: BLE001
+            pass
+        btn_dump = _draft_buttons(page)
+        with open(os.path.join(d, "buttons.json"), "w", encoding="utf-8") as fh:
+            json.dump(btn_dump, fh, ensure_ascii=False, indent=2)
+        dbg = d
+    except Exception:  # noqa: BLE001
+        dbg = ""
+    log.error(f"[douyin] {code}: {detail}｜现场={dbg or '落盘失败'}")
+    return {"ok": False, "code": code, "detail": detail, "debug_dir": dbg}
 
 
 def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> dict:

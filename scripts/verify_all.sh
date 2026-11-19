@@ -62,6 +62,7 @@ run "发布凭证回查"        "$PY" scripts/test_publish_evidence.py
 run "僵尸 RUNNING 收尸"   "$PY" scripts/test_stale_runs.py
 run "cron pin 巡检"       "$PY" scripts/audit_cron_pin.py
 run "封面回读中心84%"     "$PY" scripts/test_cover_center_hash.py
+run "抖音发布 P0"         "$PY" scripts/test_douyin_publish_p0.py
 
 if [ "$MODE" != "fast" ]; then
   run "GATE-1 声明层契约"   bash scripts/gate1.sh
