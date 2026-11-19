@@ -136,8 +136,12 @@ PRIVACY_TARGETS = {
          'xpath=//label[contains(., "仅自己可见") or contains(., "私密")]'],
     ),
     "public_publish": (
-        "公开可见",
-        ['label:has-text("公开可见")',
+        "公开",
+        # 2026-11-19 真机实测：现版上传页的选项文案就是「公开」（不是「公开可见」），
+        # 且**默认就是 checked=true** —— 老代码拿 "公开可见" 找不到，退到 xpath 兜底命中
+        # 「公开」后又硬点一次 → Playwright 等可点条件 30s 超时，整条抖音发布挂掉。
+        ['label:has-text("公开")',
+         'label:has-text("公开可见")',
          'label:has-text("所有人可见")',
          'xpath=//label[contains(., "公开") or contains(., "所有人可见")]'],
     ),
@@ -145,16 +149,75 @@ PRIVACY_TARGETS = {
 
 
 def select_privacy(page, mode: str) -> tuple[bool, str]:
-    """按 publish_mode 勾选可见性。返回 (是否成功, 失败原因)。"""
+    """按 publish_mode 勾选可见性。返回 (是否成功, 失败原因)。
+
+    2026-11-19 P0：public_publish 分支卡在「公开可见」单选
+      —— 元素本来就是 `checked=true`，代码还硬 click，Playwright 等可点条件等到 30s 超时，
+      整条抖音发布挂掉（三次重试全是这个）。修法：
+        1. **先读状态**：已选中直接返回成功，绝不重复点；
+        2. 未选中优先 JS `input.click()`（绕开浮层遮挡），再回读状态；
+        3. JS 无效才退 Playwright 点击（短超时 + force），最后再回读一次；
+        4. 仍不成功 → 返回具体原因（含当前 checked），不静默。
+    """
     spec = PRIVACY_TARGETS.get(mode)
     if spec is None:
         return False, f"未知 publish_mode={mode}"
     label_name, selectors = spec
+
     for sel in selectors:
         loc = page.locator(sel).first
-        if loc.count() > 0:
-            loc.click()
+        try:
+            if loc.count() == 0:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+
+        # ① 先读 checked —— **只认真实控件状态**，不猜 className。
+        #    （2026-11-19 实测教训：用 /checked|selected|active/ 猜 class 会把普通 label
+        #     误判成「已选中」→ 隐私设置假绿。隐私项假绿比报错严重得多，必须 fail-closed。）
+        def _state() -> bool | None:
+            """True=已选中 / False=确定未选中 / None=读不到（未知，按未选中处理）。"""
+            try:
+                v = loc.evaluate(
+                    """(el) => {
+                      const inp = el.querySelector && el.querySelector('input[type=radio],input[type=checkbox]');
+                      if (inp) return !!inp.checked;
+                      const aria = el.getAttribute('aria-checked');
+                      if (aria === 'true') return true;
+                      if (aria === 'false') return false;
+                      return null;
+                    }""")
+                return None if v is None else bool(v)
+            except Exception:  # noqa: BLE001
+                return None
+
+        if _state() is True:
             return True, ""
+
+        # ② JS 点击（不受遮挡影响；触发 React 的 onClick）
+        try:
+            loc.evaluate("""(el) => {
+              const inp = el.querySelector && el.querySelector('input[type=radio],input[type=checkbox]');
+              (inp || el).click();
+            }""")
+            page.wait_for_timeout(400)
+            if _state() is True:
+                return True, ""
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ③ Playwright 兜底（短超时 + force，避免又等 30s）
+        try:
+            loc.click(timeout=4000, force=True)
+            page.wait_for_timeout(400)
+            if _state() is True:
+                return True, ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[douyin] 点击「{label_name}」仍失败：{type(exc).__name__}: {exc}")
+
+        return False, (f"「{label_name}」点击后仍未被选中"
+                       f"（selector={sel}，checked={_state()}）")
+
     return False, f"mode={mode} 未找到「{label_name}」选项"
 
 
@@ -771,25 +834,23 @@ class DouyinProvider(BaseSocialProvider):
                     }
 
                 else:
-                    # 默认草稿模式
-                    save_draft_btn = page.locator('button:has-text("暂存离开"), button:has-text("存草稿"), button:has-text("保存草稿")').first
-                    if save_draft_btn.count() == 0:
-                        save_draft_btn = page.locator('xpath=//button[contains(., "暂存") or contains(., "草稿")]').first
-
-                    if save_draft_btn.count() == 0:
-                        logger.error("DRAFT_BUTTON_NOT_FOUND: Refusing to proceed to prevent accidental publish!")
-                        browser.close()
+                    # 默认草稿模式（2026-11-19 P0：三次重试都卡在 click 30s 超时）
+                    # 统一走 douyin_form.save_as_draft()：等上传完成 → 找可用按钮 →
+                    # JS/Playwright 双路点击 → 二次确认 → 自证 → 失败落盘。
+                    from src.providers import douyin_form as _df_draft
+                    _dr = _df_draft.save_as_draft(page, log_obj=logger)
+                    browser.close()
+                    if not _dr.get("ok"):
                         return {
                             "success": False,
-                            "error": "DRAFT_BUTTON_NOT_FOUND",
-                            "message": "安全策略拦截：未找到'暂存离开'或'存草稿'按钮，严禁执行发布！"
+                            "error": _dr.get("code") or "DRAFT_SAVE_FAILED",
+                            "stage": "draft",
+                            "detail": _dr.get("detail"),
+                            "debug_dir": _dr.get("debug_dir"),
+                            "topics_declared": topics_declared,
+                            "topics_landed": topics_landed,
+                            "message": f"存草稿失败（{_dr.get('code')}）：{_dr.get('detail')}",
                         }
-
-                    logger.info("Clicking 'Save Draft / 暂存离开' button...")
-                    save_draft_btn.click()
-                    time.sleep(5)
-
-                    browser.close()
                     return {
                         "success": True,
                         "draft_id": f"draft_{int(time.time())}",
