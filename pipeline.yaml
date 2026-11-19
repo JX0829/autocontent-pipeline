@@ -86,6 +86,9 @@ contract:
       # 分镜二次创作门禁逃生阀：=1 时允许历史 run（无 creator_take）重渲染，新内容禁用
       - ALLOW_LEGACY_NO_TAKE
       - COVER_FRAME                      # 封面抽帧位置（默认 54 = 1.8s，标题淡入完成之后；0=旧口径抽首帧）
+      # 代码版本自愈（src/pipeline/code_sync.py）：runner 启动先追平 origin/develop。
+      # =1 或 --no-sync 时跳过同步（离线/调试/自测用；不配则默认执行同步）
+      - PIPELINE_SKIP_SYNC
   runtime_bootstrap:                     # v1.3（T0.4）：运行时自举，缺项拒跑
     script: scripts/bootstrap.py
     enforce_on_start: true
