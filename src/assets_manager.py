@@ -172,7 +172,9 @@ def with_landscape_assets(props: dict[str, Any],
     lp = copy.deepcopy(props)
     assets = lp.get("assets") or {}
     report: dict[str, Any] = {"aspect": "landscape", "used": {}, "fallback": []}
-    for slot in ("open", "bg"):
+    # 2026-11-19：mid/end 也要换横版副本，否则横版会在幕间/片尾插入竖版素材，
+    # 被 objectFit=cover 硬裁成 16:9（画面主体被切掉）。竖版没有副本时保留原片并记 fallback。
+    for slot in ("open", "bg", "mid", "end"):
         cur = assets.get(slot)
         if not cur:
             continue

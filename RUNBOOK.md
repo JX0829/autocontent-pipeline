@@ -113,6 +113,58 @@ $PY scripts/test_cover_34_safe.py      # 3:4 安全区 + 虚化结构 + 底图�
 `LEGACY-COVER`：`audit_cover_standard.py` 会放行但记录在案；课文本线上线前必须迁到
 `coverFrame.ts`，否则抖音 3:4 会切字。
 
+### 2.1.3 素材随机 + 模板现状（2026-11-19 起，开箱即用，不用加参数）
+
+**一句话：照 §2.1 跑就行，每条片子的开场 / 背景 / 幕间转场 / 片尾 / BGM 会自动换。**
+
+| 项 | 行为 |
+|---|---|
+| 随机种子 | `run_id`（同 run 重渲 → 同一批素材，可复现） |
+| `open` | 4 条开场素材逐条随机（4 条都会轮到） |
+| `bg` | 按**视觉族**随机：`circuit` / `litho` / `neural_mesh` / `server_aisle`（同族有 `_loop` 片段则用 `_loop`） |
+| `mid` | 4 条幕间转场随机，插在每个场景交界 0.5s（**只覆盖不改时间轴**，口播不脱轨） |
+| `end` | 片尾收尾片段，最后 1.2s 覆盖 |
+| `bgm` | 3 条舒缓 BGM 随机 |
+| 语义匹配不到 | 按全池随机（不再像旧版那样留空） |
+
+想固定 / 换素材：
+
+```bash
+# ① 想换一批素材：换 run-id（新 run 会重抽）
+# ② 想锁死某个素材：物料里写 open_asset / bg_asset
+{ "open_asset": "open_wafer_v1", "bg_asset": "bg_server_aisle_v1" }
+```
+
+出片后自证（三样都要有值，缺任何一项说明随机没生效）：
+
+```bash
+$PY -c "import json;d=json.load(open('output/<日期>/<run-id>/asset_binding.json'));print({k:(v or {}).get('id') for k,v in d.items() if k in ('open','bg','mid','end','bgm')})"
+# 日志里也应该有这一行：
+#   [assets] 档位=… bg=bg_server_aisle_v1 mid=mid_iris_v1 end=end_wafer_dim_v1 bgm=bgm_calm_v2
+```
+
+**模板现状（2026-11-19）**
+
+| 平台 | 模板 | 说明 |
+|---|---|---|
+| 抖音 / 视频号（竖版） | `TechStoryVideo` | 唯一竖版模板，全屏 AI 素材 + 口播 |
+| B站（横版） | `TechStoryLandscapeVideo` | 与竖版**同源**，自动换 `*_landscape.mp4` 原生 16:9 副本 |
+| 旧 `GeekShortVideo`（T1–T5 排版模板） | ⛔ 已下线 | `templates.yaml` 标 `retired` + `enabled:false`；旧物料带 T1–T5 会被收敛到 `tech_story` |
+
+横版日志会打两行，用来确认真的用了原生横版副本：
+
+```
+[assets] aspect=landscape 原生 16:9 副本: ['bg', 'end', 'mid', 'open'] 回落竖版裁切: （无）
+[assets] aspect=landscape 档位=… mid=mid_iris_v1 end=end_wafer_dim_v1 模板=TechStoryLandscapeVideo
+```
+
+自检（2 条命令，各 3 秒）：
+
+```bash
+$PY scripts/test_asset_rotation.py      # ASSET ROTATION OK（幂等/覆盖/bg 不锁死/Geek 下线）
+$PY scripts/test_landscape_assets.py    # 11/11 PASS（含 T9：mid/end 也换横版副本）
+```
+
 ### 2.2 干跑看计划（不调模型、不写库）
 
 ```bash
