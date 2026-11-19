@@ -28,7 +28,18 @@ libraries:
       bg:
         required: true       # 正文背景必须有，否则该库不可用于出片
         pick: random_seeded
-        prefer_derived: "_loop"   # 有 _loop 版优先用（无接缝）
+        # 2026-11-18 修：以前这里把候选池缩成「带 _loop 的素材」，而只有 circuit 一族有
+        # loop 版 → 实测 12/12 全是 bg_circuit_v1_loop，其余 5 条 bg 永远抽不到。
+        # 现在的语义：全池随机抽族，抽中后若同 family 有 _loop 副本再升级。
+        prefer_derived: "_loop"
+      mid:
+        required: false      # 幕间转场片段（场景交界插 0.5s 覆盖，不改时间轴）
+        pick: random_seeded
+        no_repeat_window: 3
+      end:
+        required: false      # 片尾收尾片段（最后 1.2s 覆盖，不改时间轴）
+        pick: random_seeded
+        no_repeat_window: 1
       bgm:
         required: false      # 缺 BGM 时出静音底片，但会记 warning
         pick: random_seeded
