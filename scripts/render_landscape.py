@@ -90,16 +90,17 @@ def render_landscape(task_id: str, props_json: str | Path | None = None,
     if cover_composer is not None:
         cover = Path(cover_composer(video, cover))
     else:
-      # SPEC-20261117 §八（A10）：横版封面 = video_16_9.mp4 第 0 帧，不再单独渲封面构图。
-      # 失败必须显式报错（不回落旧 CoverStill、不出空封面）；现场保留 video。
+      # SPEC-20261117 §八（A10）：横版封面 = 成片第 COVER_FRAME 帧（默认 54 = 1.8s，标题已淡入）。
+      # 2026-11-19 修：抽第 0 帧时标题还没出现（淡入 18–48 帧），封面等于没字。
+      _cf = int(os.environ.get("COVER_FRAME") or 54)
       _ff = subprocess.run(
-          ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", "select=eq(n\\,0)",
+          ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"select=eq(n\\,{_cf})",
            "-frames:v", "1", str(cover)],
           capture_output=True, text=True,
       )
       if _ff.returncode != 0 or not cover.exists() or cover.stat().st_size == 0:
           raise LandscapeGuardError(
-              "COVER_FRAME_EXTRACT_FAILED: 横版抽第 0 帧失败 "
+              f"COVER_FRAME_EXTRACT_FAILED: 横版抽第 {_cf} 帧失败 "
               f"(rc={_ff.returncode}) {( _ff.stderr or '' ).strip().splitlines()[-2:]} | video={video}")
 
     from scripts.landscape_guard import check_landscape
