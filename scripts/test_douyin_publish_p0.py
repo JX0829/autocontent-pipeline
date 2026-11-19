@@ -72,7 +72,8 @@ class FakeLocator:
         if not self.nodes:
             raise RuntimeError("no node")
         self.page.clicks.append(self.nodes[0].get("text", ""))
-        if any(k in self.nodes[0].get("text", "") for k in ("关闭", "知道了", "取消")):
+        if any(k in self.nodes[0].get("text", "")
+               for k in ("关闭", "知道了", "取消", "完成", "确定", "保存", "下一步", "确认")):
             self.page._remove_overlays()
 
 
@@ -169,6 +170,17 @@ def main() -> int:
     check("blocked 时带出 class", "semi-modal-wrap" in r["class"], r["class"])
     check("blocked 时带出文案前 120 字", "安全验证" in r["text"], r["text"])
 
+    # 4.5) 封面弹窗（2026-11-19 真机真凶）：白名单 + 优先点「完成」而不是「取消保存」
+    page = FakePage({
+        'div[role="modal"], div[class*="semi-modal-wrap"]':
+            [overlay_row("设置封面\n\n重新上传\n\n取消保存", "semi-modal-wrap")],
+        'button:text-is("完成")': [{"text": "完成", "attrs": {}, "visible": True}],
+        'button:text-is("保存")': [{"text": "取消保存", "attrs": {}, "visible": True}],
+    })
+    r = douyin_form.dismiss_blockers(page)
+    check("封面弹窗被识别为白名单并关闭", r["action"] in ("dismissed", "escape"), f"{r}")
+    check("优先点「完成」而不是「取消保存」", page.clicks and page.clicks[0] == "完成", str(page.clicks))
+
     # 5) describe_obstruction 截断
     long_text = "章节要点" + "很长的说明" * 60
     page = FakePage({'div[role="modal"], div[class*="semi-modal-wrap"]': [overlay_row(long_text)]})
@@ -203,6 +215,21 @@ def main() -> int:
     page = FakePage(evaluate_result={"matched": None, "candidates": []}, api_items=[])
     got = prov._extract_aweme_id(page, "某标题")
     check("拿不到 ID 返回 None（不编造）", got["id"] is None and got["source"] == "unavailable", str(got))
+
+    # 9) 登录态误判（2026-11-19 真机：上传页出现「扫码登录」文案 ≠ 未登录）
+    class _LoginPage:
+        def __init__(self, url, body):
+            self.url = url
+            self._body = body
+
+        def inner_text(self, sel):
+            return self._body
+
+    check("只在帮助区出现「扫码登录」不算登录墙",
+          prov._is_login_page(_LoginPage("https://creator.douyin.com/creator-micro/content/upload",
+                                         "扫码登录\n发布视频\n作品管理")) is False)
+    check("passport URL 算登录墙",
+          prov._is_login_page(_LoginPage("https://passport.douyin.com/login", "扫码登录")) is True)
 
     print(f"\nDOUYIN P0 {PASS} PASS / {FAIL} FAIL")
     return 0 if FAIL == 0 else 1

@@ -573,7 +573,11 @@ COVER_ENTRY_TEXTS = ("选择封面", "编辑封面", "更换封面", "设置封�
 # 同一时刻老脚本 `scripts/publish_douyin_cdp.py --force` 却能发出去，差别就在它点之前
 # 会先处理「上次未发布」这类弹层。这里把同一套策略搬过来（R4：不另写一套），
 # 并把白名单文案扩到上传页最常见的三个提示层（R1）。
-BLOCKER_WHITELIST = ("章节要点", "封面建议", "画质提示", "智能生成章节")
+# 2026-11-19 真机定位：真正挡住「发布」的是**封面弹窗**「设置封面 / 重新上传 / 取消保存」，
+# 不是 spec 猜的「章节要点」。所以白名单必须包含它，且要**先点确认类按钮**（完成/保存），
+# 直接关闭等于把已上传的封面丢掉。
+BLOCKER_WHITELIST = ("设置封面", "章节要点", "封面建议", "画质提示", "智能生成章节")
+BLOCKER_CONFIRM_TEXTS = ("完成", "确定", "保存", "下一步", "确认")
 BLOCKER_CLOSE_TEXTS = ("关闭", "知道了", "取消", "以后再说", "暂不需要", "不用了", "放弃")
 BLOCKER_SELECTORS = (
     'div[role="modal"], div[class*="semi-modal-wrap"]',
@@ -631,7 +635,22 @@ def dismiss_blockers(page, log_obj=None, *, rounds: int = 3) -> dict:
 
     for _ in range(max(1, rounds)):
         closed_by = ""
-        for text in BLOCKER_CLOSE_TEXTS:
+        # 先试「完成/确定/保存」——把封面这类素材**提交**掉，而不是取消丢弃
+        for text in BLOCKER_CONFIRM_TEXTS:
+            # 必须**完全相等**：`button:has-text("保存")` 会命中「取消保存」，
+            # 一点就等于把刚上传的封面丢掉（2026-11-19 真机 dist=38 就是这么来的）。
+            for sel in (f'button:text-is("{text}")', f'div[role="button"]:text-is("{text}")'):
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() and btn.is_visible() and btn.inner_text().strip() == text:
+                        btn.click(timeout=2500)
+                        closed_by = sel
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if closed_by:
+                break
+        for text in (() if closed_by else BLOCKER_CLOSE_TEXTS):
             for sel in (f'button:has-text("{text}")', f'div[role="button"]:has-text("{text}")',
                         f'span:has-text("{text}")'):
                 try:
@@ -994,6 +1013,31 @@ def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> di
     )
     page.wait_for_timeout(1800)
     log.info(f"[douyin] 封面确认按钮：{done or '（未找到，视为弹窗自动关闭）'}")
+
+    # 2026-11-19 真机事故：确认按钮点了，但「设置封面」弹窗仍开着 →
+    # 后面点「发布」被 semi-modal-wrap 挡住，30s 超时。这里必须自证弹窗已关闭。
+    closed = False
+    for _ in range(6):
+        try:
+            still = page.evaluate(
+                """() => {
+                  const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
+                  const els = [...document.querySelectorAll('div[class*=\"semi-modal-wrap\"], div[role=\"modal\"]')]
+                                .filter(vis);
+                  return els.some(e => /设置封面|重新上传|取消保存/.test(e.innerText || ''));
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            still = False
+        if not still:
+            closed = True
+            break
+        page.wait_for_timeout(800)
+    if not closed:
+        fixed = dismiss_blockers(page, log_obj=log)
+        log.warning(f"[douyin] COVER_MODAL_STUCK：封面弹窗没关（补救 {fixed['action']}）")
+        closed = fixed["action"] in ("dismissed", "escape")
+    log.info(f"[douyin] 封面弹窗已关闭={closed}")
 
     if not verify:
         return {"ok": True, "code": "", "detail": "已上传（未做回读）", "dist": None}

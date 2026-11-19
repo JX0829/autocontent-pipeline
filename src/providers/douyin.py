@@ -415,8 +415,11 @@ class DouyinProvider(BaseSocialProvider):
                     logger.info("upload 页未在 8s 内 networkidle，继续")
                 time.sleep(3)
 
-                # 检查登录态拦截
-                if "passport.douyin.com" in page.url or page.locator("text=扫码登录").count() > 0:
+                # 检查登录态拦截（2026-11-19 修：原来用 locator("text=扫码登录")，
+                # 上传页侧栏/帮助区常驻「扫码登录」文案 → 明明登录着也被判 LOGIN_REQUIRED，
+                # 真发直接失败。改走 _is_login_page：URL 命中 passport/login，
+                # 或正文同时出现 ≥2 个登录页特征才算登录墙。）
+                if self._is_login_page(page):
                     browser.close()
                     hint = (f"需人工在 cdp={self.cdp_url} profile={self.profile_name} 的 Chrome 窗口扫码"
                             if self.cdp_url else "请先运行 scripts/login_douyin.py 扫码登录")
