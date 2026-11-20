@@ -439,8 +439,11 @@ def _prepend_cover(video: Path, cover: Path, seconds: float = COVER_LEAD_SECONDS
     if total <= 0:
         raise ExecutorError(f"COVER_PREPEND_FAILED: 探不到成片时长: {video.name}")
 
-    body = video.with_name("video_body.mp4")
-    tmp = video.with_name(".video_with_cover.mp4")
+    # 2026-11-20：正片备份按片名派生。原来固定叫 video_body.mp4，横版
+    # （video_16_9.mp4）贴片头时会命中竖版那份备份并把它 unlink 掉 ——
+    # 竖版正片丢失，两版互相覆盖。
+    body = video.with_name(f"{video.stem}_body.mp4")
+    tmp = video.with_name(f".{video.stem}_with_cover.mp4")
     if body.exists():
         body.unlink()
     video.replace(body)
@@ -476,6 +479,19 @@ def _prepend_cover(video: Path, cover: Path, seconds: float = COVER_LEAD_SECONDS
     return video
 
 
+def _make_upload_cover(video: Path, out: Path, *, cover_ref: Path) -> Path:
+    """从成片前 0.5s 抽一帧作为上传封面，并自证「这段确实是静止封面」。"""
+    from src.pipeline.cover_lead import CoverLeadError, make_upload_cover
+
+    try:
+        info = make_upload_cover(video, out, cover_ref=cover_ref)
+    except CoverLeadError as exc:
+        raise ExecutorError(f"COVER_UPLOAD_FRAME_FAILED: {exc}") from exc
+    print(f"[cover] 上传封面帧 = 成片 {info['at_sec']}s（前 0.5s 内）"
+          f" static_spread={info['static_spread']} dHash(vs cover)={info['dhash_vs_cover']}")
+    return Path(str(info["path"]))
+
+
 def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
     """竖版渲染（只渲染，不碰 TTS —— props 由 align_tts 产出）。"""
     props = ctx.artifacts.get("props") or str(ctx.run_root / "props" / "aligned_render.json")
@@ -500,7 +516,10 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
     # 单独上传封面。竖版一条改动，两个平台同时生效。
     _prepend_cover(video, cover)
     _assert_has_audio(video)   # 无声片零容忍
-    return {"video": str(video), "cover": str(cover)}
+    # 2026-11-20 用户口径：需要单独上传封面的平台，用成片前 0.5s 内的一帧当封面。
+    # 前 0.5s 是封面片头（静止），所以抽哪一帧都一样；抽完自证静止性，不是就报错。
+    up = _make_upload_cover(video, ctx.run_root / "cover_upload.png", cover_ref=cover)
+    return {"video": str(video), "cover": str(cover), "cover_upload": str(up)}
 
 
 def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
@@ -550,6 +569,11 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
     _assert_has_audio(video)   # 横版同样不许出无声片
+    # 2026-11-20：横版原来没有封面片头 → B 站「必须有封面」抽到的是正片首帧，
+    # 与竖版封面完全不是一张图。这里补 0.5s 封面片头，让「前 0.5s 都是封面帧」
+    # 在横版也成立，上传封面才能统一取这一帧。
+    _prepend_cover(video, cover)
+    up_land = _make_upload_cover(video, ctx.run_root / "cover_upload_16_9.png", cover_ref=cover)
     # R9：横版也打一行，方便回归时与竖版一眼对齐（素材来自同一份 Selection：props 里已注入）
     _a = (_pd.get("asset_binding") or {})
     _op, _bg = (_a.get("open") or {}), (_a.get("bg") or {})
@@ -559,7 +583,8 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
           f"open={_op.get('id') or '（无）'} bg={_bg.get('id') or '（无）'} "
           f"mid={_mid.get('id') or '（无）'} end={_end.get('id') or '（无）'} "
           f"模板={'TechStoryLandscapeVideo' if tech_landscape else ('TextbookLandscapeVideo' if textbook else '旧横版')}")
-    return {"video_16_9": str(video), "cover_16_9": str(cover)}
+    return {"video_16_9": str(video), "cover_16_9": str(cover),
+            "cover_upload_16_9": str(up_land)}
 
 
 def _prune_dangling_public_links() -> list[str]:
@@ -642,6 +667,18 @@ def _invoke_provider(platform: str, account: dict[str, Any], video: Path, cover:
     实际勾选的不一致）。
     """
     from src.utils.video_desc import build_desc
+
+    # 2026-11-20 用户口径：需要上传封面的平台，用「成片前 0.5s 内的一帧」。
+    # 渲染时已按这条规则抽好 cover_upload*.png（前 0.5s 是静止封面片头），
+    # 这里统一把 cover 指过去；没有就退回源图，绝不现场把正片画面截成封面。
+    try:
+        from src.utils.upload_cover import ensure_upload_cover as _euc
+        _lead, _why = _euc(video, None, allow_extract=False)
+        if _lead and Path(_lead).name.startswith("cover_upload"):
+            print(f"[cover] {platform} 使用上传封面={Path(_lead).name}（{_why}）")
+            cover = Path(_lead)
+    except Exception as exc:  # noqa: BLE001 — 取封面失败不应打断发布
+        print(f"[cover] 取前 0.5s 封面帧失败（沿用 {Path(cover).name}）：{type(exc).__name__}: {exc}")
 
     opts = opts or {}
     title = str(draft.get("title") or "")

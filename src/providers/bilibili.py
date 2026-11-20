@@ -90,11 +90,17 @@ class BilibiliProvider(BaseSocialProvider):
                                    f"设 BILI_PYTHON 指向它，或 {INSTALL_HINT}",
                     }
                 if upload_script.exists():
+                    # 2026-11-20 用户口径：需要上传封面的平台，用「成片前 0.5s 内的一帧」，
+                    # 不是另画一张合成图。前 0.5s 就是封面片头，抽哪一帧都一样；
+                    # 抽不到/前 0.5s 不是静止封面 → 传空串，由上传器 fail-closed 拒发。
+                    from src.utils.upload_cover import ensure_upload_cover
+                    _cover_up, _cover_why = ensure_upload_cover(video_path, None)
+                    logger.info(f"[cover] B站上传封面={_cover_up or '（无）'}（{_cover_why}）")
                     cmd = [
                         bili_py,
                         str(upload_script),
                         "--video", video_path,
-                        "--cover", cover_path,
+                        "--cover", _cover_up,
                         "--title", title,
                         "--desc", desc,
                         "--tags", tag_str,

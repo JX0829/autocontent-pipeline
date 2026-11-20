@@ -50,6 +50,7 @@ run "RUNBOOK 命令自检"    "$PY" scripts/verify_runbook.py
 run "竖版安全边距巡检"    "$PY" scripts/audit_safe_area.py
 run "封面片头 0.5s"       "$PY" scripts/test_cover_prepend.py
 run "封面 3:4 不裁字"      "$PY" scripts/test_cover_34_safe.py
+run "上传封面=前0.5s帧"  "$PY" scripts/test_cover_upload_frame.py
 run "封面规范(全模板)"    "$PY" scripts/audit_cover_standard.py
 run "素材轮换(随机)"      "$PY" scripts/test_asset_rotation.py
 run "seen-before-send"    "$PY" scripts/audit_silent_failure.py --check seen-before-send

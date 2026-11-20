@@ -161,11 +161,22 @@ async def main():
         title=args.title[:80]
     )
 
+    # 2026-11-20 用户口径：需要封面的平台用「成片前 0.5s 内的一帧」。
+    # B 站必须有封面 → 统一走 ensure_upload_cover（显式传入 > 同目录已抽好的
+    # cover_upload*.png > cover*.png > 现场从 0.25s 抽帧 + 静止性自证）。
+    from src.utils.upload_cover import ensure_upload_cover
+    _cover, _why = ensure_upload_cover(args.video, args.cover)
+    if not _cover:
+        print(f"[cover] COVER_LEAD_INVALID: 拿不到合规封面（{_why}）")
+        print("[cover] 拒绝上传：把正片画面当封面会导致平台封面错版，请先出片（前 0.5s 即封面）")
+        sys.exit(4)
+    print(f"[cover] 上传封面 = {_cover}（{_why}）")
+
     meta = video_uploader.VideoMeta(
         tid=args.tid,
         title=args.title[:80],
         desc=args.desc,
-        cover=args.cover if args.cover and Path(args.cover).exists() else "",
+        cover=_cover,
         tags=args.tags.split(",") if "," in args.tags else [args.tags],
         original=True,
         no_reprint=True,
