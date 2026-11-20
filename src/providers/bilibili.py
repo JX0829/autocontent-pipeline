@@ -94,7 +94,6 @@ class BilibiliProvider(BaseSocialProvider):
                         bili_py,
                         str(upload_script),
                         "--video", video_path,
-                        "--cover", cover_path,
                         "--title", title,
                         "--desc", desc,
                         "--tags", tag_str,
@@ -103,6 +102,13 @@ class BilibiliProvider(BaseSocialProvider):
                         # 上传脚本为防误用默认拒绝单平台调用，需显式 --force 放行。
                         "--force",
                     ]
+                    # 2026-11-20 用户口径：三平台统一「封面拼在视频最前 0.5s」，
+                    # 不再单独上传封面；B 站留 --cover 只作为逃生开关。
+                    import os as _os
+                    if cover_path and _os.getenv("BILI_UPLOAD_COVER", "") == "1":
+                        cmd += ["--cover", cover_path]
+                    elif cover_path:
+                        logger.info(f"封面口径=首帧（不单独上传）：{Path(cover_path).name} 仅本地自证")
                     if is_private:
                         cmd.append("--only-self")
                     p = subprocess.run(

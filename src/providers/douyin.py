@@ -658,20 +658,34 @@ class DouyinProvider(BaseSocialProvider):
                             "expected": topics_declared, "filled": _tp,
                             "message": f"话题终态不合格（{_why}），拒绝发布"}
 
-                # 3e-2. 封面上传（SPEC-20261118 R1~R3）：显式上传 + 回读，失败即阻断
-                try:
-                    from src.providers import douyin_form as _df
-                    _cover = _df.set_cover(page, cover_path or "", log_obj=logger)
-                except Exception as exc:  # noqa: BLE001
-                    _cover = {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                              "detail": f"{type(exc).__name__}: {exc}"}
+                # 3e-2. 封面（2026-11-20 用户口径：不再给平台单独传封面）
+                #   封面已由 pipeline 拼在视频最前面 0.5s（executors._prepend_cover），
+                #   视频首帧 == cover.png → 平台侧上传 + dHash 回读全部取消。
+                #   这里只做本地自证：视频真以封面开头，否则 fail-closed。
+                #   历史路径（真上传）保留开关：DOUYIN_UPLOAD_COVER=1。
+                import os as _os
+
+                if _os.getenv("DOUYIN_UPLOAD_COVER", "") == "1":
+                    try:
+                        from src.providers import douyin_form as _df
+                        _cover = _df.set_cover(page, cover_path or "", log_obj=logger)
+                    except Exception as exc:  # noqa: BLE001
+                        _cover = {"ok": False, "code": "COVER_UPLOAD_FAILED",
+                                  "detail": f"{type(exc).__name__}: {exc}"}
+                else:
+                    from src.utils.frame_match import check_video_starts_with_cover
+                    _vf = video_path
+                    _cf = cover_path or str(Path(video_path).with_name("cover.png"))
+                    _cover = check_video_starts_with_cover(_vf, _cf)
+                    logger.info(f"[douyin] 封面口径=首帧（不再上传）：{_cover.get('detail')}")
+
                 if not _cover.get("ok"):
-                    logger.error(f"COVER_UPLOAD_FAILED: {_cover.get('detail')}")
+                    logger.error(f"{_cover.get('code')}: {_cover.get('detail')}")
                     browser.close()
                     return {"success": False, "published": False,
-                            "error": "COVER_UPLOAD_FAILED", "stage": "cover",
+                            "error": _cover.get("code") or "COVER_CHECK_FAILED", "stage": "cover",
                             "expected": str(cover_path or ""), "filled": _cover,
-                            "message": f"封面没上传成功（{_cover.get('detail')}），拒绝发布"}
+                            "message": f"封面自证失败（{_cover.get('detail')}），拒绝发布"}
 
                 time.sleep(2)
 
