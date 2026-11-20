@@ -406,48 +406,22 @@ class AssetManager:
         if picked["bg"] is None:
             raise AssetError("素材库不可用：正文背景 bg 必须有素材")
 
-        # BUGS-20261120 R2(b)：bg 首帧亮度是「片头是不是黑板」的唯一决定因素之一（另一路是 open）。
-        # 这里做硬筛选：首帧 YAVG < BG_MIN_FIRST_YAVG 的素材换掉；整池都暗则**出片前**就报错，
-        # 而不是渲完 31s 再被黑场/横版守卫拦。筛选依据写进 asset_binding.json 的 warnings。
-        _bg_luma = {}
-        for _cand in [picked["bg"]] + [a for a in by_domain.get("bg", assets) if a.get("slot") == "bg"]:
-            if _cand is None:
-                continue
-            _rel = str(_cand.src if hasattr(_cand, "src") else _cand.get("file", ""))
-            _file = Path(lib_root) / (_cand.file if hasattr(_cand, "file") else _rel)
-            _y = _first_frame_yavg(_file)
-            if _y is not None:
-                _bg_luma[str(_cand.id if hasattr(_cand, "id") else _cand.get("id"))] = round(_y, 1)
-        if _bg_luma:
-            _cur_y = _bg_luma.get(str(picked["bg"].id))
-            if _cur_y is not None and _cur_y < BG_MIN_FIRST_YAVG and "bg" in locked_slots:
-                raise AssetError(
-                    f"OPENING_TOO_DARK: 物料锁定的 bg={picked['bg'].id} 首帧 YAVG={_cur_y} "
-                    f"< {BG_MIN_FIRST_YAVG:.0f}（片头会整屏发黑）。请换一条亮素材，"
-                    f"或解除锁定让系统自动选（实测可用的亮素材首帧 YAVG ≥ 42）")
-            if _cur_y is not None and _cur_y < BG_MIN_FIRST_YAVG:
-                _alt = next((aid for aid, y in sorted(_bg_luma.items(), key=lambda kv: -kv[1])
-                             if y >= BG_MIN_FIRST_YAVG), None)
-                if _alt:
-                    _warn = (f"bg {picked['bg'].id} 首帧 YAVG={_cur_y} < {BG_MIN_FIRST_YAVG:.0f}"
-                             f"（片头会发黑）→ 换用亮度达标的 {_alt}")
-                    warnings.append(_warn)
-                    _rel_root = str(Path(lib_root).relative_to("renderer/public")).replace("\\", "/")
-                    for _a in by_domain.get("bg", assets):
-                        if _a.get("slot") == "bg" and str(_a.get("id")) == _alt:
-                            picked["bg"] = AssetChoice(
-                                id=_a["id"], slot="bg",
-                                src=f"{_rel_root}/{_a['file']}".replace("\\", "/"),
-                                file=_a["file"], tags=_a.get("tags") or [],
-                                license=_a.get("license", ""),
-                                duration_s=float(_a.get("duration_s") or 0),
-                                extra={"start_from": int(_a.get("start_from") or 0),
-                                       "luma_rescued_from": picked["bg"].id})
-                            break
-                else:
+        # BUGS-20261120 R2：bg 首帧亮度会影响片头观感，但**片头亮度已由 open 素材兜底**
+        # （R2a，open 首帧实测 38~58），所以 bg 这里只做审计 + 提示，不硬剔除 ——
+        # 硬剔除会让整个素材族退出轮换（门禁「素材轮换 ≥80%」立刻红），得不偿失。
+        # 真正必须亮的地方是「封面底图」（cover_compose 里跳过近黑 >40% 的素材）。
+        _bg_y = _first_frame_yavg(Path(lib_root) / str(picked["bg"].file))
+        if _bg_y is not None:
+            picked["bg"].extra = dict(picked["bg"].extra or {}, first_frame_yavg=round(_bg_y, 1))
+            if _bg_y < BG_MIN_FIRST_YAVG:
+                warnings.append(
+                    f"bg {picked['bg'].id} 首帧 YAVG={_bg_y:.1f} < {BG_MIN_FIRST_YAVG:.0f}："
+                    f"片头亮度靠 open 素材兜底（open 已不再被丢弃），封面底图会自动跳过该素材")
+                if "bg" in locked_slots:
                     raise AssetError(
-                        f"OPENING_TOO_DARK: 所有 bg 候选首帧 YAVG 均 < {BG_MIN_FIRST_YAVG:.0f}"
-                        f"（实测 {_bg_luma}），片头必然发黑，拒绝出片")
+                        f"OPENING_TOO_DARK: 物料锁定的 bg={picked['bg'].id} 首帧 YAVG={_bg_y:.1f} "
+                        f"< {BG_MIN_FIRST_YAVG:.0f}（片头会整屏发黑）。请换一条亮素材，"
+                        f"或解除锁定让系统自动选（实测可用的亮素材首帧 YAVG ≥ 42）")
 
         bgm_cfg = slots.get("bgm") or {}
         sel = Selection(
