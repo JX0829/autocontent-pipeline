@@ -57,7 +57,9 @@ DISPATCH_MODE=output_only $PY -m src.pipeline.runner \
 |---|---|
 | `video.mp4` | 竖版 1080x1920（抖音、视频号） |
 | `video_16_9.mp4` | 横版（B站） |
-| `cover.png` / `cover_16_9.png` | 两版封面 |
+| `cover.png` / `cover_16_9.png` | 两版封面源图 |
+| `cover_upload.png` / `cover_upload_16_9.png` | 上传用封面（成片前 0.5s 内的一帧） |
+| `video_body.mp4` / `video_16_9_body.mp4` | 两版**正片**（各自去掉片头，出问题用它们比对） |
 | `video_body.mp4` | 竖版**正片**（去掉片头封面段，出问题用它比对） |
 | `draft_script.json` | 脚本+分镜（改文案要从这里改或换物料） |
 | `artifacts.txt` | 本次产物清单 |
@@ -75,7 +77,33 @@ DISPATCH_MODE=output_only $PY -m src.pipeline.runner \
 
 **所以：抖音/视频号都不需要再上传封面**——平台默认取首帧，首帧已经是封面。
 抖音上传页的「设置封面」控件一直不稳定，这条链路不再依赖它（也不再新建上传能力）。
-横版（B站）不受影响，仍走自己的 `cover_16_9.png`。
+
+### 2.1.1b 需要上传封面的平台：取「前 0.5s 内的一帧」（2026-11-20 起）
+
+用户口径：「每个平台的规则不一样，**如果需要上传封面，那就把 0.5 秒以内的一帧作为封面，
+因为前 0.5 秒都是封面帧**。」
+
+| 平台 | 封面怎么来 |
+|---|---|
+| 抖音 | 不传封面，平台自抽首帧（首帧==`cover.png`） |
+| 视频号 | Web 端没有封面控件 |
+| **B 站** | **必须有封面** → 取成片前 0.5s 内的一帧 |
+
+实现（`src/pipeline/cover_lead.py` + `src/utils/upload_cover.py`）：
+
+- 渲染时两版都贴 0.5s 封面片头（**横版以前没有片头**，B 站抽到的是正片首帧，已修）；
+- 抽帧点固定 **0.25s**（落在 `[0, 0.5)` 中间），产出 `cover_upload.png` / `cover_upload_16_9.png`；
+- 抽完自证：`0.00 / 0.25 / 0.45` 三帧 dHash 必须一致（≤8），否则 `COVER_UPLOAD_FRAME_FAILED`
+  —— 前 0.5s 不是静止封面（旧片没片头）就直接失败，**绝不把正片画面当封面传上去**；
+- 上传优先级：显式传入 > 同目录 `cover_upload*.png` > `cover*.png` > 现场从 0.25s 抽帧。
+
+出片日志（两版各一行）：
+
+```
+[cover] 上传封面帧 = 成片 0.25s（前 0.5s 内） static_spread=0 dHash(vs cover)=1
+```
+
+回归：`scripts/test_cover_upload_frame.py`（7 项，已挂 `verify_all --fast`）。
 
 回归：`scripts/test_cover_prepend.py`（已挂 `verify_all --fast`）。
 

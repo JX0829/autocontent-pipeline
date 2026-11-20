@@ -263,3 +263,9 @@ python3 -m src.pipeline.runner --material materials/20261110_hive_mem.json --dry
 ## 📄 License / 开源协议
 
 Released under the [MIT License](LICENSE).
+
+### 上传封面口径（2026-11-20）
+
+需要上传封面的平台（B 站）**不另画封面**，取成片**前 0.5s 内的一帧**（默认 0.25s）——
+前 0.5s 就是封面片头，抽哪一帧都一样。渲染产出 `cover_upload*.png`，抽帧自证「三帧静止」，
+前 0.5s 不是静止封面就 fail-closed。抖音/视频号不需要（平台自抽首帧）。
