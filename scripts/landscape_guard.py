@@ -28,6 +28,18 @@ SPAN_SAMPLES = (0.2, 1.0, 2.0, 3.5)
 # 封面（含主文案）只存在于前 15 帧 = 0~0.5s，文案真值必须在这个窗口内采样，
 # 否则采到的是分镜画面 → 「OCR 未命中主文案」的假失败（实测踩过）
 COVER_TEXT_SAMPLES = (0.05, 0.15, 0.25, 0.35, 0.45)
+def _opening_luma(video: str) -> dict:
+    """首帧亮度（R4 归因用）。取不到就返回空指标，不因测量失败改变判定。"""
+    try:
+        from src.utils.black_check import check_opening
+        r = check_opening(video)
+        return {"first_frame_ratio": r.get("first_frame_ratio") or 0.0,
+                "first_frame_yavg": r.get("first_frame_yavg") or 0.0,
+                "opening_dark": not r.get("ok", True)}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 MIN_COVERAGE = 0.55   # 总覆盖率下限（实测：正当成片 0.672~0.969 / 竖版居中 0.396）
 MIN_EDGE = 0.05       # 左右各 8% 带宽覆盖率下限（实测：正当 0.516~1.000 / 竖版居中 0.000）★主判据
 MAX_FRAME_DIFF = 8.0  # 视频首帧与封面静帧的灰度平均差上限（同画面实测 0.45）
@@ -190,8 +202,18 @@ def check_landscape(video: str, expect_text: str = "",
     rep.update({"coverage": round(cov, 3), "edge_left": round(left, 3),
                 "edge_right": round(right, 3)})
     if cov < MIN_COVERAGE:
-        rep["reason"] = (f"内容列覆盖率仅 {cov:.1%}（<{MIN_COVERAGE:.0%}），"
-                         f"画幅两侧成片留白 → 判定为竖版封面塞横屏")
+        # BUGS-20261120 R4：覆盖率不足有两种完全不同的根因，必须分开报，
+        # 否则使用者会按「竖版封面塞横屏」查一轮（实测踩过）。
+        _dark = _opening_luma(video)
+        rep.update(_dark)
+        if _dark.get("opening_dark"):
+            rep["reason"] = (f"首帧过暗（首帧近黑 {_dark['first_frame_ratio']:.1%}，"
+                             f"首帧 YAVG {_dark['first_frame_yavg']:.1f}）导致列覆盖率只统计到 "
+                             f"{cov:.1%}（<{MIN_COVERAGE:.0%}）→ 属于**片头黑场**问题"
+                             f"（版式没出错，别按版式留白方向排查）")
+        else:
+            rep["reason"] = (f"内容列覆盖率仅 {cov:.1%}（<{MIN_COVERAGE:.0%}），"
+                             f"画幅两侧成片留白 → 判定为竖版封面塞横屏")
         return False, rep
     if left < MIN_EDGE or right < MIN_EDGE:
         rep["reason"] = (f"左右边缘覆盖率 {left:.1%}/{right:.1%}"

@@ -199,6 +199,21 @@ def _seed_of(run_id: str) -> int:
     return int(hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12], 16)
 
 
+#: bg 首帧亮度下限（BUGS-20261120 R2b）：低于此值片头就是一块黑板。
+#: 实测 bg_neural_mesh_v1 首帧 23.7 / 近黑 91%，bg_circuit_v1_loop 42.4 / 近黑 0%。
+BG_MIN_FIRST_YAVG = 32.0
+
+
+def _first_frame_yavg(path: Path) -> float | None:
+    """素材首帧 YAVG（ffmpeg signalstats）。取不到返回 None（不因测量失败卡死选材）。"""
+    try:
+        from src.utils.black_check import frame_luma  # 延迟导入：渲染/测试无 ffmpeg 也能跑
+        frames = frame_luma(path)
+        return float(frames[0][1]) if frames else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class AssetManager:
     def __init__(self, config_path: Path | str = DEFAULT_CONFIG,
                  history_path: Path | str = DEFAULT_HISTORY,
@@ -357,6 +372,7 @@ class AssetManager:
             cover_mode = "none"
 
         picked: dict[str, Optional[AssetChoice]] = {}
+        locked_slots: set[str] = set()
         for slot in ("open", "bg", "bgm", "mid", "end"):
             cfg = slots.get(slot) or {}
             window = int(cfg.get("no_repeat_window", 0))
@@ -382,12 +398,56 @@ class AssetManager:
                     extra={"start_from": int(hit.get("start_from") or 0), "locked_by_material": True},
                 )
                 warnings.append(f"按物料锁定选用 {slot}={want_id}")
+                locked_slots.add(slot)
                 continue
             picked[slot] = self._pick_slot(by_domain.get(slot, assets), slot, cfg, rng, recent, lib_root,
                                            warnings, rejected)
 
         if picked["bg"] is None:
             raise AssetError("素材库不可用：正文背景 bg 必须有素材")
+
+        # BUGS-20261120 R2(b)：bg 首帧亮度是「片头是不是黑板」的唯一决定因素之一（另一路是 open）。
+        # 这里做硬筛选：首帧 YAVG < BG_MIN_FIRST_YAVG 的素材换掉；整池都暗则**出片前**就报错，
+        # 而不是渲完 31s 再被黑场/横版守卫拦。筛选依据写进 asset_binding.json 的 warnings。
+        _bg_luma = {}
+        for _cand in [picked["bg"]] + [a for a in by_domain.get("bg", assets) if a.get("slot") == "bg"]:
+            if _cand is None:
+                continue
+            _rel = str(_cand.src if hasattr(_cand, "src") else _cand.get("file", ""))
+            _file = Path(lib_root) / (_cand.file if hasattr(_cand, "file") else _rel)
+            _y = _first_frame_yavg(_file)
+            if _y is not None:
+                _bg_luma[str(_cand.id if hasattr(_cand, "id") else _cand.get("id"))] = round(_y, 1)
+        if _bg_luma:
+            _cur_y = _bg_luma.get(str(picked["bg"].id))
+            if _cur_y is not None and _cur_y < BG_MIN_FIRST_YAVG and "bg" in locked_slots:
+                raise AssetError(
+                    f"OPENING_TOO_DARK: 物料锁定的 bg={picked['bg'].id} 首帧 YAVG={_cur_y} "
+                    f"< {BG_MIN_FIRST_YAVG:.0f}（片头会整屏发黑）。请换一条亮素材，"
+                    f"或解除锁定让系统自动选（实测可用的亮素材首帧 YAVG ≥ 42）")
+            if _cur_y is not None and _cur_y < BG_MIN_FIRST_YAVG:
+                _alt = next((aid for aid, y in sorted(_bg_luma.items(), key=lambda kv: -kv[1])
+                             if y >= BG_MIN_FIRST_YAVG), None)
+                if _alt:
+                    _warn = (f"bg {picked['bg'].id} 首帧 YAVG={_cur_y} < {BG_MIN_FIRST_YAVG:.0f}"
+                             f"（片头会发黑）→ 换用亮度达标的 {_alt}")
+                    warnings.append(_warn)
+                    _rel_root = str(Path(lib_root).relative_to("renderer/public")).replace("\\", "/")
+                    for _a in by_domain.get("bg", assets):
+                        if _a.get("slot") == "bg" and str(_a.get("id")) == _alt:
+                            picked["bg"] = AssetChoice(
+                                id=_a["id"], slot="bg",
+                                src=f"{_rel_root}/{_a['file']}".replace("\\", "/"),
+                                file=_a["file"], tags=_a.get("tags") or [],
+                                license=_a.get("license", ""),
+                                duration_s=float(_a.get("duration_s") or 0),
+                                extra={"start_from": int(_a.get("start_from") or 0),
+                                       "luma_rescued_from": picked["bg"].id})
+                            break
+                else:
+                    raise AssetError(
+                        f"OPENING_TOO_DARK: 所有 bg 候选首帧 YAVG 均 < {BG_MIN_FIRST_YAVG:.0f}"
+                        f"（实测 {_bg_luma}），片头必然发黑，拒绝出片")
 
         bgm_cfg = slots.get("bgm") or {}
         sel = Selection(

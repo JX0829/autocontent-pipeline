@@ -63,6 +63,37 @@ def pick_frame(props: dict[str, Any]) -> int:
     raise CoverComposeError(f"{COVER_COMPOSE_FAILED}: stage=pick_frame 没有可用分镜（scenes={len(scenes)}）")
 
 
+def pick_bright_frame(video: Path | str, candidate: int, *, scan_s: float = 1.2,
+                      fps: int = 30) -> tuple[int, str]:
+    """封面底图不许是黑板（BUGS-20261120 R1）。
+
+    `pick_frame` 取的是 scene 1 起始（≈1.8s），2026-11-20 事故里那一段正好是暗 bg
+    （首帧近黑 69%），封面又 prepend 成片头 → 首帧直接判黑场。
+    这里：先看候选帧亮度，达标就用；不达标就在片头窗口（0–scan_s）里挑最亮的一帧。
+    返回 (帧号, 说明)，说明只用于日志/审计。
+    """
+    try:
+        from src.utils.black_check import frame_black_ratio, frame_luma
+        v = str(video)
+        cand_ratio = 0.0
+        ratios = frame_black_ratio(v)
+        if ratios:
+            cand_t = candidate / float(fps)
+            near = min(ratios, key=lambda r: abs(r[0] - cand_t))
+            cand_ratio = near[1]
+        if cand_ratio <= 0.40:
+            return candidate, f"候选帧 {candidate} 近黑 {cand_ratio:.0%} 达标"
+        lum = [(t, y) for t, y in frame_luma(v) if t <= scan_s]
+        if not lum:
+            return candidate, f"候选帧 {candidate} 近黑 {cand_ratio:.0%}，但读不到片头亮度"
+        t, y = max(lum, key=lambda kv: kv[1])
+        framed = int(round(t * fps))
+        return framed, (f"候选帧 {candidate} 近黑 {cand_ratio:.0%} 太暗 → "
+                        f"改取片头最亮帧 {framed}（t={t:.2f}s YAVG={y:.1f}）")
+    except Exception as exc:  # noqa: BLE001 — 亮度探针失败不得阻断封面
+        return candidate, f"亮度探针失败（{type(exc).__name__}），沿用候选帧 {candidate}"
+
+
 #: 竖版封面「内容板」高度：1080x1440 = 3:4，正好是抖音个人主页的裁剪区
 PANEL_34_HEIGHT = 1440
 
@@ -121,6 +152,9 @@ def pick_clean_source(props: dict[str, Any]) -> tuple[Optional[Path], str]:
     for sc in props.get("scenes") or []:
         candidates.append((sc or {}).get("media_asset_url"))
     candidates.append(assets.get("bg"))
+    # BUGS-20261120：open 素材天生无文字且通常最亮（open_wafer_v2 首帧近黑仅 12%），
+    # 放在最后兜底，避免「bg 是暗素材 → 封面整块黑」。
+    candidates.append(assets.get("open"))
 
     for rel in candidates:
         if not isinstance(rel, str) or not rel.strip():
@@ -128,8 +162,18 @@ def pick_clean_source(props: dict[str, Any]) -> tuple[Optional[Path], str]:
         if not rel.lower().endswith((".mp4", ".mov", ".webm", ".m4v")):
             continue
         path = PUBLIC / rel
-        if path.exists() and path.stat().st_size > 0:
-            return path, rel
+        if not (path.exists() and path.stat().st_size > 0):
+            continue
+        # 底图亮度下限：暗素材当封面 = 首帧整屏黑（BUGS-20261120 主因之一）
+        try:
+            from src.utils.black_check import frame_black_ratio
+            _r = frame_black_ratio(path)
+            if _r and _r[0][1] > 0.40:
+                logger.info("[cover] 跳过暗底图 %s（首帧近黑 %.0f%% > 40%%）", rel, _r[0][1] * 100)
+                continue
+        except Exception:  # noqa: BLE001 — 探针失败不阻断选底图
+            pass
+        return path, rel
     return None, ""
 
 
@@ -196,6 +240,7 @@ def compose_cover(video: Path | str, out_png: Path | str, *, props: dict[str, An
     sub = (sub_text or props.get("cover_sub_text") or "").strip()
 
     frame = pick_frame(props)
+    frame, _frame_note = pick_bright_frame(video, frame)
     total = _video_frames(video)
     if total and frame >= total:
         raise _fail("frame_out_of_range", video=video, frame=frame,

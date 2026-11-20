@@ -166,14 +166,14 @@ const HookOverlay: React.FC<{ title: string; subtitle: string; kicker: string; t
 
   return (
     <div style={{ position: 'absolute', left: safeX, right: safeX, top: 190 }}>
-      <div style={{ fontFamily: FONT, fontSize: 24, letterSpacing: 8, color: ACCENT, opacity: t(8, 30) }}>
+      <div style={{ fontFamily: FONT, fontSize: 24, letterSpacing: 8, color: ACCENT, opacity: t(0, 6) }}>
         {kicker}
       </div>
       <div
         style={{
           marginTop: 34, fontFamily: FONT, fontSize: 92, fontWeight: 800, lineHeight: 1.22,
-          letterSpacing: 1, color: '#FFFFFF', opacity: t(18, 48),
-          transform: `translateY(${interpolate(t(18, 48), [0, 1], [24, 0])}px)`,
+          letterSpacing: 1, color: '#FFFFFF', opacity: t(2, 16),
+          transform: `translateY(${interpolate(t(2, 16), [0, 1], [24, 0])}px)`,
           textShadow: '0 8px 40px rgba(0,0,0,0.85), 0 2px 10px rgba(0,0,0,0.7)',
         }}
       >
@@ -312,11 +312,10 @@ export const TechStoryVideo: React.FC<TechProps> = (props) => {
     return speaking ? cfg.bgmDuck : cfg.bgmVolume;
   };
 
-  // SPEC-20261117 §八：cover_mode=none → 不插封面海报帧，open 片段也不参与，
-  // 正片从第 0 帧开始（平台封面图由构建侧 ffmpeg 抽 video 第 0 帧，见 executors）。
-  if (cfg.coverMode === 'none') {
-    cfg.open = null;
-  }
+  // BUGS-20261120 R2(a)：`cover_mode=none` 只是「不插封面海报帧」，**不等于把 open 丢掉**。
+  // 2026-11-20 事故：这里把 cfg.open 置 null，片头 0–0.3s 全交给随机 bg，
+  // 抽到暗素材（bg_neural_mesh_v1，首帧近黑 91%）→ 整屏黑 → 黑场拦截 + 横版守卫误报。
+  // 现在 open 素材正常参与片头，首帧亮度由它兜底（open_wafer_v2 首帧近黑仅 12%）。
 
   return (
     <AbsoluteFill style={{ background: '#04060a' }}>

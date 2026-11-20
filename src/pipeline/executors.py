@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 PROJ = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJ))
@@ -569,8 +572,33 @@ def exec_render(ctx: StepContext) -> dict[str, str]:
 
 
 def exec_approval(ctx: StepContext) -> dict[str, str]:
-    """gate.approval：走适配层（feishu / cli / auto），runner 不再关心渠道细节。"""
+    """gate.approval：走适配层（feishu / cli / auto），runner 不再关心渠道细节。
+
+    BUGS-20261120 R5：**发审批卡之前**先跑片头亮度门禁（竖版、横版各自成立）。
+    不合格直接抛 ExecutorError，不占台账、不推卡片 —— 以前是渲完 31s 才在黑场/横版守卫那里挂，
+    使用者以为片能发，白白等一轮。
+    """
     from src.approval import request_approval
+    from src.utils.black_check import check_many
+
+    _vids: list[str] = []
+    for _key in ("video", "video_16_9"):
+        _p = ctx.artifacts.get(_key) or ""
+        if _p and Path(_p).exists():
+            _vids.append(str(_p))
+    if not _vids:
+        for _name in ("video.mp4", "video_16_9.mp4"):
+            _p = Path(ctx.run_root) / _name
+            if _p.exists():
+                _vids.append(str(_p))
+    if _vids:
+        _luma = check_many(_vids)
+        logger.info(f"[approval] 片头亮度门禁: OPENING_LUMA={'PASS' if _luma['ok'] else 'FAIL'} "
+                    f"{[{'v': Path(r['video']).name, 'ok': r['ok'], 'ratio': r.get('first_frame_ratio'),
+                        'yavg': r.get('first_frame_yavg')} for r in _luma['results']]}")
+        if not _luma["ok"]:
+            raise ExecutorError(
+                f"OPENING_TOO_DARK: 片头亮度不合格（未发审批卡、未占台账）：{_luma['reason']}")
 
     params = ctx.step.get("params") or {}
     mode = str(params.get("mode") or "auto")

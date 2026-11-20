@@ -60,7 +60,7 @@ export const TechCoverCard: React.FC<TechCoverProps> = ({ bg, main, sub, kicker,
       <AbsoluteFill
         style={{
           background: portrait
-            ? 'linear-gradient(to bottom, rgba(3,5,9,0.55) 0%, rgba(3,5,9,0.18) 34%, rgba(3,5,9,0.72) 66%, rgba(3,5,9,0.94) 100%)'
+            ? 'linear-gradient(to bottom, rgba(3,5,9,0.14) 0%, rgba(3,5,9,0.02) 34%, rgba(3,5,9,0.45) 66%, rgba(3,5,9,0.80) 100%)'
             : 'linear-gradient(to bottom, rgba(3,5,9,0.50) 0%, rgba(3,5,9,0.16) 38%, rgba(3,5,9,0.82) 78%, rgba(3,5,9,0.96) 100%)',
         }}
       />
