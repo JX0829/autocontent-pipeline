@@ -534,20 +534,24 @@ class DouyinProvider(BaseSocialProvider):
                             "expected": topics_declared, "filled": _tp,
                             "message": f"话题终态不合格（{_why}），拒绝发布"}
 
-                # 3e-2. 封面上传（SPEC-20261118 R1~R3）：显式上传 + 回读，失败即阻断
-                try:
-                    from src.providers import douyin_form as _df
-                    _cover = _df.set_cover(page, cover_path or "", log_obj=logger)
-                except Exception as exc:  # noqa: BLE001
-                    _cover = {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                              "detail": f"{type(exc).__name__}: {exc}"}
-                if not _cover.get("ok"):
-                    logger.error(f"COVER_UPLOAD_FAILED: {_cover.get('detail')}")
+                # 3e-2. 封面（2026-11-20 用户口径定案）：**不再向抖音上传任何封面**。
+                # 封面已经由 pipeline 拼在成片最前面 0.5s（executors._prepend_cover），
+                # 视频首帧 == cover.png == 平台首帧，所以这里只做本地自证：
+                #   视频首帧 vs cover.png SSIM ≥ 0.85 → 通过；否则拒绝发布。
+                # 同时删掉了原来的「上传 + Page.screenshot 回读」——
+                # 那套在 9333 上稳定 `Page.screenshot: Timeout 30000ms exceeded`，
+                # 是抖音唯一卡点，且逻辑上已无必要（不上传就没有可回读的东西）。
+                from src.utils.frame_match import check_video_starts_with_cover
+                _cf = cover_path or str(Path(video_path).with_name("cover.png"))
+                _fr = check_video_starts_with_cover(str(video_path), _cf)
+                if not _fr.get("ok"):
+                    logger.error(f"COVER_LEAD_IN_MISSING: {_fr.get('detail')}")
                     browser.close()
                     return {"success": False, "published": False,
-                            "error": "COVER_UPLOAD_FAILED",
-                            "expected": str(cover_path or ""), "filled": _cover,
-                            "message": f"封面没上传成功（{_cover.get('detail')}），拒绝发布"}
+                            "error": "COVER_LEAD_IN_MISSING",
+                            "expected": _cf, "filled": _fr,
+                            "message": f"成片首帧不是封面（{_fr.get('detail')}），拒绝发布"}
+                logger.info(f"[douyin] 封面口径=首帧（不上传）：{_fr.get('detail')}")
 
                 time.sleep(2)
 

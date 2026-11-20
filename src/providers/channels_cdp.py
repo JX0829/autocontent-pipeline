@@ -615,38 +615,59 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 await page.screenshot(path=str(shot_dir / "after_publish.png"), full_page=True)
 
                 # 8. 权威回读：post_list 里必须能看到这条作品的 desc.description 命中标题
+                # 2026-11-20：以前只有一句「未取得平台侧证据」，日志里什么都看不到。
+                # 现在每次尝试都打日志（条数/首条摘要/命中项），失败把候选摘要带出来；
+                # 并且**重试 3 次**（新作品进列表有延迟），匹配口径放宽到「去标点前缀」。
                 readback = {"verified": False, "reason": "未执行"}
                 if published:
                     from src.providers.channels_edit import ChannelsListError, fetch_post_list
-                    try:
-                        data = await fetch_post_list(page, 5, 1)
-                        items = ((data.get("data") or {}).get("list") or [])
-                        hit = None
-                        for it in items:
-                            d = it.get("desc") or {}
-                            blob = json.dumps(d, ensure_ascii=False)
-                            if title[:10] in blob:
-                                hit = {"createTime": it.get("createTime"),
-                                       "description_len": len(str(d.get("description") or "")),
-                                       "topic": bool(d.get("topic")),
-                                       "objectId": str(it.get("objectId") or "")[:32]}
+
+                    def _norm(s: str) -> str:
+                        return "".join(ch for ch in str(s or "") if ch.isalnum())
+
+                    want_keys = [k for k in (_norm(title)[:8], _norm(title)[:6]) if len(k) >= 4]
+                    for attempt, wait_s in enumerate((2, 6, 12), start=1):
+                        try:
+                            if attempt > 1:
+                                await asyncio.sleep(wait_s)
+                            data = await fetch_post_list(page, 10, 1)
+                            items = ((data.get("data") or {}).get("list") or [])
+                            heads = [str((it.get("desc") or {}).get("description") or "")[:24]
+                                     for it in items[:3]]
+                            hit = None
+                            for it in items:
+                                d = it.get("desc") or {}
+                                blob_n = _norm(d.get("description")) + _norm(
+                                    json.dumps(d.get("title"), ensure_ascii=False))
+                                if any(k and k in blob_n for k in want_keys):
+                                    hit = {"createTime": it.get("createTime"),
+                                           "description_len": len(str(d.get("description") or "")),
+                                           "topic": bool(d.get("topic")),
+                                           "objectId": str(it.get("objectId") or "")[:64]}
+                                    break
+                            logger.info(f"[CHANNELS] 回读第 {attempt} 次: 条数={len(items)} "
+                                        f"首条={heads[0][:24] if heads else '∅'!r} "
+                                        f"命中={'是' if hit else '否'}")
+                            if hit:
+                                readback = {"verified": True, "attempt": attempt, **hit}
+                                if hit["description_len"] < 10:
+                                    published = False
+                                    evidence = "回读文案为空"
                                 break
-                        if hit:
-                            readback = {"verified": True, **hit}
-                            if hit["description_len"] < 10:
-                                published = False
-                                evidence = "回读文案为空"
-                        else:
-                            readback = {"verified": False,
-                                        "reason": f"post_list 前 {len(items)} 条未见标题"}
-                    except ChannelsListError as e:
-                        # 接口拿不到 ≠ 没有作品：证据缺失必须显式标注，不能被当成"未命中"
-                        readback = {"verified": False, "evidence_unavailable": True,
-                                    "reason": f"CHANNELS_LIST_API_FAILED: {str(e)[:120]}"}
-                        logger.error(f"CHANNELS_LIST_API_FAILED: {str(e)[:160]}")
-                    except Exception as e:  # noqa: BLE001 — 回读失败不掩盖已取得的成功证据
-                        readback = {"verified": False, "evidence_unavailable": True,
-                                    "reason": f"回读异常: {str(e)[:80]}"}
+                            readback = {"verified": False, "attempt": attempt,
+                                        "items": len(items), "heads": heads,
+                                        "reason": f"post_list 前 {len(items)} 条未见标题（关键字 {want_keys}）"}
+                        except ChannelsListError as e:
+                            readback = {"verified": False, "evidence_unavailable": True,
+                                        "attempt": attempt,
+                                        "reason": f"CHANNELS_LIST_API_FAILED: {str(e)[:120]}"}
+                            logger.error(f"CHANNELS_LIST_API_FAILED（第 {attempt} 次）: {str(e)[:160]}")
+                        except Exception as e:  # noqa: BLE001 — 不掩盖已取得的成功证据
+                            readback = {"verified": False, "evidence_unavailable": True,
+                                        "attempt": attempt, "reason": f"回读异常: {str(e)[:80]}"}
+                            logger.warning(f"[CHANNELS] 回读异常（第 {attempt} 次）: {type(e).__name__}: {e}")
+                    if not readback.get("verified"):
+                        logger.warning(f"[CHANNELS] 回读未通过: {json.dumps(readback, ensure_ascii=False)[:300]}")
 
                 return {
                     "success": published,

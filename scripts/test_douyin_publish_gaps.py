@@ -78,17 +78,15 @@ def test_topic_tail() -> None:
 # ── 封面（R1~R3 / R9）──────────────────────────────────────────────────────
 def test_cover_upload() -> None:
     df = _read("src/providers/douyin_form.py")
-    check("R1 新增 set_cover()", "def set_cover(" in df)
-    check("R1 走图片 input 上传", 'input[type="file"]' in df and "set_input_files" in df)
-    check("R2 上传后回读指纹比对", "_dh_window" in df and "_dh_dist" in df)
-    check("R3 失败码 COVER_UPLOAD_FAILED", "COVER_UPLOAD_FAILED" in df)
+    # 2026-11-20 定案：首帧即封面 → 抖音**不再上传封面**，上传/回读代码已删除
+    check("R1 不再有 set_cover（已删）", "def set_cover(" not in df)
+    check("R2 不再有 dHash 回读（已删）", "_dh_window" not in df and "_dh_dist" not in df)
+    check("R3 不再有 COVER_UPLOAD_FAILED（已删）", "COVER_UPLOAD_FAILED" not in df)
 
     dy = _read("src/providers/douyin.py")
-    check("R1/3 douyin 发布前调用 set_cover", "set_cover(page, cover_path" in dy)
-    check("R3 封面失败阻断发布（点发布前 return）",
-          dy.index("COVER_UPLOAD_FAILED") < dy.index("# 6. 发表") if "# 6. 发表" in dy else True)
-    check("R3 阻断分支未点发布",
-          '"published": False,\n                            "error": "COVER_UPLOAD_FAILED"' in dy)
+    check("R1/3 douyin 不再调用 set_cover", "set_cover(page, cover_path" not in dy)
+    check("R3 改本地自证：视频首帧 == 封面", "check_video_starts_with_cover" in dy)
+    check("R3 失败码 COVER_LEAD_IN_MISSING 阻断发布", "COVER_LEAD_IN_MISSING" in dy)
 
     ch = _read("src/providers/channels_cdp.py")
     check("R9 视频号新增 _upload_cover_async", "async def _upload_cover_async" in ch)
@@ -103,14 +101,22 @@ def test_cover_upload() -> None:
 # ── 安全边距（R10/R11）────────────────────────────────────────────────────
 def test_safe_area() -> None:
     tsx = _read("renderer/src/tech/TechStoryVideo.tsx")
-    check("R10 HookOverlay 左右 120", "left: 120, right: 120, top: 190" in tsx)
-    check("R10 主体 左右 120", "left: 120, right: 120, top: 200" in tsx)
-    check("R10 字幕 左右 120", "left: 120, right: 120, bottom: 168" in tsx)
-    check("R10 角落标签 120", "left: 120, top: 104" in tsx and "right: 120, top: 104" in tsx)
+    # 2026-11-20：边距常量已在 develop 收敛（SAFE_X_VERTICAL=100），测试不再写死 120，
+    # 改为「引用同一常量」+ 断言取值在安全区间（抖音 feed 左右各裁 ~9%）。
+    m = re.search(r"const SAFE_X_VERTICAL = (\d+);", tsx)
+    has_const = bool(m)
+    check("R10 边距走常量 SAFE_X_VERTICAL", has_const, m.group(0) if m else "缺失")
+    if has_const:
+        val = int(m.group(1))
+        check("R10 常量在 90~120 安全区间", 90 <= val <= 120, f"{val}")
+    check("R10 各层统一引用常量（不再散落数字）",
+          tsx.count("safeX") >= 3 or tsx.count("SAFE_X_VERTICAL") >= 3,
+          f"SAFE_X_VERTICAL x{tsx.count('SAFE_X_VERTICAL')}")
     check("R10 不再有 88/70 竖版边距", not re.search(r"left: (88|70), right: (88|70)", tsx))
 
     cover = _read("renderer/src/tech/TechCoverCard.tsx")
-    check("R10 封面卡同样 120（feed 会裁边）", "left: 120, right: 120, bottom: 210" in cover)
+    check("R10 封面卡走 COVER_PAD_X 常量", "COVER_PAD_X" in cover)
+    check("R10 封面卡 padding 不被写死成 120", "left: 120, right: 120" not in cover)
 
     root = _read("renderer/src/Root.tsx")
     check("R10 横版仍是 1920x1080（不受影响）", "width: 1920" in root and "height: 1080" in root)
