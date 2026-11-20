@@ -126,7 +126,8 @@ def test_t2_wait_returns_on_scan() -> None:
 
     ok, waited, how = asyncio.run(driver())
     check("T2 扫码后命中其它 tab → 立即返回成功", ok is True, f"{ok} {how}")
-    check("T2 判定方式为「页面复查」", how == "页面复查", how)
+    # 2026-11-20：tab 命中不再直接采信，必须过服务端复验，判定方式随之变成证据串
+    check("T2 判定方式带服务端复验证据", "服务端复验" in how, how)
     check("T2 不需要等满超时（耗时 < 15s）", waited < 15, f"{waited}s")
 
     # ② 页面 URL 不变（SPA）→ 靠 15s 主页复验也能判出来
