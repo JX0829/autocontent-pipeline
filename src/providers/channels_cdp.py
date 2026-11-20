@@ -7,6 +7,7 @@ src/providers/channels_cdp.py
 import os
 import sys
 import json
+import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -619,16 +620,23 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 # 现在每次尝试都打日志（条数/首条摘要/命中项），失败把候选摘要带出来；
                 # 并且**重试 3 次**（新作品进列表有延迟），匹配口径放宽到「去标点前缀」。
                 readback = {"verified": False, "reason": "未执行"}
-                if published:
+                # 2026-11-20 P0：**权威判据只有 post_list**。
+                # 以前的顺序是「DOM 成功文案 → 才算 published → 才回读」，于是
+                # 只要成功文案没抓到（SPA 文案变化/弹窗未消），就既不算发布也不回读，
+                # 最后只留一句「未取得平台侧证据」，日志里什么都看不到。
+                # 现在：DOM 只作补充，回读**无条件执行**并轮询到 90s；
+                #   post_list 命中 → published=True + post_id
+                #   90s 未命中 → published=False，failed 而不是 unverified
+                if True:
                     from src.providers.channels_edit import ChannelsListError, fetch_post_list
 
                     def _norm(s: str) -> str:
                         return "".join(ch for ch in str(s or "") if ch.isalnum())
 
                     want_keys = [k for k in (_norm(title)[:8], _norm(title)[:6]) if len(k) >= 4]
-                    for attempt, wait_s in enumerate((2, 6, 12), start=1):
+                    for attempt, wait_s in enumerate((0, 5, 10, 15, 20, 25, 25), start=1):
                         try:
-                            if attempt > 1:
+                            if wait_s:
                                 await asyncio.sleep(wait_s)
                             data = await fetch_post_list(page, 10, 1)
                             items = ((data.get("data") or {}).get("list") or [])
@@ -650,6 +658,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                         f"命中={'是' if hit else '否'}")
                             if hit:
                                 readback = {"verified": True, "attempt": attempt, **hit}
+                                published = True
+                                evidence = f"post_list 命中（第 {attempt} 次回读）"
                                 if hit["description_len"] < 10:
                                     published = False
                                     evidence = "回读文案为空"
@@ -667,12 +677,37 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                         "attempt": attempt, "reason": f"回读异常: {str(e)[:80]}"}
                             logger.warning(f"[CHANNELS] 回读异常（第 {attempt} 次）: {type(e).__name__}: {e}")
                     if not readback.get("verified"):
+                        # 回读拿不到/没命中 → 这次就是没发出去（不是「不确定」）
+                        published = False
+                        evidence = "post_list 未命中（90s 内）"
                         logger.warning(f"[CHANNELS] 回读未通过: {json.dumps(readback, ensure_ascii=False)[:300]}")
+                        # 现场：把还可能挂着的弹窗/红字校验一起抓下来
+                        try:
+                            tips = await ui.evaluate(
+                                """() => [...document.querySelectorAll('.weui-desktop-dialog,.weui-desktop-toast,[class*=err]')]
+                                     .filter(e => e.offsetWidth)
+                                     .map(e => (e.innerText || '').trim().slice(0, 80))
+                                     .filter(Boolean).slice(0, 5)""")
+                            if tips:
+                                logger.warning(f"[CHANNELS] 页面上仍有提示: {tips}")
+                                readback["blocking_tips"] = tips
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            html = await ui.evaluate("document.body.innerHTML")
+                            (shot_dir / f"publish_blocked_{int(time.time())}.html").write_text(html[:400000])
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 return {
                     "success": published,
                     "published": published,
-                    "status": "PUBLISHED" if published else "PUBLISHED_UNVERIFIED",
+                    # 2026-11-20：三态分明 —— 命中= PUBLISHED；接口挂了= UNVERIFIED（证据缺失）；
+                    # 接口正常但列表里没有 = FAILED_NOT_PUBLISHED（真没发出去）
+                    "status": ("PUBLISHED" if published else
+                               ("PUBLISHED_UNVERIFIED" if readback.get("evidence_unavailable")
+                                else "FAILED_NOT_PUBLISHED")),
+                    "readback": readback,
                     # 视频号的外部 id 是 post_list 回读到的 objectId（`export/…`）。
                     # 2026-11-15 之前没往上报，executors 拿不到 id → 台账只能记 unverified，
                     # 明明发出去了却没有凭证。这里显式给出，msg_id/post_id 都填。
