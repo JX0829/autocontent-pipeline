@@ -617,16 +617,9 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 # 8. 权威回读：post_list 里必须能看到这条作品的 desc.description 命中标题
                 readback = {"verified": False, "reason": "未执行"}
                 if published:
+                    from src.providers.channels_edit import ChannelsListError, fetch_post_list
                     try:
-                        raw = await page.evaluate("""async () => {
-                          const r = await fetch('/cgi-bin/mmfinderassistant-bin/post/post_list', {
-                            method:'POST', credentials:'include',
-                            headers:{'Content-Type':'application/json'},
-                            body: JSON.stringify({pageSize: 5, currentPage: 1, timestamp: Date.now()})
-                          });
-                          return await r.text();
-                        }""")
-                        data = json.loads(raw)
+                        data = await fetch_post_list(page, 5, 1)
                         items = ((data.get("data") or {}).get("list") or [])
                         hit = None
                         for it in items:
@@ -646,8 +639,14 @@ class ChannelsCDPProvider(BaseSocialProvider):
                         else:
                             readback = {"verified": False,
                                         "reason": f"post_list 前 {len(items)} 条未见标题"}
+                    except ChannelsListError as e:
+                        # 接口拿不到 ≠ 没有作品：证据缺失必须显式标注，不能被当成"未命中"
+                        readback = {"verified": False, "evidence_unavailable": True,
+                                    "reason": f"CHANNELS_LIST_API_FAILED: {str(e)[:120]}"}
+                        logger.error(f"CHANNELS_LIST_API_FAILED: {str(e)[:160]}")
                     except Exception as e:  # noqa: BLE001 — 回读失败不掩盖已取得的成功证据
-                        readback = {"verified": False, "reason": f"回读异常: {str(e)[:80]}"}
+                        readback = {"verified": False, "evidence_unavailable": True,
+                                    "reason": f"回读异常: {str(e)[:80]}"}
 
                 return {
                     "success": published,

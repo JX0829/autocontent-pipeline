@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,59 @@ def title_value(page) -> str:
         return ""
 
 
+OVERLAY_HINTS = ("章节要点", "封面建议", "画质提示", "发布设置", "智能生成")
+OVERLAY_CLOSE_TEXTS = ("关闭", "我知道了", "知道了", "取消", "暂不", "不用了")
+
+
+def dismiss_blocking_overlays(page, log_obj=None) -> int:
+    """关掉上传页上的教程/建议类浮层（幂等，没有就零操作）。
+
+    只点 `.semi-modal-wrap` / `.semi-portal` **内部**、文案在白名单里的按钮，
+    不按 Esc（会把正编辑器一起关掉）。返回关掉的层数。
+    """
+    log = log_obj or logger
+    try:
+        n = page.evaluate(
+            """({hints, closes}) => {
+              const seen = new Set();
+              let closed = 0;
+              const wraps = [...document.querySelectorAll('.semi-modal-wrap,.semi-portal')]
+                .filter(e => e.offsetWidth || e.offsetHeight);
+              for (const w of wraps) {
+                const txt = (w.innerText || '').trim();
+                if (!txt || !hints.some(h => txt.includes(h))) continue;
+                if (seen.has(w)) continue;
+                seen.add(w);
+                const btns = [...w.querySelectorAll('button,[role=button],span,div')]
+                  .filter(b => (b.offsetWidth || b.offsetHeight)
+                            && closes.includes((b.innerText || '').trim()));
+                const btn = btns[btns.length - 1];
+                if (btn) { btn.click(); closed++; }
+              }
+              return closed;
+            }""",
+            {"hints": list(OVERLAY_HINTS), "closes": list(OVERLAY_CLOSE_TEXTS)},
+        )
+        if n:
+            log.info(f"[douyin] 已关闭 {n} 个遮挡浮层")
+        return int(n or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"[douyin] 关浮层跳过：{type(exc).__name__}: {exc}")
+        return 0
+
+
 def fill_title(page, title: str, *, attempts: int = 3) -> tuple[bool, str, str]:
-    """把标题填进「作品标题」框并回读自证。返回 (ok, landed, err)。"""
+    """把标题填进「作品标题」框并回读自证。返回 (ok, landed, err)。
+
+    2026-11-20 P0：连续三轮卡在 `Locator.click: Timeout 30000ms exceeded`。
+    真机实证（真机探针，上传后页面）：
+      · 输入框存在且可见（`count=2, vis=1`，placeholder「填写作品标题…」）
+      · `elementFromPoint(中心)` 命中的就是 INPUT 自己 → **没有被遮挡**
+      · 但页面上同时有 3 个可见的 `.semi-modal-wrap/.semi-portal`
+      · `click()` 3s/30s 一律超时 —— 这是 Playwright「等待元素稳定/可点击」的判据
+        在持续动效的页面上永远不满足，不是选择器错、也不是被盖住
+    所以：**不点**，直接 `fill()`（不要求 hit-target），失败再退 JS 原生 setter + input 事件。
+    """
     want = (title or "").strip()[:30]
     if not want:
         return False, "", "标题为空"
@@ -62,23 +114,83 @@ def fill_title(page, title: str, *, attempts: int = 3) -> tuple[bool, str, str]:
     if loc is None:
         return False, "", "页面上找不到「作品标题」输入框"
 
+    try:
+        dismiss_blocking_overlays(page, logger)
+    except Exception:  # noqa: BLE001 — 关弹层失败不该阻断填标题
+        pass
+
     landed = ""
+    how = ""
     for i in range(attempts):
+        # ① 直接 fill（不点、不等可点击；这是绕开 30s 卡点的关键）
         try:
-            loc.click()
-            page.keyboard.press("ControlOrMeta+a")
-            page.keyboard.press("Delete")
-            loc.fill(want)          # fill 派发 input 事件，React 才认
-            time.sleep(0.6)
+            loc.fill(want, timeout=4000)
             landed = (loc.input_value() or "").strip()
+            how = "fill"
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"标题填写第 {i + 1} 轮异常: {exc}")
+            logger.info(f"标题 fill 第 {i + 1} 轮不可用（{type(exc).__name__}），改 JS 写入")
             landed = ""
+        # ② JS 原生 setter + input 事件（React 受控组件也认）
+        if not landed:
+            try:
+                page.evaluate(
+                    """({sel, val}) => {
+                      const el = document.querySelector(sel);
+                      if (!el) return false;
+                      const proto = el.tagName === 'TEXTAREA'
+                        ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                      setter.call(el, val);
+                      el.dispatchEvent(new Event('input', {bubbles: true}));
+                      el.dispatchEvent(new Event('change', {bubbles: true}));
+                      return true;
+                    }""",
+                    {"sel": TITLE_SELECTORS[0], "val": want},
+                )
+                time.sleep(0.4)
+                landed = (loc.input_value() or "").strip()
+                how = "js-setter"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"标题 JS 写入第 {i + 1} 轮异常: {type(exc).__name__}: {exc}")
+
         if landed and landed[:10] == want[:10]:
-            logger.info(f"标题已落位（第 {i + 1} 轮）: {landed[:30]!r}")
+            logger.info(f"标题已落位（第 {i + 1} 轮/{how}）: {landed[:30]!r}")
             return True, landed, ""
-        time.sleep(1)
-    return False, landed, f"回读不一致 filled={landed[:40]!r}"
+        time.sleep(0.6)
+
+    # 失败现场：候选计数 + 是否被遮挡 + 截图，便于下次一眼定位
+    dbg = ""
+    try:
+        info = page.evaluate(
+            """(sels) => {
+              const out = [];
+              for (const s of sels) {
+                const els = [...document.querySelectorAll(s)];
+                out.push({sel: s, count: els.length,
+                          vis: els.filter(e => e.offsetWidth || e.offsetHeight).length});
+              }
+              const el = document.querySelector('input[placeholder*="标题"]');
+              const r = el && el.getBoundingClientRect();
+              const top = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+              return {cands: out, topTag: top ? top.tagName : null,
+                      modals: [...document.querySelectorAll('.semi-modal-wrap,.semi-portal')]
+                                .filter(e => e.offsetWidth).length};
+            }""",
+            list(TITLE_SELECTORS),
+        )
+        d = Path("output/douyin_diag")
+        d.mkdir(parents=True, exist_ok=True)
+        shot = d / f"title_fill_fail_{int(time.time())}.png"
+        try:
+            page.screenshot(path=str(shot), timeout=5000)
+        except Exception:  # noqa: BLE001
+            shot = None
+        dbg = f"cands={info.get('cands')} top={info.get('topTag')} modals={info.get('modals')} shot={shot}"
+        logger.error(f"TITLE_FILL_FAILED: {dbg}")
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"TITLE_FILL_FAILED（现场采集失败 {type(exc).__name__}） landed={landed!r}")
+
+    return False, landed, f"回读不一致 filled={landed[:40]!r}｜{dbg}"
 
 
 def fill_caption(page, text: str) -> bool:
