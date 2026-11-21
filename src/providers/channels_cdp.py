@@ -7,6 +7,7 @@ src/providers/channels_cdp.py
 import os
 import sys
 import json
+import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -395,6 +396,14 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 # `<span class="hl topic" data-type="topic">`（真话题，落地到 desc.topic）。
                 # 用 execCommand('insertText') 一次粘贴 → 纯文本，post_list 回读 topic=false。
                 # 所以：正文照旧粘贴（保排版），话题改成敲入。
+                # 视频号标题校验很窄（小数点都不认）：落文案前先归一化，否则整条发不出去。
+                # 归一化结果同时用于 payload / 短标题 / post_list 回读关键字，避免"发出去但回读对不上"。
+                from src.providers.channels_edit import sanitize_title
+                _clean_title, _title_changed = sanitize_title(title)
+                if _title_changed:
+                    logger.warning(f"[CHANNELS] 标题含平台不认的符号，已归一化：{title!r} → {_clean_title!r}")
+                title = _clean_title
+
                 _topic_list = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()][:5]
                 tag_str = " ".join(f"#{t}" for t in _topic_list)
                 # 按整行截断，绝不把句子/话题砍成半截
@@ -615,44 +624,98 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 await page.screenshot(path=str(shot_dir / "after_publish.png"), full_page=True)
 
                 # 8. 权威回读：post_list 里必须能看到这条作品的 desc.description 命中标题
+                # 2026-11-20：以前只有一句「未取得平台侧证据」，日志里什么都看不到。
+                # 现在每次尝试都打日志（条数/首条摘要/命中项），失败把候选摘要带出来；
+                # 并且**重试 3 次**（新作品进列表有延迟），匹配口径放宽到「去标点前缀」。
                 readback = {"verified": False, "reason": "未执行"}
-                if published:
-                    try:
-                        raw = await page.evaluate("""async () => {
-                          const r = await fetch('/cgi-bin/mmfinderassistant-bin/post/post_list', {
-                            method:'POST', credentials:'include',
-                            headers:{'Content-Type':'application/json'},
-                            body: JSON.stringify({pageSize: 5, currentPage: 1, timestamp: Date.now()})
-                          });
-                          return await r.text();
-                        }""")
-                        data = json.loads(raw)
-                        items = ((data.get("data") or {}).get("list") or [])
-                        hit = None
-                        for it in items:
-                            d = it.get("desc") or {}
-                            blob = json.dumps(d, ensure_ascii=False)
-                            if title[:10] in blob:
-                                hit = {"createTime": it.get("createTime"),
-                                       "description_len": len(str(d.get("description") or "")),
-                                       "topic": bool(d.get("topic")),
-                                       "objectId": str(it.get("objectId") or "")[:32]}
+                # 2026-11-20 P0：**权威判据只有 post_list**。
+                # 以前的顺序是「DOM 成功文案 → 才算 published → 才回读」，于是
+                # 只要成功文案没抓到（SPA 文案变化/弹窗未消），就既不算发布也不回读，
+                # 最后只留一句「未取得平台侧证据」，日志里什么都看不到。
+                # 现在：DOM 只作补充，回读**无条件执行**并轮询到 90s；
+                #   post_list 命中 → published=True + post_id
+                #   90s 未命中 → published=False，failed 而不是 unverified
+                if True:
+                    from src.providers.channels_edit import ChannelsListError, fetch_post_list
+
+                    def _norm(s: str) -> str:
+                        return "".join(ch for ch in str(s or "") if ch.isalnum())
+
+                    want_keys = [k for k in (_norm(title)[:8], _norm(title)[:6]) if len(k) >= 4]
+                    for attempt, wait_s in enumerate((0, 5, 10, 15, 20, 25, 25), start=1):
+                        try:
+                            if wait_s:
+                                await asyncio.sleep(wait_s)
+                            data = await fetch_post_list(page, 10, 1)
+                            items = ((data.get("data") or {}).get("list") or [])
+                            heads = [str((it.get("desc") or {}).get("description") or "")[:24]
+                                     for it in items[:3]]
+                            hit = None
+                            for it in items:
+                                d = it.get("desc") or {}
+                                blob_n = _norm(d.get("description")) + _norm(
+                                    json.dumps(d.get("title"), ensure_ascii=False))
+                                if any(k and k in blob_n for k in want_keys):
+                                    hit = {"createTime": it.get("createTime"),
+                                           "description_len": len(str(d.get("description") or "")),
+                                           "topic": bool(d.get("topic")),
+                                           "objectId": str(it.get("objectId") or "")[:64]}
+                                    break
+                            logger.info(f"[CHANNELS] 回读第 {attempt} 次: 条数={len(items)} "
+                                        f"首条={heads[0][:24] if heads else '∅'!r} "
+                                        f"命中={'是' if hit else '否'}")
+                            if hit:
+                                readback = {"verified": True, "attempt": attempt, **hit}
+                                published = True
+                                evidence = f"post_list 命中（第 {attempt} 次回读）"
+                                if hit["description_len"] < 10:
+                                    published = False
+                                    evidence = "回读文案为空"
                                 break
-                        if hit:
-                            readback = {"verified": True, **hit}
-                            if hit["description_len"] < 10:
-                                published = False
-                                evidence = "回读文案为空"
-                        else:
-                            readback = {"verified": False,
-                                        "reason": f"post_list 前 {len(items)} 条未见标题"}
-                    except Exception as e:  # noqa: BLE001 — 回读失败不掩盖已取得的成功证据
-                        readback = {"verified": False, "reason": f"回读异常: {str(e)[:80]}"}
+                            readback = {"verified": False, "attempt": attempt,
+                                        "items": len(items), "heads": heads,
+                                        "reason": f"post_list 前 {len(items)} 条未见标题（关键字 {want_keys}）"}
+                        except ChannelsListError as e:
+                            readback = {"verified": False, "evidence_unavailable": True,
+                                        "attempt": attempt,
+                                        "reason": f"CHANNELS_LIST_API_FAILED: {str(e)[:120]}"}
+                            logger.error(f"CHANNELS_LIST_API_FAILED（第 {attempt} 次）: {str(e)[:160]}")
+                        except Exception as e:  # noqa: BLE001 — 不掩盖已取得的成功证据
+                            readback = {"verified": False, "evidence_unavailable": True,
+                                        "attempt": attempt, "reason": f"回读异常: {str(e)[:80]}"}
+                            logger.warning(f"[CHANNELS] 回读异常（第 {attempt} 次）: {type(e).__name__}: {e}")
+                    if not readback.get("verified"):
+                        # 回读拿不到/没命中 → 这次就是没发出去（不是「不确定」）
+                        published = False
+                        evidence = "post_list 未命中（90s 内）"
+                        logger.warning(f"[CHANNELS] 回读未通过: {json.dumps(readback, ensure_ascii=False)[:300]}")
+                        # 现场：把还可能挂着的弹窗/红字校验一起抓下来
+                        try:
+                            tips = await ui.evaluate(
+                                """() => [...document.querySelectorAll('.weui-desktop-dialog,.weui-desktop-toast,[class*=err]')]
+                                     .filter(e => e.offsetWidth)
+                                     .map(e => (e.innerText || '').trim().slice(0, 80))
+                                     .filter(Boolean).slice(0, 5)""")
+                            if tips:
+                                logger.warning(f"[CHANNELS] 页面上仍有提示: {tips}")
+                                readback["blocking_tips"] = tips
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            html = await ui.evaluate("document.body.innerHTML")
+                            (shot_dir / f"publish_blocked_{int(time.time())}.html").write_text(html[:400000])
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 return {
                     "success": published,
                     "published": published,
-                    "status": "PUBLISHED" if published else "PUBLISHED_UNVERIFIED",
+                    # 2026-11-20：三态分明 —— 命中= PUBLISHED；接口挂了= UNVERIFIED（证据缺失）；
+                    # 接口正常但列表里没有 = FAILED_NOT_PUBLISHED（真没发出去）
+                    "status": ("PUBLISHED" if published else
+                               ("PUBLISHED_UNVERIFIED" if readback.get("evidence_unavailable")
+                                else "FAILED_NOT_PUBLISHED")),
+                    "readback": readback,
                     # 视频号的外部 id 是 post_list 回读到的 objectId（`export/…`）。
                     # 2026-11-15 之前没往上报，executors 拿不到 id → 台账只能记 unverified，
                     # 明明发出去了却没有凭证。这里显式给出，msg_id/post_id 都填。

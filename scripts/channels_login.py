@@ -36,7 +36,7 @@ sys.path.insert(0, str(PROJ))
 from src.providers import channels_session  # noqa: E402
 from src.providers.channels_session import (  # noqa: E402
     CDP_URL, HOME_URL, LOGIN_URL, STORAGE_STATE, USER_DATA_DIR, ChannelsSessionError,
-    ensure, is_logged_in, verify_login,
+    ensure, is_logged_in, login_evidence, verify_login, verify_login_detail,
 )
 
 
@@ -129,6 +129,18 @@ async def wait_for_login(ctx, page, timeout_sec: int, *, poll: float = 3.0,
         waited += poll
         hit = await _any_logged_in_page(ctx)
         how = "页面复查"
+        if hit:
+            # 2026-11-20 P0：别信「有个 tab 看起来像已登录」——旧 tab 的 DOM 会缓存
+            # 「发表视频」，实测就是这样在 login.html 时打印「登录成功（3s 内确认）」。
+            # 必须让服务端复验一次（直达发布页，未登录会被 302 到 login.html）。
+            try:
+                ok_full, url_full, why_full = await verify_login_detail(CDP_URL)
+            except Exception as exc:  # noqa: BLE001
+                ok_full, url_full, why_full = False, "", f"复验异常 {type(exc).__name__}"
+            if ok_full:
+                return True, waited, f"服务端复验通过（{why_full}）"
+            print(f"   ⚠️ 某 tab 看似已登录，但服务端复验不通过：{why_full}｜{url_full[:60]}")
+            hit = False
         if not hit and waited - last_full >= full_check:
             last_full = waited
             try:
@@ -165,14 +177,17 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360,
             await asyncio.sleep(6)
 
             ok_check, check_url = await verify_login(CDP_URL)
-            if ok_check or await is_logged_in(page):
+            ev_ok, ev_why = await login_evidence(page)
+            if ok_check or ev_ok:
+                # 只要有一条硬证据，也让另一条对齐；两条都不满足就直接否认（fail-closed）
                 await _refresh_snapshot(ctx)
                 print(f"✅ 登录态有效（持久化 profile，复用 CDP {CDP_URL}）: {check_url or page.url}")
+                print(f"   证据：verify_login={ok_check}｜当前页 {ev_why}")
                 print(f"   profile: {USER_DATA_DIR}")
                 return 0
 
             if check_only:
-                print(f"❌ 登录态已失效: {page.url}")
+                print(f"❌ LOGIN_NOT_CONFIRMED: 登录态已失效（url={page.url[:70]}｜{ev_why}）")
                 print("   无头检查不能扫码；去掉 --check 跑一次即可开窗扫码。")
                 return 2
 
@@ -201,11 +216,16 @@ async def run(check_only: bool, qr_out: str = "", timeout_sec: int = 360,
             ok, waited, how = await wait_for_login(ctx, page, timeout_sec)
             if ok:
                 await _refresh_snapshot(ctx)
-                print(f"✅ 登录成功（{waited:.0f}s 内确认，{how}），"
+                print(f"✅ 登录成功（{waited:.0f}s 内确认｜{how}），"
                       f"登录态已在持久化 profile 内（浏览器保持开启，供发布复用）")
                 return 0
-            print(f"❌ 等待登录超时（{timeout_sec}s）")
-            return 1
+            # 2026-11-20：这里以前会把「登录页没动」也当成超时了事，覆盖率靠人肉看。
+            # 现在必须给硬证据 + 机器可读错误码，且**不许 exit 0**。
+            ev_ok, ev_why = await login_evidence(page)
+            print(f"❌ LOGIN_NOT_CONFIRMED: 等待登录超时（{timeout_sec}s，url={page.url[:70]}）")
+            print(f"   当前页判定：ok={ev_ok}｜{ev_why}")
+            print(f"   若页面已是登录后状态，请检查是否有残留 login.html tab 干扰。")
+            return 2
         finally:
             # 只关这个页面，**不关浏览器**：9334 要留给后续发布复用
             try:

@@ -86,20 +86,91 @@ async def _wait_frame(page, needle: str, timeout: float = 25.0):
     return None
 
 
+POST_LIST_JS = """async ({api, size, cur}) => {
+  const r = await fetch(api, {method:'POST', credentials:'include',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pageSize: size, currentPage: cur, timestamp: Date.now()})});
+  const t = await r.text();
+  return JSON.stringify({__status: r.status, __body: t});
+}"""
+
+
+#: 视频号描述标题允许的符号（后台校验原文：符号仅支持书名号、引号、冒号、加号、问号、
+#: 百分号、摄氏度，逗号可用空格代替）。2026-11-20 实测：标题里带「2.3B」的小数点直接被拦，
+#: 页面提示「标题包含特殊字符」→ 发布失败。所以落文案前必须归一化。
+_CH_TITLE_ALLOW = set("《》「」『』“”‘’\"'：:＋+？?%℃、，。…—～ ")
+
+
+def sanitize_title(title: str) -> tuple[str, bool]:
+    """把标题里的视频号不认的符号收拾掉。返回 (新标题, 是否改过)。
+
+    · 数字之间的小数点 → 「点」（2.3B → 2点3B，语义最接近且平台认）
+    · 其余不在白名单的符号 → 空格，再压掉多余空白
+    """
+    import re
+    raw = str(title or "").strip()
+    if not raw:
+        return raw, False
+    t = re.sub(r"(?<=\d)[.．](?=\d)", "点", raw)
+    out = []
+    for ch in t:
+        if ch.isalnum() or "\u4e00" <= ch <= "\u9fff" or ch in _CH_TITLE_ALLOW:
+            out.append(ch)
+        else:
+            out.append(" ")
+    clean = re.sub(r"\s+", " ", "".join(out)).strip()
+    return clean, clean != raw
+
+
+async def fetch_post_list(page, size: int = 5, cur: int = 1) -> dict:
+    """拉一页 post_list，**主帧失败自动退到 iframe**，并把失败说清楚。
+
+    2026-11-20 实证：`/platform/post/list` 主帧正文只有 11 字符（「视频号 · 助手」），
+    真正的内容在子 frame `micro/content/post/list` 里。**但 DOM 不是证据来源** ——
+    post_list 接口本身在同一页面就返回 errCode=0 + 20KB JSON（主帧和 iframe 都能调通）。
+    所以这里只认接口结果，不拿正文长度猜「有没有作品」。
+
+    失败抛 ChannelsListError（带 status / errCode / 试过的 frame），
+    绝不当成「列表为空」。
+    """
+    api = POST_LIST_API
+    targets: list[tuple[str, object]] = [("main", page)]
+    for f in getattr(page, "frames", []) or []:
+        try:
+            fu = f.url or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if "channels.weixin.qq.com" in fu and f is not page:
+            targets.append((fu[:60], f))
+
+    tried: list[str] = []
+    last_err = ""
+    for name, target in targets:
+        try:
+            raw = await target.evaluate(POST_LIST_JS, {"api": api, "size": size, "cur": cur})
+            env = json.loads(raw)
+            body = env.get("__body") or ""
+            data = json.loads(body) if body else {}
+            if data.get("errCode") in (0, None) and ((data.get("data") or {}).get("list") is not None):
+                return data
+            tried.append(f"{name}: status={env.get('__status')} errCode={data.get('errCode')} "
+                         f"{str(data.get('errMsg'))[:40]}")
+            last_err = f"errCode={data.get('errCode')} {data.get('errMsg')}"
+        except Exception as exc:  # noqa: BLE001
+            tried.append(f"{name}: {type(exc).__name__}: {str(exc)[:60]}")
+            last_err = f"{type(exc).__name__}: {str(exc)[:60]}"
+    raise ChannelsListError(f"post_list 调用失败（{last_err}）｜尝试：{tried}")
+
+
+class ChannelsListError(RuntimeError):
+    """post_list 拿不到数据（登录过期/接口变更/被风控），调用方必须按失败处理。"""
+
+
 async def list_posts(page, pages: int = 3, page_size: int = 20) -> list[PostItem]:
     """拉 post_list（只读）。短标题在 desc.title[0].shortTitle。"""
     out: list[PostItem] = []
     for cur in range(1, pages + 1):
-        raw = await page.evaluate(
-            """async ({api, size, cur}) => {
-              const r = await fetch(api, {method:'POST', credentials:'include',
-                headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({pageSize: size, currentPage: cur, timestamp: Date.now()})});
-              return await r.text();
-            }""",
-            {"api": POST_LIST_API, "size": page_size, "cur": cur},
-        )
-        data = json.loads(raw)
+        data = await fetch_post_list(page, page_size, cur)
         if data.get("errCode") not in (0, None):
             logger.warning(f"post_list errCode={data.get('errCode')} {data.get('errMsg')}")
         items = ((data.get("data") or {}).get("list") or [])
