@@ -100,11 +100,27 @@ def main() -> int:
     for h in hits:
         print(f"  {h['objectId']}  {time.strftime('%F %H:%M', time.localtime(h['createTime'] or 0))}  {h['first_line']}")
     true_id = hits[0]["objectId"]
-    if true_id == recorded:
+
+    # 台账真值才是要修的对象：可能被截断（真机事故：台账里存了 25 字符的前缀，
+    # 而 publish.json 是完整的，只比 publish.json 会「看着一致、实际不一致」）。
+    con = sqlite3.connect(args.db)
+    try:
+        ledger_rows = list(con.execute(
+            "select publish_key, post_id from publish_ledger "
+            "where platform='channels' and status='published' order by updated_at desc limit 20"))
+    finally:
+        con.close()
+    bad = [(k, pid) for k, pid in ledger_rows
+           if pid != true_id and (not pid or true_id.startswith(str(pid)) or str(pid).startswith(true_id[:20]))]
+    if bad:
+        print(f"⚠️ 台账里有 {len(bad)} 行 id 与 post_list 真值不一致（疑似截断）：")
+        for k, pid in bad:
+            print(f"  {k}  {pid}  →  {true_id}")
+    if true_id == recorded and not bad:
         print("✅ 台账 id 与 post_list 一致，无需对账")
         return 0
 
-    print(f"\n⚠️ id 不一致：台账/发布记录 {recorded or '(空)'} → 真值 {true_id}")
+    print(f"\n⚠️ id 不一致：发布记录 {recorded or '(空)'} → 真值 {true_id}")
     if not args.apply:
         print("（只读模式，未写入；确认后加 --apply）")
         return 0
@@ -117,11 +133,17 @@ def main() -> int:
             "update publish_ledger set post_id=?, updated_at=datetime('now','localtime') "
             "where platform='channels' and post_id=?", (true_id, recorded))
         con.commit()
-        print(f"台账更新 {cur.rowcount} 行（备份 {bak.name}）")
+        print(f"台账按发布记录更新 {cur.rowcount} 行（备份 {bak.name}）")
+        for k, pid in bad:
+            c2 = con.execute(
+                "update publish_ledger set post_id=?, updated_at=datetime('now','localtime') "
+                "where publish_key=? and platform='channels'", (true_id, k))
+            con.commit()
+            print(f"台账按截断行修正 {c2.rowcount} 行：{k}")
         if cur.rowcount == 0:
             cur = con.execute(
                 "update publish_ledger set post_id=?, updated_at=datetime('now','localtime') "
-                "where platform='channels' and post_id is null and status='published'")
+                "where platform='channels' and post_id is null and status='published'", (true_id,))
             con.commit()
             print(f"按「published 且无 id」兜底更新 {cur.rowcount} 行")
     finally:
