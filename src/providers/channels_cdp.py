@@ -396,6 +396,14 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 # `<span class="hl topic" data-type="topic">`（真话题，落地到 desc.topic）。
                 # 用 execCommand('insertText') 一次粘贴 → 纯文本，post_list 回读 topic=false。
                 # 所以：正文照旧粘贴（保排版），话题改成敲入。
+                # 视频号标题校验很窄（小数点都不认）：落文案前先归一化，否则整条发不出去。
+                # 归一化结果同时用于 payload / 短标题 / post_list 回读关键字，避免"发出去但回读对不上"。
+                from src.providers.channels_edit import sanitize_title
+                _clean_title, _title_changed = sanitize_title(title)
+                if _title_changed:
+                    logger.warning(f"[CHANNELS] 标题含平台不认的符号，已归一化：{title!r} → {_clean_title!r}")
+                title = _clean_title
+
                 _topic_list = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()][:5]
                 tag_str = " ".join(f"#{t}" for t in _topic_list)
                 # 按整行截断，绝不把句子/话题砍成半截

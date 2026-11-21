@@ -95,6 +95,33 @@ POST_LIST_JS = """async ({api, size, cur}) => {
 }"""
 
 
+#: 视频号描述标题允许的符号（后台校验原文：符号仅支持书名号、引号、冒号、加号、问号、
+#: 百分号、摄氏度，逗号可用空格代替）。2026-11-20 实测：标题里带「2.3B」的小数点直接被拦，
+#: 页面提示「标题包含特殊字符」→ 发布失败。所以落文案前必须归一化。
+_CH_TITLE_ALLOW = set("《》「」『』“”‘’\"'：:＋+？?%℃、，。…—～ ")
+
+
+def sanitize_title(title: str) -> tuple[str, bool]:
+    """把标题里的视频号不认的符号收拾掉。返回 (新标题, 是否改过)。
+
+    · 数字之间的小数点 → 「点」（2.3B → 2点3B，语义最接近且平台认）
+    · 其余不在白名单的符号 → 空格，再压掉多余空白
+    """
+    import re
+    raw = str(title or "").strip()
+    if not raw:
+        return raw, False
+    t = re.sub(r"(?<=\d)[.．](?=\d)", "点", raw)
+    out = []
+    for ch in t:
+        if ch.isalnum() or "\u4e00" <= ch <= "\u9fff" or ch in _CH_TITLE_ALLOW:
+            out.append(ch)
+        else:
+            out.append(" ")
+    clean = re.sub(r"\s+", " ", "".join(out)).strip()
+    return clean, clean != raw
+
+
 async def fetch_post_list(page, size: int = 5, cur: int = 1) -> dict:
     """拉一页 post_list，**主帧失败自动退到 iframe**，并把失败说清楚。
 
