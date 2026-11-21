@@ -247,14 +247,14 @@ def fill_caption(page, text: str) -> bool:
         return bool(d.get("ok")), d
 
     def _clear() -> None:
-        """清空描述框（重试前必须清，否则正文会叠加成两遍）。"""
-        try:
-            editor.click()
-            page.keyboard.press("Meta+A")
-            page.keyboard.press("Backspace")
-            page.wait_for_timeout(300)
-        except Exception:  # noqa: BLE001
-            pass
+        """清空描述框（重试前必须清，否则正文会叠加成两遍）。
+
+        2026-11-22：不再 `editor.click()`（上传页上稳定 30s 超时），
+        改走 douyin_caption.clear_caption_editor：JS focus + Range 全选 + 原生 Backspace。
+        """
+        from src.utils.douyin_caption import clear_caption_editor
+        if not clear_caption_editor(page, logger):
+            logger.warning("清空描述框失败（继续重试）")
 
     res = insert_caption(page, editor, body, logger=logger)
     ok, dom = _dom_ok()

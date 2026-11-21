@@ -131,12 +131,31 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     "message": str(exc)}
         self._warn_if_headless()
 
-        return asyncio.run(self._publish_live_async(
-            video_path=video_path, cover_path=cover_path, title=title,
-            content_text=content_text, topics=topics,
-            declare_original=declare_original, declare_aigc=declare_aigc,
-            dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
-            stop_before_publish=stop_before_publish, cdp_url=cdp_url))
+        # 2026-11-22 P0-2：视频号「静默失败」治理 —— 以前这里直接 asyncio.run，
+        # 任何异常都变成调用方看不到的现象（日志里一点异常都没有）。
+        # 现在：异常一律 logger.exception（含 traceback）+ 返回带 stage 的结构体。
+        self._publish_stage = "init"
+        try:
+            res = asyncio.run(self._publish_live_async(
+                video_path=video_path, cover_path=cover_path, title=title,
+                content_text=content_text, topics=topics,
+                declare_original=declare_original, declare_aigc=declare_aigc,
+                dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
+                stop_before_publish=stop_before_publish, cdp_url=cdp_url))
+            # 无论成败都落一行结论（以前失败时日志里什么都看不到）
+            logger.info(
+                "[CHANNELS] 发布结束: status=%s published=%s stage=%s evidence=%s post_id=%s",
+                res.get("status"), res.get("published"),
+                res.get("stage") or getattr(self, "_publish_stage", "?"),
+                str(res.get("evidence"))[:80], str(res.get("post_id") or "")[:40])
+            return res
+        except Exception as exc:  # noqa: BLE001 — 兜底：绝不让异常静默消失
+            stage = getattr(self, "_publish_stage", "unknown")
+            logger.exception(f"[CHANNELS] 发布异常（stage={stage}）: {type(exc).__name__}: {exc}")
+            return {"success": False, "published": False,
+                    "status": "PROVIDER_EXCEPTION", "stage": stage,
+                    "error": f"{type(exc).__name__}: {exc}"[:300],
+                    "message": f"视频号发布过程抛异常（{stage}），详见日志 traceback"}
 
 
     async def _upload_cover_async(self, ui, page, cover_path: str) -> Dict[str, Any]:
@@ -355,6 +374,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "发布 iframe 可访问、登录有效；未上传未发布"}
 
                 # 1. 上传：JS 点隐藏 input → 接管原生文件选择器
+                self._publish_stage = "upload"
+                logger.info("[CHANNELS] ▶ step 1 开始上传视频")
                 uploaded = False
                 for attempt in range(4):
                     try:
@@ -373,6 +394,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "多次重试仍无法通过文件选择器上传视频"}
 
                 # 2. 等编辑器就绪（视频解析/转码，最多 180s）
+                self._publish_stage = "wait_editor"
+                logger.info("[CHANNELS] ▶ step 2 等待编辑器就绪")
                 editor_ready = False
                 for _ in range(90):
                     try:
@@ -388,6 +411,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "等待编辑器就绪超时（视频可能仍在转码）"}
 
                 # 3. 填文案（描述编辑器 + 短标题 + 话题）
+                self._publish_stage = "fill_copy"
+                logger.info("[CHANNELS] ▶ step 3 填写描述/短标题/话题")
                 # ⚠️ 视频号的描述编辑器是 `<div contenteditable="" data-placeholder="添加描述" class="input-editor">`
                 #    contenteditable 是**空字符串**，`[contenteditable='true']` 选不到它，
                 #    旧实现于是命中了「商品链接」textarea，文案写进了垃圾桶（2026-11-10 实测）。
@@ -516,6 +541,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "描述编辑器回读为空（或过短），已中止发布（fail-closed）"}
 
                 # 4. 原创声明：label 含「原创」的 checkbox（fail-closed）
+                self._publish_stage = "declare_original"
+                logger.info("[CHANNELS] ▶ step 4 勾选原创声明")
                 orig_done = False
                 orig_txt = ""
                 if declare_original:
@@ -542,6 +569,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                 "message": "要求声明原创但 iframe 内找不到原创复选框，已中止（fail-closed）"}
 
                 # 5. AI 声明：视频号 Web 端无此控件，如实记录
+                self._publish_stage = "declare_aigc"
+                logger.info("[CHANNELS] ▶ step 5 AI 声明检查")
                 aigc_state = "NOT_SUPPORTED_ON_WEB"
                 aigc_txt = ""
                 if declare_aigc:
@@ -587,6 +616,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "已上传、填文案、勾原创，停在发表前（测试档）"}
 
                 # 6. 发表（点「发表」，若弹二次确认再点「直接发表」）
+                self._publish_stage = "click_publish"
+                logger.info("[CHANNELS] ▶ step 6 点击发表")
                 clicked = await ui.evaluate("""() => {
                     const btn = [...document.querySelectorAll('button')]
                         .find(b => b.innerText.trim() === '发表' && !b.disabled);
@@ -605,6 +636,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 }""")
 
                 # 7. 验证平台侧确认（成功文案 / URL 跳转）
+                self._publish_stage = "verify_dom"
+                logger.info("[CHANNELS] ▶ step 7 校验平台成功文案")
                 published = False
                 evidence = ""
                 for _ in range(30):
@@ -624,6 +657,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 await page.screenshot(path=str(shot_dir / "after_publish.png"), full_page=True)
 
                 # 8. 权威回读：post_list 里必须能看到这条作品的 desc.description 命中标题
+                self._publish_stage = "readback"
+                logger.info("[CHANNELS] ▶ step 8 post_list 权威回读")
                 # 2026-11-20：以前只有一句「未取得平台侧证据」，日志里什么都看不到。
                 # 现在每次尝试都打日志（条数/首条摘要/命中项），失败把候选摘要带出来；
                 # 并且**重试 3 次**（新作品进列表有延迟），匹配口径放宽到「去标点前缀」。
