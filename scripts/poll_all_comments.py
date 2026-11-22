@@ -97,11 +97,16 @@ def run():
                 else:
                     reply_block = f"🤖 **已自动直发回复**: {r['reply']}"
 
+                # 作品标题跨平台键名不同：bilibili/抖音用 feed_title，视频号用 video_title
+                # （2026-11-22 修复：视频号有评论时这里 KeyError 'feed_title'，整批飞书报告被打断）
+                title_txt = (r.get("feed_title") or r.get("video_title")
+                             or r.get("title") or "未知作品")
+
                 elements.append({
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"🏷️ **平台**: {r['platform']}  |  **作品**: 《{r['feed_title']}》\n👤 **粉丝**: `{r['user']}`\n💬 **评论**: {r['comment']}\n{reply_block}"
+                        "content": f"🏷️ **平台**: {r['platform']}  |  **作品**: 《{title_txt}》\n👤 **粉丝**: `{r['user']}`\n💬 **评论**: {r['comment']}\n{reply_block}"
                     }
                 })
                 elements.append({"tag": "hr"})

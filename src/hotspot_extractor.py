@@ -514,5 +514,19 @@ def pick_and_convert_hotspot(news_text: str = "", task_id: str = None,
             slug = result.get("resource_keyword", "hotspot").lower()
             result["task_id"] = f"news_{slug}_{date_str}"
 
+        # 2026-11-22 用户口径：正文原样下发 —— LLM 写的 video_desc 会把物料里的
+        # `+26%` / `-32.7%` 改写口语化（「涨了三成多」），所以这里直接用
+        # **物料 body 原文**覆盖，并记一条日志便于核对。
+        if material and str(material.get("body") or "").strip():
+            from src.utils.video_desc import material_body_desc
+            _desc = material_body_desc(material)
+            if _desc:
+                if str(result.get("video_desc") or "").strip() != _desc:
+                    logger.info(
+                        "VIDEO_DESC_OVERRIDDEN: 用物料原文覆盖 LLM 简介（%s 字 → %s 字）",
+                        len(str(result.get("video_desc") or "")), len(_desc))
+                result["video_desc"] = _desc
+                result["video_desc_source"] = "material.body"
+
         return result
 

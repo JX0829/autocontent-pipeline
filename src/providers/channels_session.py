@@ -56,23 +56,81 @@ HOME_URL = "https://channels.weixin.qq.com/platform"
 LOGIN_URL = "https://channels.weixin.qq.com/platform/post/create"
 
 
+async def login_evidence(page) -> tuple[bool, str]:
+    """登录态判定（2026-11-20 假成功事故后重写）：**必须给硬证据**。
+
+    事故：页面明明停在 `login.html`，脚本却打印「✅ 登录成功（3s 内确认）」并 exit 0，
+    发布预检连续两次挂掉。三类误判来源，这里逐条堵掉：
+
+      ① **过期 cookie 不等于已登录** —— 实测 9334 在 login.html 时
+         `sessionid` / `wxuin` 仍在（stale session），拿 cookie 判登录必假绿；
+      ② **别的 tab 缓存 DOM** —— `_any_logged_in_page` 会把一个早前打开、
+         DOM 还留着「发表视频」的 /platform 旧 tab 当成已登录；
+      ③ **登录页自身文案命中** —— 旧 markers 里 `视频号`/`助手` 会命中「登录视频号助手」。
+
+    现在的判定顺序（任一命中即失败，硬证据不足也不给绿）：
+      1. URL 带 login → 失败（这条是本次事故的直接判据）
+      2. 正文出现扫码/登录落地页文案 → 失败
+      3. 正文必须出现「登录后才可能有的后台特征」→ 否则失败
+    """
+    url = (page.url or "")
+    if "login" in url.lower():
+        return False, f"URL 在登录页：{url[:80]}"
+    try:
+        body = await page.inner_text("body")
+    except Exception as exc:  # noqa: BLE001 — 页面切换中取不到正文
+        return False, f"读不到正文（{type(exc).__name__}）"
+    if any(h in body for h in ("登录视频号助手", "扫码登录", "二维码已失效", "请使用微信扫码")):
+        return False, "正文命中登录页文案（扫码/登录）"
+    markers = ("发表视频", "内容管理", "视频号ID", "数据中心")
+    hit = [m for m in markers if m in body]
+    if not hit:
+        return False, f"正文无后台特征文案（正文 {len(body)} 字）"
+    return True, f"URL={url[:60]} 命中={hit[:2]}"
+
+
 async def is_logged_in(page) -> bool:
     """登录态判定：URL 没被踢到登录页 + 页面出现后台特征文本。
 
     登录脚本与发布 provider 共用这一份判据，避免「检查说有登录、发布跳登录页」。
+    2026-11-20：委托给 `login_evidence()`，只认硬证据。
     """
-    if "login" in (page.url or "").lower():
-        return False
-    try:
-        body = await page.inner_text("body")
-    except Exception:  # noqa: BLE001 — 页面切换中取不到正文
-        return False
-    # 先排除「登录落地页」：旧 markers 里的 `视频号`/`助手` 会命中「登录视频号助手」，
-    # 于是未登录被判成已登录（2026-11-15 实测：这是每日第一条卡住的根因之一）。
-    if any(h in body for h in ("登录视频号助手", "扫码登录")):
-        return False
-    markers = ("发表视频", "内容管理", "视频号ID", "数据中心")
-    return any(m in body for m in markers)
+    ok, _why = await login_evidence(page)
+    return ok
+
+
+async def verify_login_detail(cdp_url: str = "", *, headless: bool = False) -> tuple[bool, str, str]:
+    """真访问后台复验，返回 (是否登录, 当前URL, 判定依据)。
+
+    2026-11-20：不再只访问 `HOME_URL` —— 会话过期时首页可能命中缓存/骨架屏。
+    改为直达**发布页**（`/platform/post/create`）：未登录会被服务端 302 到 login.html，
+    这是服务端给的硬证据，比任何 DOM 文案都可靠。
+    """
+    from playwright.async_api import async_playwright
+
+    url = cdp_url or ensure(headless=headless)
+    async with async_playwright() as p:
+        browser = await p.chromium.connect_over_cdp(url)
+        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = await ctx.new_page()
+        try:
+            await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(6)
+            url_now = page.url or ""
+            # 硬证据 = 服务端是否把发布页踢回登录页（未登录必 302 到 login.html）。
+            # 编辑页 DOM 里没有「视频号ID/发表视频」这类后台文案，所以这里不能只靠
+            # `login_evidence()` 的正文标记（2026-11-20 实测会假阴性）。
+            if "login" in url_now.lower():
+                return (False, url_now, f"服务端把发布页踢回登录页：{url_now[:60]}")
+            if "/platform" not in url_now:
+                return (False, url_now, f"发布页落到非后台地址：{url_now[:60]}")
+            ok_body, why_body = await login_evidence(page)
+            return (True, url_now, f"服务端未踢回登录页（{url_now[:50]}）｜正文 {why_body}")
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def verify_login(cdp_url: str = "", *, headless: bool = False) -> tuple[bool, str]:
@@ -83,22 +141,8 @@ async def verify_login(cdp_url: str = "", *, headless: bool = False) -> tuple[bo
     headless 默认 False：cdp_url 为空时会 ensure() 拉起**常驻** Chrome，绝不能是无头
     （2026-11-15 用户明确要求：视频号不用无头浏览器）。
     """
-    from playwright.async_api import async_playwright
-
-    url = cdp_url or ensure(headless=headless)
-    async with async_playwright() as p:
-        browser = await p.chromium.connect_over_cdp(url)
-        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-        page = await ctx.new_page()
-        try:
-            await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(6)
-            return (await is_logged_in(page), page.url)
-        finally:
-            try:
-                await page.close()
-            except Exception:  # noqa: BLE001
-                pass
+    ok, url, _why = await verify_login_detail(cdp_url, headless=headless)
+    return ok, url
 
 
 #: 机器可读错误码（调用方/告警卡靠它分类，不要去解析中文消息）
@@ -266,6 +310,9 @@ def launch(headless: bool = False, timeout: float = 25.0) -> None:
         "--disable-blink-features=AutomationControlled",
         "--disable-features=Translate",
         "--disable-backgrounding-occluded-windows",
+        # 2026-11-22 Chrome 治理：单站同进程 + renderer 上限，配合看门狗把进程数压在 8~9
+        "--renderer-process-limit=6",
+        "--process-per-site",
         "--window-size=1100,820",
     ]
     if headless:

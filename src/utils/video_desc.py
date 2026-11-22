@@ -124,6 +124,71 @@ def _dedupe_words(clause: str) -> str:
     return " ".join(kept)
 
 
+class DescFidelityError(RuntimeError):
+    """正文与原文不一致（数字被改写/丢失）—— 发布前必须拦住。"""
+
+
+_NUM_RE = re.compile(r"[+\-−]?\d+(?:[.,]\d+)?\s*(?:%|％|倍|万|亿|千|秒|毫秒|ms|s|B|b|K|k|GB|G)?")
+# 允许改写的口语化说法：数字必须原样出现，这些替换说法一律算违规
+_VAGUE_RE = re.compile(r"(两三成|三成多|好几成|一成多|两成多|个位数|翻了一倍|翻了倍|接近一半|大概一半)")
+
+
+def numeric_tokens(text: str) -> list[str]:
+    """抽取原文里的数字 token（含单位），用于「数字保真」校验。"""
+    out: list[str] = []
+    for m in _NUM_RE.finditer(str(text or "")):
+        tok = m.group(0).strip().replace(" ", "")
+        # 纯小数字（1~9 无单位）噪声太大，只保留带 % / 小数点 / 多位数 / 单位
+        if len(tok) >= 2 or "%" in tok or "％" in tok:
+            out.append(tok)
+    return out
+
+
+def check_desc_fidelity(source: str, out: str) -> list[str]:
+    """返回**丢失或改写**的数字 token 列表；空列表 = 通过。
+
+    2026-11-22 事故：物料里写 `+26%` / `-32.7%`，上线变成「涨了三成多」——
+    LLM 二次改写把精确数字口语化了，回读比对的是改写后的文本，所以一路放行。
+    现在发布前拿**原文**做数字保真校验，缺一个就 BLOCKED。
+    """
+    src, dst = str(source or ""), str(out or "")
+    if not src:
+        return []
+    # 比对口径：忽略空白（原文写「100 亿」、正文写「100亿」算一致）
+    dst_cmp = re.sub(r"\s+", "", dst)
+    # 1) 模糊说法不能出现在正文里（原文若本身就这么写则放行）
+    problems = []
+    if not _VAGUE_RE.search(src):
+        for m in _VAGUE_RE.finditer(dst):
+            problems.append(f"VAGUE:{m.group(0)}")
+    # 2) 原文数字必须逐个出现
+    for tok in numeric_tokens(src):
+        if tok not in dst_cmp and tok.replace("−", "-") not in dst_cmp:
+            problems.append(tok)
+    return problems
+
+
+def material_body_desc(material: dict, limit: int = 1000) -> str:
+    """物料正文原样作为发布简介（按整行截断，绝不砍半句）。
+
+    2026-11-22 用户口径：「正文原样下发，别二次改写」。物料的 `body` 是唯一真源，
+    标题/分镜/口播可以让 LLM 创作，但**发到平台的正文必须逐字来自物料**。
+    """
+    body = str((material or {}).get("body") or "").strip()
+    if not body:
+        return ""
+    if len(body) <= limit:
+        return body
+    out, total = [], 0
+    for line in body.split("\n"):
+        if out and total + len(line) + 1 > limit:
+            logger.warning(f"MATERIAL_BODY_TRUNCATED: 物料正文 {len(body)} 字，按整行截到 {total} 字")
+            break
+        out.append(line)
+        total += len(line) + 1
+    return "\n".join(out).strip()
+
+
 def humanize(text: str) -> str:
     """把含命令/文件名的技术文本清洗成人话（兜底用，不追求文采）。"""
     if not text:
@@ -203,11 +268,18 @@ def generate_desc(draft: dict, llm=None) -> str:
 
 
 def ensure_desc(run_root: Path | str, draft: dict) -> str:
-    """取该 run 的简介：draft.video_desc → 缓存 description.txt → LLM 生成并落盘 → 清洗兜底。"""
+    """取该 run 的简介：draft.video_desc **原样** → description.txt → 旁白兜底。
+
+    2026-11-22 用户口径：**正文原样下发，不许二次改写**。
+    以前这里有第三步「LLM 生成人话简介并落盘」（generate_desc），它会把
+    物料里的 `+26%` / `-32.7%` 改写成「涨了三成多」；而回读比对的是改写后的
+    文本，所以一路放行。现在这条 LLM 改写路径**不再执行**。
+    """
     run_root = Path(run_root)
     vd = str(draft.get("video_desc") or "").strip()
     if vd:
-        return humanize(vd) if "/" in vd else vd
+        # 原文直出：不再 humanize（humanize 会删命令/文件名词，等于改内容）
+        return vd
 
     cache = run_root / "description.txt"
     if cache.exists():
@@ -215,13 +287,7 @@ def ensure_desc(run_root: Path | str, draft: dict) -> str:
         if len(cached) >= 40:
             return cached
 
-    gen = generate_desc(draft)
-    if gen:
-        try:
-            cache.write_text(gen + "\n", encoding="utf-8")
-        except OSError as exc:
-            logger.warning(f"VIDEO_DESC_CACHE_WRITE_FAILED: {exc}")
-        return gen
+    # 老 run 没有 video_desc：用原文摘要/旁白兜底，**不调 LLM 复写**
     return _draft_desc(draft)
 
 
@@ -246,6 +312,13 @@ def build_desc(draft: dict, tags=None, platform: str = "channels",
     tags = tags if tags is not None else (draft.get("tags") or [])
     tag_str = _tags_str(tags) if include_tags else ""
     title = str(draft.get("title") or "").strip()
+
+    # 2026-11-22：发布前数字保真校验（正文原样下发，禁止二次改写）
+    _src = str(draft.get("fact_summary_150") or draft.get("video_desc") or "")
+    _bad = check_desc_fidelity(_src, body)
+    if _bad:
+        raise DescFidelityError(
+            f"DESC_NUMBERS_DROPPED: 正文与原文不一致 {_bad[:5]}（原文 {_src[:60]!r}）")
 
     if platform == "douyin":
         # 三段式（标题留空：抖音「作品标题」是独立输入框，由发布器单独填并自证）。

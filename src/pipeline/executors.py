@@ -522,6 +522,40 @@ def _render_vertical_only(ctx: StepContext, draft: dict[str, Any]) -> dict[str, 
     return {"video": str(video), "cover": str(cover), "cover_upload": str(up)}
 
 
+def _already_leads_with_cover(video: Path, cover: Path, threshold: float = 8.0) -> bool:
+    """首帧是否已经是封面（幂等判据：续跑时不要重复贴片头）。
+
+    用 PIL 做 32×32 灰度平均差，**不碰 landscape_guard 的帧指标实现**：
+    guard 里的 `_frame_diff` 走 rawvideo 通道，吃 PNG 会报 Invalid data，
+    这里独立实现，避免为了幂等去改出厂校验的代码路径。
+    """
+    video, cover = Path(video), Path(cover)
+    if not video.exists() or not cover.exists():
+        return False
+    import tempfile
+
+    try:
+        from PIL import Image, ImageChops, ImageStat
+    except Exception:  # noqa: BLE001 — 没装 PIL 就保守当作「没贴过」
+        return False
+
+    first = Path(tempfile.mkdtemp()) / "first.png"
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-frames:v", "1", str(first)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not first.exists() or first.stat().st_size == 0:
+        return False
+    try:
+        with Image.open(first) as a, Image.open(cover) as b:
+            ga = a.convert("L").resize((32, 32), Image.LANCZOS)
+            gb = b.convert("L").resize((32, 32), Image.LANCZOS)
+            diff = ImageStat.Stat(ImageChops.difference(ga, gb)).mean[0]
+        return float(diff) <= threshold
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]:
     """横版：复用 scripts/render_landscape.py（内置 landscape_guard 出厂校验）。
 
@@ -568,6 +602,17 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
                             cover_composition="TextbookLandscapeCoverStill" if textbook else None)
     video = Path(info.get("video_path_generated") or ctx.run_root / "video_16_9.mp4")
     cover = Path(info.get("cover_path") or ctx.run_root / "cover_16_9.png")
+
+    # 封面帧贴片头 0.5s（2026-11-18 用户点名要横版也有；竖版早已有）。
+    # 位置刻意放在 render_landscape 返回之后：landscape_guard 的出厂校验（覆盖率/边缘/
+    # cover_frame_diff）仍按**纯正片**算，不会被这 0.5s 带偏。
+    # 幂等：首帧已经≈封面就跳过（避免 resume 时二次贴片导致 +1.0s）。
+    if _already_leads_with_cover(video, cover):
+        print(f"[publish] 横版首帧已是封面，跳过贴片头：{video.name}")
+    else:
+        _prepend_cover(video, cover)
+        print(f"[publish] 横版已贴封面片头 {COVER_LEAD_SECONDS}s：{video.name} "
+              f"{_probe_duration(video):.3f}s")
     _assert_has_audio(video)   # 横版同样不许出无声片
     # 2026-11-20：横版原来没有封面片头 → B 站「必须有封面」抽到的是正片首帧，
     # 与竖版封面完全不是一张图。这里补 0.5s 封面片头，让「前 0.5s 都是封面帧」
@@ -579,7 +624,7 @@ def _render_landscape(ctx: StepContext, draft: dict[str, Any]) -> dict[str, str]
     _op, _bg = (_a.get("open") or {}), (_a.get("bg") or {})
     _mid, _end = (_a.get("mid") or {}), (_a.get("end") or {})
     print(f"[assets] aspect=landscape 档位={_a.get('domain') or '未判定'} "
-          f"封面形态={_a.get('cover_mode') or 'none'} 封面=首帧 "
+          f"封面形态={_a.get('cover_mode') or 'none'} 封面=首帧+片头{COVER_LEAD_SECONDS}s "
           f"open={_op.get('id') or '（无）'} bg={_bg.get('id') or '（无）'} "
           f"mid={_mid.get('id') or '（无）'} end={_end.get('id') or '（无）'} "
           f"模板={'TechStoryLandscapeVideo' if tech_landscape else ('TextbookLandscapeVideo' if textbook else '旧横版')}")
