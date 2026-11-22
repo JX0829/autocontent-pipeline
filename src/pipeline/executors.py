@@ -157,6 +157,24 @@ def _attach_assets(ctx: StepContext, props_data: dict[str, Any],
 
 # ---------------------------------------------------------------- 执行体
 
+
+def assert_textbook_authorized(is_literary: bool, material: dict | None, template_id: str = "") -> None:
+    """课文/水墨模板默认禁用（用户口径 2026-11-22）。
+
+    「除非强制要求使用课文背后故事，否则不能使用对应的模板和内容」——
+    判定为文学类后，必须物料显式 `force_textbook: true`（或 ALLOW_TEXTBOOK=1）才放行。
+    """
+    if not is_literary:
+        return
+    man = material or {}
+    if man.get("force_textbook") is True or os.environ.get("ALLOW_TEXTBOOK") == "1":
+        return
+    raise ExecutorError(
+        "TEXTBOOK_REQUIRES_EXPLICIT：课文/水墨模板默认禁用。"
+        "确实要做课文背后故事，请在物料里加 \"force_textbook\": true 后重跑"
+        f"（当前 template_id={template_id or 'auto'}）")
+
+
 def exec_intake(ctx: StepContext) -> dict[str, str]:
     """builtin.intake：物料已在 runner 入口校验过，这里落库到 run_root。"""
     if not ctx.material:
@@ -267,7 +285,12 @@ def _prepare_props(ctx: StepContext, draft: dict[str, Any]) -> Path:
                     or str((ctx.material or {}).get("content_type") or "") in ("textbook_story", "ink_story")
                     or bool((ctx.material or {}).get("textbook")))
     if _is_literary:
-        print(f"[creator_take] SKIP 文学类模板（{_tpl or 'textbook/ink'}）不需要新闻锐评，门禁不适用")
+        # 2026-11-22 用户口径：课文背后故事（textbook_story / ink_story）属于特殊题材，
+        # **除非强制要求，否则不许使用**。判定为文学类后必须由物料显式声明
+        # `force_textbook: true`（或临时 ALLOW_TEXTBOOK=1），否则直接拦死——
+        # 防止默认路由/物料里残留 textbook 字段就把整条片带进课文模板。
+        assert_textbook_authorized(True, ctx.material, _tpl)
+        print(f"[creator_take] SKIP 文学类模板（{_tpl or 'textbook/ink'}）不需要新闻锐评，门禁不适用（已显式强制启用）")
     else:
         _take_errors = check_creator_takes(
             [sc.model_dump() for sc in payload.scenes], payload.fact_summary_150)
