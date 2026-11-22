@@ -41,6 +41,7 @@ run "锐评四手法门禁"      "$PY" scripts/test_creator_take_guard.py
 run "横版衍生素材契约"    "$PY" scripts/test_landscape_assets.py
 run "水墨模板契约"        "$PY" scripts/test_ink_template.py
 run "画幅策略（课文本只竖版）" "$PY" scripts/test_aspects_policy.py
+run "课文模板默认禁用"      "$PY" scripts/test_textbook_gate.py
 run "fact_summary 截断契约" "$PY" scripts/test_schema_truncation.py
 run "物料硬约束(绑定/自证/审计)" "$PY" scripts/test_material_binding.py
 run "静默失败扫描"        "$PY" scripts/audit_silent_failure.py
