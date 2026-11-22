@@ -89,7 +89,24 @@ def run():
 
             elements = []
             manual_count = 0
+            work_notices = 0
             for r in all_replied:
+                # 方案 A 降级记录：只有「哪条作品有评论待看」，没有粉丝/评论正文/建议回复
+                if r.get("kind") == "work_unread":
+                    work_notices += 1
+                    delta = int(r.get("comment_count") or 0) - int(r.get("previous_count") or 0)
+                    delta_txt = f"，较上次 +{delta}" if delta > 0 else ""
+                    elements.append({
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": (f"🏷️ **平台**: 视频号  |  **作品**: 《{r.get('video_title') or '未知作品'}》\n"
+                                        f"💬 **评论数**: {int(r.get('comment_count') or 0)}{delta_txt}\n"
+                                        f"🔎 视频号 Web 端目前拿不到评论正文，请到后台或手机端看明细")
+                        }
+                    })
+                    elements.append({"tag": "hr"})
+                    continue
                 is_manual = (r.get("reply_mode") == "manual_approval")   # xiaohongshu 已下线，去掉死分支
                 if is_manual:
                     manual_count += 1
@@ -111,7 +128,10 @@ def run():
                 })
                 elements.append({"tag": "hr"})
 
-            card_title = f"💬 评论区互动报告（新增 {len(all_replied)} 条"
+            if work_notices and work_notices == len(all_replied):
+                card_title = f"💬 视频号作品评论提醒（{work_notices} 条作品有评论待看）"
+            else:
+                card_title = f"💬 评论区互动报告（新增 {len(all_replied) - work_notices} 条"
             if manual_count > 0:
                 card_title += f"，含 {manual_count} 条待手机端复制）"
             else:
