@@ -96,8 +96,44 @@ def _read_works(page) -> tuple[str, str]:
     return text, line
 
 
+MAX_TABS = 5  # 常驻实例的 tab 硬上限（2026-11-22 Chrome 治理：进程/tab 双收敛）
+
+
 def _open_page(ctx):
-    return ctx.pages[0] if ctx.pages else ctx.new_page()
+    """复用常驻实例里的页面，并顺手把 tab 数收敛到 MAX_TABS。
+
+    为什么不每次 new_page：常驻 Chrome 的登录态在磁盘 profile 里，tab 只是壳；
+    反复开不关才是 11-22 那次 44 进程 / load 155 的根因。这里先关最旧的再复用。
+    """
+    pages = list(ctx.pages)
+    while len(pages) > MAX_TABS:
+        victim = pages.pop(0)
+        try:
+            victim.close()
+        except Exception:  # noqa: BLE001 - 关不掉也不影响后续复用
+            pass
+    alive = [p for p in ctx.pages if not p.is_closed()]
+    # 优先复用创作者中心页面（保留登录后已就绪的上下文），否则用最新一页
+    for p in reversed(alive):
+        if "creator.douyin.com" in (p.url or ""):
+            return p
+    return alive[-1] if alive else ctx.new_page()
+
+
+def _release_page(ctx, page) -> None:
+    """任务结束显式关掉本任务用的 tab（只关多余页，绝不留 0 tab）。
+
+    常驻 Chrome 进程不退出 → 登录态不丢；关到 0 tab 会让 headful 实例变成无窗口状态，
+    下次 connect 没有可复用页，反而更容易堆积，所以保留最后一页。
+    """
+    if ctx is None or page is None:
+        return
+    try:
+        if page.is_closed() or len(ctx.pages) <= 1:
+            return
+        page.close()
+    except Exception:  # noqa: BLE001 - 收尾失败不该改变发布结论
+        pass
 
 
 class PublishPreflightError(RuntimeError):
@@ -208,118 +244,123 @@ def publish(video: Path, title: str, summary: str, tags: list[str],
         _log(f"[dry-run] account={account.get('id')} publish_mode={account.get('publish_mode')}")
 
     with sync_playwright() as pw:
-        # ── 前置阶段：连会话 + 读管理页。失败时平台侧一定没收到内容。
+        ctx = None
+        page = None
         try:
-            browser = pw.chromium.connect_over_cdp(cdp_url)
-            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = _open_page(ctx)
+            # ── 前置阶段：连会话 + 读管理页。失败时平台侧一定没收到内容。
+            try:
+                browser = pw.chromium.connect_over_cdp(cdp_url)
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = _open_page(ctx)
 
-            before_text, before_line = _read_works(page)
-        except Exception as exc:  # noqa: BLE001 — 统一转成可释放 claim 的前置错误
-            raise PublishPreflightError(f"CDP 会话不可用（{cdp_url}）: {exc}") from exc
-        _log(f"CDP ok | BEFORE {before_line or '未识别'} | title_present={title in before_text} | url={page.url}")
-        if dry_run:
-            _log("[dry-run] 输入与 CDP 会话均正常，未上传未发布")
-            return 0
+                before_text, before_line = _read_works(page)
+            except Exception as exc:  # noqa: BLE001 — 统一转成可释放 claim 的前置错误
+                raise PublishPreflightError(f"CDP 会话不可用（{cdp_url}）: {exc}") from exc
+            _log(f"CDP ok | BEFORE {before_line or '未识别'} | title_present={title in before_text} | url={page.url}")
+            if dry_run:
+                _log("[dry-run] 输入与 CDP 会话均正常，未上传未发布")
+                return 0
 
-        if title in before_text:
-            _log("该标题已在作品列表中，视为已发布，跳过（幂等）")
-            return 0
+            if title in before_text:
+                _log("该标题已在作品列表中，视为已发布，跳过（幂等）")
+                return 0
 
-        # ── 仍未点「发布」：上传页准备阶段的失败同样可安全重试
-        try:
-            page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(5)
-            dismiss_resume_modal(page)
-            page.locator('input[type="file"]').first.set_input_files(str(video))
-            page.wait_for_selector('div[contenteditable="true"]', timeout=90000)
-            time.sleep(3)
-
-            # 标题进独立「作品标题」框（2026-11-15：CLI 这条通道以前只把标题拼进简介，
-            # 标题框空着 → 平台上「无作品描述/空标题」，且回读按标题找 → 必然 miss）
-            from src.providers import douyin_form
-            title_ok, landed_title, title_err = douyin_form.fill_title(page, title)
-            if not title_ok:
-                _log(f"TITLE_NOT_LANDED（{title_err}）：拒绝发布")
-                return 2
-
-            # 正文用真实事件原子写入：innerHTML/execCommand 只改 DOM 不进 React state，
-            # 点发布时正文会被整体丢弃（17:57 那次作品数 44→45 却「无作品描述」）
-            if not douyin_form.fill_caption(page, caption):
-                _log("CAPTION_NOT_LANDED：正文回读不符，拒绝发布")
-                return 2
-            time.sleep(2)
-
-            for _ in range(40):
-                if "上传成功" in page.inner_text("body"):
-                    break
+            # ── 仍未点「发布」：上传页准备阶段的失败同样可安全重试
+            try:
+                page.goto(UPLOAD_URL, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(5)
+                dismiss_resume_modal(page)
+                page.locator('input[type="file"]').first.set_input_files(str(video))
+                page.wait_for_selector('div[contenteditable="true"]', timeout=90000)
                 time.sleep(3)
 
-            if str(account.get("publish_mode") or "") == "private_publish":
-                label = page.locator('xpath=//label[contains(., "仅自己可见")]').first
-                if label.count():
-                    label.click()
-                    time.sleep(1)
-                    _log("已勾选「仅自己可见」")
+                # 标题进独立「作品标题」框（2026-11-15：CLI 这条通道以前只把标题拼进简介，
+                # 标题框空着 → 平台上「无作品描述/空标题」，且回读按标题找 → 必然 miss）
+                from src.providers import douyin_form
+                title_ok, landed_title, title_err = douyin_form.fill_title(page, title)
+                if not title_ok:
+                    _log(f"TITLE_NOT_LANDED（{title_err}）：拒绝发布")
+                    return 2
 
-            # ★ 点「发布」前最后一道自证：可见性/AIGC 等操作会触发重渲染，标题可能被清空。
-            ready, form_detail = douyin_form.assert_form_ready(page, title, caption)
-            if not ready:
-                DIAG_DIR.mkdir(parents=True, exist_ok=True)
-                shot = DIAG_DIR / f"submit_blocked_{int(time.time())}.png"
-                try:
-                    page.screenshot(path=str(shot), full_page=True)
-                except Exception:  # noqa: BLE001
-                    pass
-                _log(f"SUBMIT_BLOCKED：点发布前自证不通过 {form_detail}，截图 {shot}")
-                return 2
+                # 正文用真实事件原子写入：innerHTML/execCommand 只改 DOM 不进 React state，
+                # 点发布时正文会被整体丢弃（17:57 那次作品数 44→45 却「无作品描述」）
+                if not douyin_form.fill_caption(page, caption):
+                    _log("CAPTION_NOT_LANDED：正文回读不符，拒绝发布")
+                    return 2
+                time.sleep(2)
 
-            clicked = False
-            for i in range(page.locator('button:has-text("发布")').count()):
-                btn = page.locator('button:has-text("发布")').nth(i)
-                try:
-                    if btn.inner_text().strip() == "发布" and btn.is_visible() and btn.is_enabled():
-                        btn.click()
-                        clicked = True
+                for _ in range(40):
+                    if "上传成功" in page.inner_text("body"):
                         break
-                except Exception as exc:  # noqa: BLE001 - 单个按钮不可点不应中断整轮查找
-                    LOG.debug(f"跳过不可点按钮 #{i}: {exc}")
-            if not clicked:
-                _log("未找到可点击的「发布」按钮")
-                return 2
-        except Exception as exc:  # noqa: BLE001 — 未点发布 ⇒ 不是「可能已提交」
-            raise PublishPreflightError(f"上传页准备失败（未点「发布」）: {exc}") from exc
+                    time.sleep(3)
 
-        _log("已点击「发布」")
-        time.sleep(6)
+                if str(account.get("publish_mode") or "") == "private_publish":
+                    label = page.locator('xpath=//label[contains(., "仅自己可见")]').first
+                    if label.count():
+                        label.click()
+                        time.sleep(1)
+                        _log("已勾选「仅自己可见」")
 
-        if page.locator('input[placeholder*="验证码"]').count() > 0:
-            DIAG_DIR.mkdir(parents=True, exist_ok=True)
-            shot = DIAG_DIR / f"need_verify_{int(time.time())}.png"
-            page.screenshot(path=str(shot), full_page=True)
-            _log(f"NEED_VERIFY：出现二次验证，需人工处理。截图 {shot}")
-            return 7
+                # ★ 点「发布」前最后一道自证：可见性/AIGC 等操作会触发重渲染，标题可能被清空。
+                ready, form_detail = douyin_form.assert_form_ready(page, title, caption)
+                if not ready:
+                    DIAG_DIR.mkdir(parents=True, exist_ok=True)
+                    shot = DIAG_DIR / f"submit_blocked_{int(time.time())}.png"
+                    try:
+                        page.screenshot(path=str(shot), full_page=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _log(f"SUBMIT_BLOCKED：点发布前自证不通过 {form_detail}，截图 {shot}")
+                    return 2
 
-        for _ in range(20):
-            time.sleep(5)
-            if "content/manage" in page.url:
-                _log("发布后已跳回内容管理页")
-                break
+                clicked = False
+                for i in range(page.locator('button:has-text("发布")').count()):
+                    btn = page.locator('button:has-text("发布")').nth(i)
+                    try:
+                        if btn.inner_text().strip() == "发布" and btn.is_visible() and btn.is_enabled():
+                            btn.click()
+                            clicked = True
+                            break
+                    except Exception as exc:  # noqa: BLE001 - 单个按钮不可点不应中断整轮查找
+                        LOG.debug(f"跳过不可点按钮 #{i}: {exc}")
+                if not clicked:
+                    _log("未找到可点击的「发布」按钮")
+                    return 2
+            except Exception as exc:  # noqa: BLE001 — 未点发布 ⇒ 不是「可能已提交」
+                raise PublishPreflightError(f"上传页准备失败（未点「发布」）: {exc}") from exc
 
-        for attempt in range(8):
-            text, line = _read_works(page)
-            if title in text:
-                idx = text.find(title)
-                _log(f"VERIFIED_OK {line} | {text[max(0, idx - 80):idx + 120]!r}")
-                return 0
-            _log(f"readback{attempt + 1} 未命中（{line or '未识别'}）")
+            _log("已点击「发布」")
             time.sleep(6)
 
-        DIAG_DIR.mkdir(parents=True, exist_ok=True)
-        shot = DIAG_DIR / f"publish_unverified_{int(time.time())}.png"
-        page.screenshot(path=str(shot), full_page=True)
-        _log(f"回读未命中标题，判定发布失败。截图 {shot}")
-        return 6
+            if page.locator('input[placeholder*="验证码"]').count() > 0:
+                DIAG_DIR.mkdir(parents=True, exist_ok=True)
+                shot = DIAG_DIR / f"need_verify_{int(time.time())}.png"
+                page.screenshot(path=str(shot), full_page=True)
+                _log(f"NEED_VERIFY：出现二次验证，需人工处理。截图 {shot}")
+                return 7
+
+            for _ in range(20):
+                time.sleep(5)
+                if "content/manage" in page.url:
+                    _log("发布后已跳回内容管理页")
+                    break
+
+            for attempt in range(8):
+                text, line = _read_works(page)
+                if title in text:
+                    idx = text.find(title)
+                    _log(f"VERIFIED_OK {line} | {text[max(0, idx - 80):idx + 120]!r}")
+                    return 0
+                _log(f"readback{attempt + 1} 未命中（{line or '未识别'}）")
+                time.sleep(6)
+
+            DIAG_DIR.mkdir(parents=True, exist_ok=True)
+            shot = DIAG_DIR / f"publish_unverified_{int(time.time())}.png"
+            page.screenshot(path=str(shot), full_page=True)
+            _log(f"回读未命中标题，判定发布失败。截图 {shot}")
+            return 6
+        finally:
+            _release_page(ctx, page)
 
 
 def main() -> int:

@@ -310,6 +310,9 @@ def launch(headless: bool = False, timeout: float = 25.0) -> None:
         "--disable-blink-features=AutomationControlled",
         "--disable-features=Translate",
         "--disable-backgrounding-occluded-windows",
+        # 2026-11-22 Chrome 治理：单站同进程 + renderer 上限，配合看门狗把进程数压在 8~9
+        "--renderer-process-limit=6",
+        "--process-per-site",
         "--window-size=1100,820",
     ]
     if headless:
