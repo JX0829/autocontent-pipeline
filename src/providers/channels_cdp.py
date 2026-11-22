@@ -17,6 +17,41 @@ from .base import BaseSocialProvider
 
 logger = logging.getLogger("ChannelsCDPProvider")
 
+def match_published_item(items: list[dict], before_ids: set[str], click_ts: int,
+                         content_text: str, title: str) -> dict | None:
+    """在 post_list 里认出「刚才发出去的那条」。返回 hit dict 或 None。
+
+    2026-11-22 假阴性事故：平台把标题改写成了正文首句
+    （`FSD V15模型扩到百亿参数` → `特斯拉的FSD又要跨一个大版本了`），
+    11:12 那条**已经发布**（export/UzFfBgAAxJKnfEp2N…），系统却判 failed、回执 2/3。
+    所以判据按可靠性排序，**不再以标题为主**：
+      A. 新出现的 objectId（不在发布前快照里）+ createTime 落在点击前后 10 分钟 → 铁证
+      B. 正文（物料原文）去标点前缀 ≥8 字命中 → 次证
+      C. 标题关键字 → 仅作兜底（平台没改写时才有效）
+    """
+    def _norm(s) -> str:
+        return "".join(ch for ch in str(s or "") if ch.isalnum())
+
+    body_keys = [k for k in (_norm(content_text)[:12], _norm(content_text)[:8]) if len(k) >= 6]
+    title_key = _norm(title)[:8]
+    for it in items:
+        d = it.get("desc") or {}
+        oid = str(it.get("objectId") or "")
+        ct = int(it.get("createTime") or 0)
+        body_n = _norm(d.get("description") or "")
+        common = {"createTime": ct,
+                  "description_len": len(str(d.get("description") or "")),
+                  "topic": bool(d.get("topic")), "objectId": oid[:64]}
+        if before_ids and oid and oid not in before_ids and ct and abs(ct - click_ts) <= 600:
+            return {"match": "new_object_id", **common}
+        if body_keys and any(k in body_n for k in body_keys):
+            return {"match": "body_prefix", **common}
+        blob_n = body_n + _norm(json.dumps(d.get("title"), ensure_ascii=False))
+        if title_key and len(title_key) >= 4 and title_key in blob_n:
+            return {"match": "title_key", **common}
+    return None
+
+
 class ChannelsCDPProvider(BaseSocialProvider):
     """
     微信视频号发布 Provider
@@ -650,6 +685,21 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
                 # 6. 发表（点「发表」，若弹二次确认再点「直接发表」）
                 self._publish_stage = "click_publish"
+                # 2026-11-22：发布前给 post_list 拍快照（objectId 集合）——
+                # 平台会把标题改写成正文首句，拿标题匹配必然假阴性
+                # （实测 11:12 那条 export/UzFfBgAAxJKnfEp2N 已发布，却判 failed）。
+                # 身份判据改成「新出现的 objectId」，与文案无关。
+                _before_ids: set[str] = set()
+                _click_ts = int(time.time())
+                try:
+                    from src.providers.channels_edit import fetch_post_list as _fetch_pl
+                    _snap = await _fetch_pl(page, 10, 1)
+                    _before_ids = {str(it.get("objectId") or "") for it in
+                                   ((_snap.get("data") or {}).get("list") or []) if it.get("objectId")}
+                    logger.info("[CHANNELS] 发布前快照: %d 条（最新 objectId=%s）",
+                                len(_before_ids), next(iter(_before_ids), "-")[:24])
+                except Exception as exc:  # noqa: BLE001 — 快照失败不阻断，退化为正文匹配
+                    logger.warning("[CHANNELS] 发布前快照失败（退化为正文前缀匹配）: %s", exc)
                 logger.info("[CHANNELS] ▶ step 6 点击发表")
                 clicked = await ui.evaluate("""() => {
                     const btn = [...document.querySelectorAll('button')]
@@ -706,10 +756,18 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 if True:
                     from src.providers.channels_edit import ChannelsListError, fetch_post_list
 
+                    # 2026-11-22 假阴性事故：平台把标题改写成正文首句
+                    # （「FSD V15模型扩到百亿参数」→「特斯拉的FSD又要跨一个大版本了」），
+                    # 11:12 那条 11:12 就发出去了，回执却判 failed / 2/3。
+                    # 判据改为**身份**而非文案：
+                    #   A. objectId 新出现（不在发布前快照里）且 createTime 落在点击前后 10 分钟内 → 铁证
+                    #   B. 正文（物料原文）去标点前缀 ≥8 字命中 → 次证
                     def _norm(s: str) -> str:
                         return "".join(ch for ch in str(s or "") if ch.isalnum())
 
-                    want_keys = [k for k in (_norm(title)[:8], _norm(title)[:6]) if len(k) >= 4]
+                    body_keys = [k for k in (_norm(content_text)[:12], _norm(content_text)[:8])
+                                 if len(k) >= 6]
+                    title_key = _norm(title)[:8]
                     for attempt, wait_s in enumerate((0, 5, 10, 15, 20, 25, 25), start=1):
                         try:
                             if wait_s:
@@ -718,31 +776,26 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             items = ((data.get("data") or {}).get("list") or [])
                             heads = [str((it.get("desc") or {}).get("description") or "")[:24]
                                      for it in items[:3]]
-                            hit = None
-                            for it in items:
-                                d = it.get("desc") or {}
-                                blob_n = _norm(d.get("description")) + _norm(
-                                    json.dumps(d.get("title"), ensure_ascii=False))
-                                if any(k and k in blob_n for k in want_keys):
-                                    hit = {"createTime": it.get("createTime"),
-                                           "description_len": len(str(d.get("description") or "")),
-                                           "topic": bool(d.get("topic")),
-                                           "objectId": str(it.get("objectId") or "")[:64]}
-                                    break
+                            # 判据见 match_published_item()：新 objectId > 正文前缀 > 标题兜底
+                            hit = match_published_item(items, _before_ids, _click_ts,
+                                                       content_text, title)
                             logger.info(f"[CHANNELS] 回读第 {attempt} 次: 条数={len(items)} "
+                                        f"快照={len(_before_ids)} "
                                         f"首条={heads[0][:24] if heads else '∅'!r} "
-                                        f"命中={'是' if hit else '否'}")
+                                        f"命中={(hit or {}).get('match', '否')}")
                             if hit:
                                 readback = {"verified": True, "attempt": attempt, **hit}
                                 published = True
-                                evidence = f"post_list 命中（第 {attempt} 次回读）"
+                                evidence = f"post_list 命中（{hit['match']}，第 {attempt} 次回读）"
                                 if hit["description_len"] < 10:
                                     published = False
                                     evidence = "回读文案为空"
                                 break
                             readback = {"verified": False, "attempt": attempt,
                                         "items": len(items), "heads": heads,
-                                        "reason": f"post_list 前 {len(items)} 条未见标题（关键字 {want_keys}）"}
+                                        "snapshot": len(_before_ids),
+                                        "reason": f"post_list 前 {len(items)} 条既无新 objectId"
+                                                  f"、正文前缀也未命中（{body_keys}）"}
                         except ChannelsListError as e:
                             readback = {"verified": False, "evidence_unavailable": True,
                                         "attempt": attempt,

@@ -61,6 +61,7 @@ run "卡片 Card2.0 契约"   "$PY" scripts/test_card_builder.py
 run "发布台账语义"        "$PY" scripts/test_publish_ledger.py
 run "发布结论唯一(一张卡)" "$PY" scripts/test_publish_report.py
 run "视频号话题真生效"     "$PY" scripts/test_channels_topics_contract.py
+run "视频号评论解析(fail-closed)" "$PY" scripts/test_channels_comment_parse.py
 run "抖音话题真生效"       "$PY" scripts/test_douyin_topics_contract.py
 run "发布凭证回查"        "$PY" scripts/test_publish_evidence.py
 run "僵尸 RUNNING 收尸"   "$PY" scripts/test_stale_runs.py
