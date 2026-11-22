@@ -7,6 +7,8 @@ src/providers/channels_cdp.py
 import os
 import sys
 import json
+import re
+import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -130,12 +132,31 @@ class ChannelsCDPProvider(BaseSocialProvider):
                     "message": str(exc)}
         self._warn_if_headless()
 
-        return asyncio.run(self._publish_live_async(
-            video_path=video_path, cover_path=cover_path, title=title,
-            content_text=content_text, topics=topics,
-            declare_original=declare_original, declare_aigc=declare_aigc,
-            dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
-            stop_before_publish=stop_before_publish, cdp_url=cdp_url))
+        # 2026-11-22 P0-2：视频号「静默失败」治理 —— 以前这里直接 asyncio.run，
+        # 任何异常都变成调用方看不到的现象（日志里一点异常都没有）。
+        # 现在：异常一律 logger.exception（含 traceback）+ 返回带 stage 的结构体。
+        self._publish_stage = "init"
+        try:
+            res = asyncio.run(self._publish_live_async(
+                video_path=video_path, cover_path=cover_path, title=title,
+                content_text=content_text, topics=topics,
+                declare_original=declare_original, declare_aigc=declare_aigc,
+                dry_run=dry_run, allow_missing_flags=allow_missing_flags, headless=eff_headless,
+                stop_before_publish=stop_before_publish, cdp_url=cdp_url))
+            # 无论成败都落一行结论（以前失败时日志里什么都看不到）
+            logger.info(
+                "[CHANNELS] 发布结束: status=%s published=%s stage=%s evidence=%s post_id=%s",
+                res.get("status"), res.get("published"),
+                res.get("stage") or getattr(self, "_publish_stage", "?"),
+                str(res.get("evidence"))[:80], str(res.get("post_id") or "")[:40])
+            return res
+        except Exception as exc:  # noqa: BLE001 — 兜底：绝不让异常静默消失
+            stage = getattr(self, "_publish_stage", "unknown")
+            logger.exception(f"[CHANNELS] 发布异常（stage={stage}）: {type(exc).__name__}: {exc}")
+            return {"success": False, "published": False,
+                    "status": "PROVIDER_EXCEPTION", "stage": stage,
+                    "error": f"{type(exc).__name__}: {exc}"[:300],
+                    "message": f"视频号发布过程抛异常（{stage}），详见日志 traceback"}
 
 
     async def _upload_cover_async(self, ui, page, cover_path: str) -> Dict[str, Any]:
@@ -354,6 +375,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "发布 iframe 可访问、登录有效；未上传未发布"}
 
                 # 1. 上传：JS 点隐藏 input → 接管原生文件选择器
+                self._publish_stage = "upload"
+                logger.info("[CHANNELS] ▶ step 1 开始上传视频")
                 uploaded = False
                 for attempt in range(4):
                     try:
@@ -372,6 +395,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "多次重试仍无法通过文件选择器上传视频"}
 
                 # 2. 等编辑器就绪（视频解析/转码，最多 180s）
+                self._publish_stage = "wait_editor"
+                logger.info("[CHANNELS] ▶ step 2 等待编辑器就绪")
                 editor_ready = False
                 for _ in range(90):
                     try:
@@ -387,6 +412,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "等待编辑器就绪超时（视频可能仍在转码）"}
 
                 # 3. 填文案（描述编辑器 + 短标题 + 话题）
+                self._publish_stage = "fill_copy"
+                logger.info("[CHANNELS] ▶ step 3 填写描述/短标题/话题")
                 # ⚠️ 视频号的描述编辑器是 `<div contenteditable="" data-placeholder="添加描述" class="input-editor">`
                 #    contenteditable 是**空字符串**，`[contenteditable='true']` 选不到它，
                 #    旧实现于是命中了「商品链接」textarea，文案写进了垃圾桶（2026-11-10 实测）。
@@ -395,19 +422,31 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 # `<span class="hl topic" data-type="topic">`（真话题，落地到 desc.topic）。
                 # 用 execCommand('insertText') 一次粘贴 → 纯文本，post_list 回读 topic=false。
                 # 所以：正文照旧粘贴（保排版），话题改成敲入。
+                # 视频号标题校验很窄（小数点都不认）：落文案前先归一化，否则整条发不出去。
+                # 归一化结果同时用于 payload / 短标题 / post_list 回读关键字，避免"发出去但回读对不上"。
+                from src.providers.channels_edit import sanitize_title
+                _clean_title, _title_changed = sanitize_title(title)
+                if _title_changed:
+                    logger.warning(f"[CHANNELS] 标题含平台不认的符号，已归一化：{title!r} → {_clean_title!r}")
+                title = _clean_title
+
                 _topic_list = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()][:5]
                 tag_str = " ".join(f"#{t}" for t in _topic_list)
-                # 按整行截断，绝不把句子/话题砍成半截
-                def _cap_lines(text: str, limit: int = 360) -> str:
-                    out, total = [], 0
-                    for line in str(text or "").split("\n"):
-                        if out and total + len(line) + 1 > limit:
+                # 2026-11-22 用户口径：正文原样下发 ——
+                #  · 不再把 title 拼进正文（标题有独立字段，拼进去等于改内容）
+                #  · 只在超过平台硬上限时按整行截断，并明确告警（不静默改写）
+                _body = str(content_text or "").strip()
+                _DESC_LIMIT = 1000
+                if len(_body) > _DESC_LIMIT:
+                    _kept, _total = [], 0
+                    for _ln in _body.split("\n"):
+                        if _kept and _total + len(_ln) + 1 > _DESC_LIMIT:
                             break
-                        out.append(line)
-                        total += len(line) + 1
-                    return "\n".join(out).strip()
-
-                payload = f"{title}\n\n{_cap_lines(content_text)}"
+                        _kept.append(_ln)
+                        _total += len(_ln) + 1
+                    logger.warning(f"[CHANNELS] 正文 {len(_body)} 字超平台上限，按整行截到 {_total} 字")
+                    _body = "\n".join(_kept).strip()
+                payload = _body
                 fill = await ui.evaluate("""(txt) => {
                     const ed = document.querySelector('.post-desc-box .input-editor')
                         || document.querySelector('.input-editor[data-placeholder]')
@@ -506,7 +545,37 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "screenshot": str(shot_dir / "fail_description_empty.png"),
                             "message": "描述编辑器回读为空（或过短），已中止发布（fail-closed）"}
 
+                # 3c. 回读比对（2026-11-22）：以前只判「长度 ≥10」，回读明明不一致也照发。
+                # 现在逐字比（归一化空白后），不一致 → DESC_MISMATCH 阻断，并打差异位置。
+                def _norm_desc(s: str) -> str:
+                    return re.sub(r"\s+", "", str(s or ""))
+
+                _want, _got = _norm_desc(payload), _norm_desc(filled_text)
+                if _want and _got:
+                    # 平台会吞掉末尾话题芯片之外的空白，允许「回读是期望的前缀」
+                    if not (_got == _want or _want.startswith(_got) or _got.startswith(_want)):
+                        import difflib
+                        _r = difflib.SequenceMatcher(None, _got, _want).ratio()
+                        _i = next((i for i, (a, b) in enumerate(zip(_got, _want)) if a != b),
+                                  min(len(_got), len(_want)))
+                        logger.error(
+                            "[CHANNELS] DESC_MISMATCH: ratio=%.4f len(got)=%d len(want)=%d first_diff@%d "
+                            "got[%d:%d]=%r want[%d:%d]=%r",
+                            _r, len(_got), len(_want), _i,
+                            max(0, _i - 10), _i + 10, _got[max(0, _i - 10):_i + 10],
+                            max(0, _i - 10), _i + 10, _want[max(0, _i - 10):_i + 10])
+                        if _r < 0.95:
+                            await page.screenshot(path=str(shot_dir / "fail_desc_mismatch.png"),
+                                                  full_page=True)
+                            return {"success": False, "published": False,
+                                    "status": "DESC_MISMATCH", "ratio": round(_r, 4),
+                                    "expected": _want[:200], "filled": _got[:200],
+                                    "screenshot": str(shot_dir / "fail_desc_mismatch.png"),
+                                    "message": "描述回读与下发内容不一致（被平台改写/截断），拒绝发布"}
+
                 # 4. 原创声明：label 含「原创」的 checkbox（fail-closed）
+                self._publish_stage = "declare_original"
+                logger.info("[CHANNELS] ▶ step 4 勾选原创声明")
                 orig_done = False
                 orig_txt = ""
                 if declare_original:
@@ -533,6 +602,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                                 "message": "要求声明原创但 iframe 内找不到原创复选框，已中止（fail-closed）"}
 
                 # 5. AI 声明：视频号 Web 端无此控件，如实记录
+                self._publish_stage = "declare_aigc"
+                logger.info("[CHANNELS] ▶ step 5 AI 声明检查")
                 aigc_state = "NOT_SUPPORTED_ON_WEB"
                 aigc_txt = ""
                 if declare_aigc:
@@ -578,6 +649,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "message": "已上传、填文案、勾原创，停在发表前（测试档）"}
 
                 # 6. 发表（点「发表」，若弹二次确认再点「直接发表」）
+                self._publish_stage = "click_publish"
+                logger.info("[CHANNELS] ▶ step 6 点击发表")
                 clicked = await ui.evaluate("""() => {
                     const btn = [...document.querySelectorAll('button')]
                         .find(b => b.innerText.trim() === '发表' && !b.disabled);
@@ -596,6 +669,8 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 }""")
 
                 # 7. 验证平台侧确认（成功文案 / URL 跳转）
+                self._publish_stage = "verify_dom"
+                logger.info("[CHANNELS] ▶ step 7 校验平台成功文案")
                 published = False
                 evidence = ""
                 for _ in range(30):
@@ -615,44 +690,100 @@ class ChannelsCDPProvider(BaseSocialProvider):
                 await page.screenshot(path=str(shot_dir / "after_publish.png"), full_page=True)
 
                 # 8. 权威回读：post_list 里必须能看到这条作品的 desc.description 命中标题
+                self._publish_stage = "readback"
+                logger.info("[CHANNELS] ▶ step 8 post_list 权威回读")
+                # 2026-11-20：以前只有一句「未取得平台侧证据」，日志里什么都看不到。
+                # 现在每次尝试都打日志（条数/首条摘要/命中项），失败把候选摘要带出来；
+                # 并且**重试 3 次**（新作品进列表有延迟），匹配口径放宽到「去标点前缀」。
                 readback = {"verified": False, "reason": "未执行"}
-                if published:
-                    try:
-                        raw = await page.evaluate("""async () => {
-                          const r = await fetch('/cgi-bin/mmfinderassistant-bin/post/post_list', {
-                            method:'POST', credentials:'include',
-                            headers:{'Content-Type':'application/json'},
-                            body: JSON.stringify({pageSize: 5, currentPage: 1, timestamp: Date.now()})
-                          });
-                          return await r.text();
-                        }""")
-                        data = json.loads(raw)
-                        items = ((data.get("data") or {}).get("list") or [])
-                        hit = None
-                        for it in items:
-                            d = it.get("desc") or {}
-                            blob = json.dumps(d, ensure_ascii=False)
-                            if title[:10] in blob:
-                                hit = {"createTime": it.get("createTime"),
-                                       "description_len": len(str(d.get("description") or "")),
-                                       "topic": bool(d.get("topic")),
-                                       "objectId": str(it.get("objectId") or "")[:32]}
+                # 2026-11-20 P0：**权威判据只有 post_list**。
+                # 以前的顺序是「DOM 成功文案 → 才算 published → 才回读」，于是
+                # 只要成功文案没抓到（SPA 文案变化/弹窗未消），就既不算发布也不回读，
+                # 最后只留一句「未取得平台侧证据」，日志里什么都看不到。
+                # 现在：DOM 只作补充，回读**无条件执行**并轮询到 90s；
+                #   post_list 命中 → published=True + post_id
+                #   90s 未命中 → published=False，failed 而不是 unverified
+                if True:
+                    from src.providers.channels_edit import ChannelsListError, fetch_post_list
+
+                    def _norm(s: str) -> str:
+                        return "".join(ch for ch in str(s or "") if ch.isalnum())
+
+                    want_keys = [k for k in (_norm(title)[:8], _norm(title)[:6]) if len(k) >= 4]
+                    for attempt, wait_s in enumerate((0, 5, 10, 15, 20, 25, 25), start=1):
+                        try:
+                            if wait_s:
+                                await asyncio.sleep(wait_s)
+                            data = await fetch_post_list(page, 10, 1)
+                            items = ((data.get("data") or {}).get("list") or [])
+                            heads = [str((it.get("desc") or {}).get("description") or "")[:24]
+                                     for it in items[:3]]
+                            hit = None
+                            for it in items:
+                                d = it.get("desc") or {}
+                                blob_n = _norm(d.get("description")) + _norm(
+                                    json.dumps(d.get("title"), ensure_ascii=False))
+                                if any(k and k in blob_n for k in want_keys):
+                                    hit = {"createTime": it.get("createTime"),
+                                           "description_len": len(str(d.get("description") or "")),
+                                           "topic": bool(d.get("topic")),
+                                           "objectId": str(it.get("objectId") or "")[:64]}
+                                    break
+                            logger.info(f"[CHANNELS] 回读第 {attempt} 次: 条数={len(items)} "
+                                        f"首条={heads[0][:24] if heads else '∅'!r} "
+                                        f"命中={'是' if hit else '否'}")
+                            if hit:
+                                readback = {"verified": True, "attempt": attempt, **hit}
+                                published = True
+                                evidence = f"post_list 命中（第 {attempt} 次回读）"
+                                if hit["description_len"] < 10:
+                                    published = False
+                                    evidence = "回读文案为空"
                                 break
-                        if hit:
-                            readback = {"verified": True, **hit}
-                            if hit["description_len"] < 10:
-                                published = False
-                                evidence = "回读文案为空"
-                        else:
-                            readback = {"verified": False,
-                                        "reason": f"post_list 前 {len(items)} 条未见标题"}
-                    except Exception as e:  # noqa: BLE001 — 回读失败不掩盖已取得的成功证据
-                        readback = {"verified": False, "reason": f"回读异常: {str(e)[:80]}"}
+                            readback = {"verified": False, "attempt": attempt,
+                                        "items": len(items), "heads": heads,
+                                        "reason": f"post_list 前 {len(items)} 条未见标题（关键字 {want_keys}）"}
+                        except ChannelsListError as e:
+                            readback = {"verified": False, "evidence_unavailable": True,
+                                        "attempt": attempt,
+                                        "reason": f"CHANNELS_LIST_API_FAILED: {str(e)[:120]}"}
+                            logger.error(f"CHANNELS_LIST_API_FAILED（第 {attempt} 次）: {str(e)[:160]}")
+                        except Exception as e:  # noqa: BLE001 — 不掩盖已取得的成功证据
+                            readback = {"verified": False, "evidence_unavailable": True,
+                                        "attempt": attempt, "reason": f"回读异常: {str(e)[:80]}"}
+                            logger.warning(f"[CHANNELS] 回读异常（第 {attempt} 次）: {type(e).__name__}: {e}")
+                    if not readback.get("verified"):
+                        # 回读拿不到/没命中 → 这次就是没发出去（不是「不确定」）
+                        published = False
+                        evidence = "post_list 未命中（90s 内）"
+                        logger.warning(f"[CHANNELS] 回读未通过: {json.dumps(readback, ensure_ascii=False)[:300]}")
+                        # 现场：把还可能挂着的弹窗/红字校验一起抓下来
+                        try:
+                            tips = await ui.evaluate(
+                                """() => [...document.querySelectorAll('.weui-desktop-dialog,.weui-desktop-toast,[class*=err]')]
+                                     .filter(e => e.offsetWidth)
+                                     .map(e => (e.innerText || '').trim().slice(0, 80))
+                                     .filter(Boolean).slice(0, 5)""")
+                            if tips:
+                                logger.warning(f"[CHANNELS] 页面上仍有提示: {tips}")
+                                readback["blocking_tips"] = tips
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            html = await ui.evaluate("document.body.innerHTML")
+                            (shot_dir / f"publish_blocked_{int(time.time())}.html").write_text(html[:400000])
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 return {
                     "success": published,
                     "published": published,
-                    "status": "PUBLISHED" if published else "PUBLISHED_UNVERIFIED",
+                    # 2026-11-20：三态分明 —— 命中= PUBLISHED；接口挂了= UNVERIFIED（证据缺失）；
+                    # 接口正常但列表里没有 = FAILED_NOT_PUBLISHED（真没发出去）
+                    "status": ("PUBLISHED" if published else
+                               ("PUBLISHED_UNVERIFIED" if readback.get("evidence_unavailable")
+                                else "FAILED_NOT_PUBLISHED")),
+                    "readback": readback,
                     # 视频号的外部 id 是 post_list 回读到的 objectId（`export/…`）。
                     # 2026-11-15 之前没往上报，executors 拿不到 id → 台账只能记 unverified，
                     # 明明发出去了却没有凭证。这里显式给出，msg_id/post_id 都填。

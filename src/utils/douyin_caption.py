@@ -115,6 +115,53 @@ def read_caption(editor: Any) -> str:
         return ""
 
 
+def focus_caption_editor(page: Any) -> bool:
+    """把光标放进描述编辑器 —— **不点**。
+
+    2026-11-22 P0：`editor.click()` 在抖音上传页上稳定
+    `Locator.click: Timeout 30000ms exceeded`（页面持续动效，Playwright 的
+    「稳定/可点击」判据永远不满足；同因见 fill_title）。清空描述也用 click，
+    于是表单填一半就卡 30s。这里统一改成 JS 直接 focus，不参与可点击性判定。
+    """
+    try:
+        return bool(page.evaluate(
+            """() => {
+              const ed = document.querySelector('div[contenteditable="true"]');
+              if (!ed) return false;
+              ed.focus();
+              return document.activeElement === ed;
+            }"""))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def clear_caption_editor(page: Any, log: Optional[logging.Logger] = None) -> bool:
+    """清空描述编辑器：focus(JS) → 全选(JS Range) → Backspace(原生键)。
+
+    保留原生按键删除，是为了让 React 受控状态同步（直接改 innerHTML 会
+    「回读正常但作品描述为空」，2026-11-15 踩过）。
+    """
+    lg = log or logging.getLogger(__name__)
+    if not focus_caption_editor(page):
+        lg.warning("清空描述：编辑器 focus 失败（可能还没渲染出来）")
+        return False
+    try:
+        page.evaluate(
+            """() => {
+              const ed = document.querySelector('div[contenteditable="true"]');
+              const r = document.createRange();
+              r.selectNodeContents(ed);
+              const sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(r);
+            }""")
+        page.keyboard.press("Backspace")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        lg.warning(f"清空描述失败：{type(exc).__name__}: {exc}")
+        return False
+
+
 def insert_caption(page: Any, editor: Any, caption: str,
                    logger: Optional[logging.Logger] = None) -> dict:
     """一次性写入描述，逐级降级；返回 {ok, strategy, detail}。
@@ -129,8 +176,7 @@ def insert_caption(page: Any, editor: Any, caption: str,
     expected = caption.strip()
 
     try:
-        editor.click()
-        editor.fill("")
+        clear_caption_editor(page, log)
     except Exception as exc:  # noqa: BLE001 — 清空失败不致命，下面照写
         log.warning(f"清空描述编辑器失败（继续写）：{type(exc).__name__}: {exc}")
 
@@ -138,7 +184,7 @@ def insert_caption(page: Any, editor: Any, caption: str,
 
     # ① 原生按键造段：段间 Enter×2 —— 编辑器自己生成块级节点，React 状态同步
     try:
-        editor.fill("")
+        clear_caption_editor(page, log)
         segments = split_paragraphs(expected) or [expected]
         page.keyboard.insert_text(segments[0])
         for seg in segments[1:]:
@@ -150,7 +196,7 @@ def insert_caption(page: Any, editor: Any, caption: str,
 
     # ② 整段 insert_text（单次 Input.insertText）
     try:
-        editor.fill("")
+        clear_caption_editor(page, log)
         page.keyboard.insert_text(expected)
         attempts.append(("insert_text", read_caption(editor)))
     except Exception as exc:  # noqa: BLE001

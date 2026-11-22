@@ -31,6 +31,7 @@ COVER_TEXT_SAMPLES = (0.05, 0.15, 0.25, 0.35, 0.45)
 MIN_COVERAGE = 0.55   # 总覆盖率下限（实测：正当成片 0.672~0.969 / 竖版居中 0.396）
 MIN_EDGE = 0.05       # 左右各 8% 带宽覆盖率下限（实测：正当 0.516~1.000 / 竖版居中 0.000）★主判据
 MAX_FRAME_DIFF = 8.0  # 视频首帧与封面静帧的灰度平均差上限（同画面实测 0.45）
+LEAD_IN_SEC = 0.5     # 横版封面片头时长；无 _body.mp4 时从片头之后采样判画幅
 
 
 def _probe(path: str) -> tuple[int, int]:
@@ -221,16 +222,27 @@ def check_landscape(video: str, expect_text: str = "",
         return False, rep
 
     # 主判据：首帧像素列覆盖率 + 左右边缘是否留白（竖版封面塞横屏的物理特征）
+    # 2026-11-21：横版成片开头 0.5s 是**封面片头**（executors._prepend_cover），
+    # 封面是「成片截帧 + 渲文案」的卡片，左右边距是设计边距（实测 95px / 144px），
+    # 拿它判「竖版封面塞横屏」必然误红（MedChemBench 右边缘 3.9% < 5%）。
+    # 判断对象改为**正片**：优先用同名 `_body.mp4`，否则退到片头之后的 0.5s 采样。
+    from pathlib import Path as _P
+    vp = _P(video)
+    body_sib = vp.with_name(vp.stem.replace("_with_cover", "") + "_body.mp4")
+    sample_video, sample_t = video, LEAD_IN_SEC
+    if body_sib.exists() and body_sib.stat().st_size > 0:
+        sample_video, sample_t = str(body_sib), 0.0
+    rep["sample"] = {"video": _P(sample_video).name, "t": sample_t}
     try:
-        raw, fw, fh = _frame_gray(video, 0.0)
+        raw, fw, fh = _frame_gray(sample_video, sample_t)
     except Exception as e:
         return False, {"error": f"抽帧失败: {e}"}
     cov, left, right = _col_coverage(raw, fw, fh)
     rep.update({"coverage": round(cov, 3), "edge_left": round(left, 3),
                 "edge_right": round(right, 3)})
     if cov < MIN_COVERAGE:
-        rep["reason"] = (f"内容列覆盖率仅 {cov:.1%}（<{MIN_COVERAGE:.0%}），"
-                         f"画幅两侧成片留白 → 判定为竖版封面塞横屏")
+        rep["reason"] = (f"正片内容列覆盖率仅 {cov:.1%}（<{MIN_COVERAGE:.0%}），"
+                         f"画幅两侧留白 → 判定为竖版封面塞横屏（采样 {rep['sample']}）")
         return False, rep
     if left < MIN_EDGE or right < MIN_EDGE:
         rep["reason"] = (f"左右边缘覆盖率 {left:.1%}/{right:.1%}"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,59 @@ def title_value(page) -> str:
         return ""
 
 
+OVERLAY_HINTS = ("章节要点", "封面建议", "画质提示", "发布设置", "智能生成")
+OVERLAY_CLOSE_TEXTS = ("关闭", "我知道了", "知道了", "取消", "暂不", "不用了")
+
+
+def dismiss_blocking_overlays(page, log_obj=None) -> int:
+    """关掉上传页上的教程/建议类浮层（幂等，没有就零操作）。
+
+    只点 `.semi-modal-wrap` / `.semi-portal` **内部**、文案在白名单里的按钮，
+    不按 Esc（会把正编辑器一起关掉）。返回关掉的层数。
+    """
+    log = log_obj or logger
+    try:
+        n = page.evaluate(
+            """({hints, closes}) => {
+              const seen = new Set();
+              let closed = 0;
+              const wraps = [...document.querySelectorAll('.semi-modal-wrap,.semi-portal')]
+                .filter(e => e.offsetWidth || e.offsetHeight);
+              for (const w of wraps) {
+                const txt = (w.innerText || '').trim();
+                if (!txt || !hints.some(h => txt.includes(h))) continue;
+                if (seen.has(w)) continue;
+                seen.add(w);
+                const btns = [...w.querySelectorAll('button,[role=button],span,div')]
+                  .filter(b => (b.offsetWidth || b.offsetHeight)
+                            && closes.includes((b.innerText || '').trim()));
+                const btn = btns[btns.length - 1];
+                if (btn) { btn.click(); closed++; }
+              }
+              return closed;
+            }""",
+            {"hints": list(OVERLAY_HINTS), "closes": list(OVERLAY_CLOSE_TEXTS)},
+        )
+        if n:
+            log.info(f"[douyin] 已关闭 {n} 个遮挡浮层")
+        return int(n or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.debug(f"[douyin] 关浮层跳过：{type(exc).__name__}: {exc}")
+        return 0
+
+
 def fill_title(page, title: str, *, attempts: int = 3) -> tuple[bool, str, str]:
-    """把标题填进「作品标题」框并回读自证。返回 (ok, landed, err)。"""
+    """把标题填进「作品标题」框并回读自证。返回 (ok, landed, err)。
+
+    2026-11-20 P0：连续三轮卡在 `Locator.click: Timeout 30000ms exceeded`。
+    真机实证（真机探针，上传后页面）：
+      · 输入框存在且可见（`count=2, vis=1`，placeholder「填写作品标题…」）
+      · `elementFromPoint(中心)` 命中的就是 INPUT 自己 → **没有被遮挡**
+      · 但页面上同时有 3 个可见的 `.semi-modal-wrap/.semi-portal`
+      · `click()` 3s/30s 一律超时 —— 这是 Playwright「等待元素稳定/可点击」的判据
+        在持续动效的页面上永远不满足，不是选择器错、也不是被盖住
+    所以：**不点**，直接 `fill()`（不要求 hit-target），失败再退 JS 原生 setter + input 事件。
+    """
     want = (title or "").strip()[:30]
     if not want:
         return False, "", "标题为空"
@@ -62,23 +114,83 @@ def fill_title(page, title: str, *, attempts: int = 3) -> tuple[bool, str, str]:
     if loc is None:
         return False, "", "页面上找不到「作品标题」输入框"
 
+    try:
+        dismiss_blocking_overlays(page, logger)
+    except Exception:  # noqa: BLE001 — 关弹层失败不该阻断填标题
+        pass
+
     landed = ""
+    how = ""
     for i in range(attempts):
+        # ① 直接 fill（不点、不等可点击；这是绕开 30s 卡点的关键）
         try:
-            loc.click()
-            page.keyboard.press("ControlOrMeta+a")
-            page.keyboard.press("Delete")
-            loc.fill(want)          # fill 派发 input 事件，React 才认
-            time.sleep(0.6)
+            loc.fill(want, timeout=4000)
             landed = (loc.input_value() or "").strip()
+            how = "fill"
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"标题填写第 {i + 1} 轮异常: {exc}")
+            logger.info(f"标题 fill 第 {i + 1} 轮不可用（{type(exc).__name__}），改 JS 写入")
             landed = ""
+        # ② JS 原生 setter + input 事件（React 受控组件也认）
+        if not landed:
+            try:
+                page.evaluate(
+                    """({sel, val}) => {
+                      const el = document.querySelector(sel);
+                      if (!el) return false;
+                      const proto = el.tagName === 'TEXTAREA'
+                        ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                      setter.call(el, val);
+                      el.dispatchEvent(new Event('input', {bubbles: true}));
+                      el.dispatchEvent(new Event('change', {bubbles: true}));
+                      return true;
+                    }""",
+                    {"sel": TITLE_SELECTORS[0], "val": want},
+                )
+                time.sleep(0.4)
+                landed = (loc.input_value() or "").strip()
+                how = "js-setter"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"标题 JS 写入第 {i + 1} 轮异常: {type(exc).__name__}: {exc}")
+
         if landed and landed[:10] == want[:10]:
-            logger.info(f"标题已落位（第 {i + 1} 轮）: {landed[:30]!r}")
+            logger.info(f"标题已落位（第 {i + 1} 轮/{how}）: {landed[:30]!r}")
             return True, landed, ""
-        time.sleep(1)
-    return False, landed, f"回读不一致 filled={landed[:40]!r}"
+        time.sleep(0.6)
+
+    # 失败现场：候选计数 + 是否被遮挡 + 截图，便于下次一眼定位
+    dbg = ""
+    try:
+        info = page.evaluate(
+            """(sels) => {
+              const out = [];
+              for (const s of sels) {
+                const els = [...document.querySelectorAll(s)];
+                out.push({sel: s, count: els.length,
+                          vis: els.filter(e => e.offsetWidth || e.offsetHeight).length});
+              }
+              const el = document.querySelector('input[placeholder*="标题"]');
+              const r = el && el.getBoundingClientRect();
+              const top = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+              return {cands: out, topTag: top ? top.tagName : null,
+                      modals: [...document.querySelectorAll('.semi-modal-wrap,.semi-portal')]
+                                .filter(e => e.offsetWidth).length};
+            }""",
+            list(TITLE_SELECTORS),
+        )
+        d = Path("output/douyin_diag")
+        d.mkdir(parents=True, exist_ok=True)
+        shot = d / f"title_fill_fail_{int(time.time())}.png"
+        try:
+            page.screenshot(path=str(shot), timeout=5000)
+        except Exception:  # noqa: BLE001
+            shot = None
+        dbg = f"cands={info.get('cands')} top={info.get('topTag')} modals={info.get('modals')} shot={shot}"
+        logger.error(f"TITLE_FILL_FAILED: {dbg}")
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"TITLE_FILL_FAILED（现场采集失败 {type(exc).__name__}） landed={landed!r}")
+
+    return False, landed, f"回读不一致 filled={landed[:40]!r}｜{dbg}"
 
 
 def fill_caption(page, text: str) -> bool:
@@ -135,14 +247,14 @@ def fill_caption(page, text: str) -> bool:
         return bool(d.get("ok")), d
 
     def _clear() -> None:
-        """清空描述框（重试前必须清，否则正文会叠加成两遍）。"""
-        try:
-            editor.click()
-            page.keyboard.press("Meta+A")
-            page.keyboard.press("Backspace")
-            page.wait_for_timeout(300)
-        except Exception:  # noqa: BLE001
-            pass
+        """清空描述框（重试前必须清，否则正文会叠加成两遍）。
+
+        2026-11-22：不再 `editor.click()`（上传页上稳定 30s 超时），
+        改走 douyin_caption.clear_caption_editor：JS focus + Range 全选 + 原生 Backspace。
+        """
+        from src.utils.douyin_caption import clear_caption_editor
+        if not clear_caption_editor(page, logger):
+            logger.warning("清空描述框失败（继续重试）")
 
     res = insert_caption(page, editor, body, logger=logger)
     ok, dom = _dom_ok()
@@ -295,9 +407,29 @@ def fill_topics(page, topics, log_obj=None) -> dict:
             page.wait_for_timeout(500)
             _now = _count()
             if _now > before:
-                landed.append(tag)
+                # 2026-11-22：芯片文字校验 —— 联想项只吃一部分时会插进
+                # 「技观察」（#科技观察 少了「科」）、「歌AI歌AI」这种残片。
+                # 只要最后一个 chip 的文字 != 期望 tag，就记 problem 并尝试删掉该 chip。
+                chip = ""
+                try:
+                    chip = str(page.evaluate(
+                        """() => {
+                          const sel = '[data-mention], span.topic, span[data-type="topic"]';
+                          const ed = document.querySelector('div[contenteditable="true"]');
+                          const nodes = [...(ed || document).querySelectorAll(sel)];
+                          const last = nodes[nodes.length - 1];
+                          return last ? (last.innerText || last.textContent || '').trim() : '';
+                        }""") or "")
+                except Exception:  # noqa: BLE001
+                    chip = ""
+                _chip_clean = chip.lstrip("#").strip()
+                if _chip_clean and _chip_clean != tag:
+                    problems.append(f"#{tag} 落地芯片文字被平台改写为 {chip!r}")
+                    log.error(f"[douyin] 话题芯片文字不符：期望 #{tag}，实际 {chip!r}（残片来源）")
+                else:
+                    landed.append(tag)
                 got = True
-                log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
+                log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，chip={chip!r}，第 {attempt} 次）")
                 break
             # 没落地：只退掉刚敲的 #tag 纯文本再重试（不再盲按 Backspace）
             if not _drop_typed(tag):
@@ -511,185 +643,3 @@ def assert_form_ready(page, title: str, caption: str) -> tuple[bool, dict]:
 
 
 # ── 封面（SPEC-20261118 R1~R3）───────────────────────────────────────────────
-COVER_ENTRY_TEXTS = ("选择封面", "编辑封面", "更换封面", "设置封面", "上传封面")
-COVER_DONE_TEXTS = ("确定", "完成", "确认", "保存")
-
-
-def _dh_window(png_path) -> list:
-    """像素指纹：缩到 9x8 灰度后取横向差分（dHash），用来比「预览图 vs cover.png」。"""
-    from PIL import Image
-    with Image.open(png_path) as im:
-        g = im.convert("L").resize((9, 8), Image.LANCZOS)
-        px = list(g.getdata())
-    bits = []
-    for y in range(8):
-        row = px[y * 9:(y + 1) * 9]
-        bits.extend(1 if row[x] > row[x + 1] else 0 for x in range(8))
-    return bits
-
-
-def _dh_dist(a, b) -> int:
-    return sum(1 for x, y in zip(a, b) if x != y)
-
-
-def set_cover(page, cover_path: str, *, log_obj=None, verify: bool = True) -> dict:
-    """上传自定义封面并回读校验（SPEC-20261118 R1~R3）。
-
-    返回 {"ok": bool, "code": str, "detail": str, "dist": int|None}
-    · 找不到入口 / 上传超时 / 回读不通过 → ok=False，code=COVER_UPLOAD_FAILED
-    上层必须据此阻断发布（不许静默回落系统抽帧）。
-    """
-    import os
-    import tempfile
-
-    log = log_obj or logger
-    path = str(cover_path or "")
-    if not path or not os.path.exists(path):
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": f"封面文件不存在: {path!r}"}
-
-    opened = page.evaluate(
-        """(texts) => {
-          const vis = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
-          const cands = [...document.querySelectorAll('div,span,button,label,a,p')];
-          for (const t of texts) {
-            const el = cands.find(e => vis(e) && (e.innerText || '').trim() === t);
-            if (el) { el.click(); return t; }
-          }
-          // 退一步：包含关键字且足够短的节点（如「选择封面」按钮里带图标）
-          for (const t of texts) {
-            const el = cands.find(e => vis(e) && (e.innerText || '').includes(t)
-                                       && (e.innerText || '').trim().length <= t.length + 6);
-            if (el) { el.click(); return t; }
-          }
-          return '';
-        }""",
-        list(COVER_ENTRY_TEXTS),
-    )
-    if not opened:
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": "页面找不到封面入口（选择封面/编辑封面）"}
-
-    log.info(f"[douyin] 已点击封面入口：{opened}")
-    page.wait_for_timeout(1500)
-
-    # 上传：优先弹窗里的图片 input
-    try:
-        inputs = page.locator('input[type="file"]')
-        idx = None
-        for i in range(inputs.count()):
-            acc = (inputs.nth(i).get_attribute("accept") or "")
-            if "image" in acc or acc == "":
-                idx = i
-                break
-        if idx is None:
-            return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": "封面弹窗里没有图片上传 input"}
-        inputs.nth(idx).set_input_files(os.path.abspath(path))
-        log.info(f"[douyin] 封面上传已注入：{path}")
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面 set_input_files 失败: {type(exc).__name__}: {exc}"}
-
-    # 等预览出现
-    # 2026-11-19 事故：原来取「最后一个 blob/douyinpic 的 img」，实际抓到了 104×78 的头像/图标
-    # → 与 cover 比 dHash 距离 33，误判「封面没上传」（整条片发不出去）。
-    # 现在：先按**封面宽高比**过滤（±0.18），再取**面积最大**的那个。
-    try:
-        from PIL import Image as _Im
-        with _Im.open(path) as _im:
-            cover_aspect = _im.size[0] / float(_im.size[1])
-    except Exception:  # noqa: BLE001
-        cover_aspect = 1080 / 1920.0
-
-    preview = None
-    for _ in range(40):
-        page.wait_for_timeout(500)
-        preview = page.evaluate(
-            """(aspect) => {
-              const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
-              const imgs = [...document.querySelectorAll('img')].filter(i => vis(i)
-                  && i.naturalWidth > 60 && /blob:|douyinpic|byteimg/.test(i.currentSrc || i.src || ''));
-              if (!imgs.length) return null;
-              const cands = imgs.map(i => {
-                const r = i.getBoundingClientRect();
-                return {src: (i.currentSrc || i.src || '').slice(0, 80),
-                        x: r.x, y: r.y, w: r.width, h: r.height,
-                        ar: r.height > 0 ? r.width / r.height : 0};
-              }).filter(c => c.w >= 80 && c.h >= 80 && Math.abs(c.ar - aspect) <= 0.18);
-              if (!cands.length) return null;
-              cands.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-              return cands[0];
-            }""",
-            cover_aspect,
-        )
-        if preview:
-            break
-    if not preview:
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED", "detail": "上传后 20s 内没出现封面预览"}
-
-    # 点确定/完成
-    done = page.evaluate(
-        """(texts) => {
-          const vis = e => !!(e && (e.offsetWidth || e.offsetHeight));
-          const btns = [...document.querySelectorAll('button,div[role=button],span')].filter(vis);
-          for (const t of texts) {
-            const b = btns.find(e => (e.innerText || '').trim() === t);
-            if (b) { b.click(); return t; }
-          }
-          return '';
-        }""",
-        list(COVER_DONE_TEXTS),
-    )
-    page.wait_for_timeout(1800)
-    log.info(f"[douyin] 封面确认按钮：{done or '（未找到，视为弹窗自动关闭）'}")
-
-    if not verify:
-        return {"ok": True, "code": "", "detail": "已上传（未做回读）", "dist": None}
-
-    # 回读校验：截当前封面缩略图区域 → dHash 与 cover.png 比
-    dist = None
-    try:
-        shot_dir = tempfile.mkdtemp()
-        shot = os.path.join(shot_dir, "cover_preview.png")
-        page.screenshot(path=shot, clip={"x": preview["x"], "y": preview["y"],
-                                         "width": max(8, preview["w"]), "height": max(8, preview["h"])})
-        # 同一裁切口径：预览是 w:h 窗口，cover.png 按同一比例**中心裁**
-        from PIL import Image as _Image
-        with _Image.open(path) as _im:
-            W, H = _im.size
-            target = max(0.05, preview["w"] / float(max(1, preview["h"])))
-            if W / float(H) > target:                 # 原图更宽 → 裁左右
-                nw, nh = int(round(H * target)), H
-            else:                                     # 原图更高 → 裁上下
-                nw, nh = W, int(round(W / target))
-            left, top = (W - nw) // 2, (H - nh) // 2
-            crop_path = os.path.join(shot_dir, "cover_cropped.png")
-            _im.crop((left, top, left + nw, top + nh)).save(crop_path)
-        crop_ratio = round((nw * nh) / float(W * H), 4)    # 保留面积比，一眼看出裁掉多少
-
-        # 再各取**中心 84%** 比对：抖音预览缩略图带一圈白边框/圆角，直接比整图会多出 3~5 bit
-        # （实测同一张封面 dist 16~17 → 误判「没上传」）。中心 84% 后：同一张 dist=5，
-        # 另一条片的封面 dist=25~28 → 阈值 14 依然分得开，且不再被边框骗（2026-11-19 离线实测）。
-        def _inner(src: str, dst: str, frac: float = 0.84) -> str:
-            with _Image.open(src) as im2:
-                w2, h2 = im2.size
-                nw2, nh2 = max(8, int(w2 * frac)), max(8, int(h2 * frac))
-                l2, t2 = (w2 - nw2) // 2, (h2 - nh2) // 2
-                im2.crop((l2, t2, l2 + nw2, t2 + nh2)).save(dst)
-            return dst
-
-        shot_inner = _inner(shot, os.path.join(shot_dir, "preview_inner.png"))
-        crop_inner = _inner(crop_path, os.path.join(shot_dir, "cover_cropped_inner.png"))
-        dist = _dh_dist(_dh_window(shot_inner), _dh_window(crop_inner))
-    except Exception as exc:  # noqa: BLE001
-        log.warning(f"[douyin] 封面回读截图失败：{type(exc).__name__}: {exc}")
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面回读失败（无法截图比对）: {exc}"}
-
-    ok = dist is not None and dist <= 14
-    if not ok:
-        return {"ok": False, "code": "COVER_UPLOAD_FAILED",
-                "detail": f"封面回读不一致（中心84% dHash 距离 {dist} > 14，裁切保留 {crop_ratio}）",
-                "dist": dist, "crop_ratio": crop_ratio}
-    log.info(f"[douyin] 封面已上传并回读通过（中心84% dHash 距离 {dist}，裁切保留 {crop_ratio}）")
-    return {"ok": True, "code": "", "detail": f"中心84% dHash 距离 {dist}（裁切保留 {crop_ratio}）",
-            "dist": dist, "crop_ratio": crop_ratio}
