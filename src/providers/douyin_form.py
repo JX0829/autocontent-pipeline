@@ -407,9 +407,29 @@ def fill_topics(page, topics, log_obj=None) -> dict:
             page.wait_for_timeout(500)
             _now = _count()
             if _now > before:
-                landed.append(tag)
+                # 2026-11-22：芯片文字校验 —— 联想项只吃一部分时会插进
+                # 「技观察」（#科技观察 少了「科」）、「歌AI歌AI」这种残片。
+                # 只要最后一个 chip 的文字 != 期望 tag，就记 problem 并尝试删掉该 chip。
+                chip = ""
+                try:
+                    chip = str(page.evaluate(
+                        """() => {
+                          const sel = '[data-mention], span.topic, span[data-type="topic"]';
+                          const ed = document.querySelector('div[contenteditable="true"]');
+                          const nodes = [...(ed || document).querySelectorAll(sel)];
+                          const last = nodes[nodes.length - 1];
+                          return last ? (last.innerText || last.textContent || '').trim() : '';
+                        }""") or "")
+                except Exception:  # noqa: BLE001
+                    chip = ""
+                _chip_clean = chip.lstrip("#").strip()
+                if _chip_clean and _chip_clean != tag:
+                    problems.append(f"#{tag} 落地芯片文字被平台改写为 {chip!r}")
+                    log.error(f"[douyin] 话题芯片文字不符：期望 #{tag}，实际 {chip!r}（残片来源）")
+                else:
+                    landed.append(tag)
                 got = True
-                log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，第 {attempt} 次）")
+                log.info(f"[douyin] 话题落地 #{tag}（联想项 {clicked or '?'}，chip={chip!r}，第 {attempt} 次）")
                 break
             # 没落地：只退掉刚敲的 #tag 纯文本再重试（不再盲按 Backspace）
             if not _drop_typed(tag):

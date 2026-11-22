@@ -7,6 +7,7 @@ src/providers/channels_cdp.py
 import os
 import sys
 import json
+import re
 import time
 import logging
 from pathlib import Path
@@ -431,17 +432,21 @@ class ChannelsCDPProvider(BaseSocialProvider):
 
                 _topic_list = [str(t).strip().lstrip("#") for t in (topics or []) if str(t).strip()][:5]
                 tag_str = " ".join(f"#{t}" for t in _topic_list)
-                # 按整行截断，绝不把句子/话题砍成半截
-                def _cap_lines(text: str, limit: int = 360) -> str:
-                    out, total = [], 0
-                    for line in str(text or "").split("\n"):
-                        if out and total + len(line) + 1 > limit:
+                # 2026-11-22 用户口径：正文原样下发 ——
+                #  · 不再把 title 拼进正文（标题有独立字段，拼进去等于改内容）
+                #  · 只在超过平台硬上限时按整行截断，并明确告警（不静默改写）
+                _body = str(content_text or "").strip()
+                _DESC_LIMIT = 1000
+                if len(_body) > _DESC_LIMIT:
+                    _kept, _total = [], 0
+                    for _ln in _body.split("\n"):
+                        if _kept and _total + len(_ln) + 1 > _DESC_LIMIT:
                             break
-                        out.append(line)
-                        total += len(line) + 1
-                    return "\n".join(out).strip()
-
-                payload = f"{title}\n\n{_cap_lines(content_text)}"
+                        _kept.append(_ln)
+                        _total += len(_ln) + 1
+                    logger.warning(f"[CHANNELS] 正文 {len(_body)} 字超平台上限，按整行截到 {_total} 字")
+                    _body = "\n".join(_kept).strip()
+                payload = _body
                 fill = await ui.evaluate("""(txt) => {
                     const ed = document.querySelector('.post-desc-box .input-editor')
                         || document.querySelector('.input-editor[data-placeholder]')
@@ -539,6 +544,34 @@ class ChannelsCDPProvider(BaseSocialProvider):
                             "filled_text": filled_text[:120],
                             "screenshot": str(shot_dir / "fail_description_empty.png"),
                             "message": "描述编辑器回读为空（或过短），已中止发布（fail-closed）"}
+
+                # 3c. 回读比对（2026-11-22）：以前只判「长度 ≥10」，回读明明不一致也照发。
+                # 现在逐字比（归一化空白后），不一致 → DESC_MISMATCH 阻断，并打差异位置。
+                def _norm_desc(s: str) -> str:
+                    return re.sub(r"\s+", "", str(s or ""))
+
+                _want, _got = _norm_desc(payload), _norm_desc(filled_text)
+                if _want and _got:
+                    # 平台会吞掉末尾话题芯片之外的空白，允许「回读是期望的前缀」
+                    if not (_got == _want or _want.startswith(_got) or _got.startswith(_want)):
+                        import difflib
+                        _r = difflib.SequenceMatcher(None, _got, _want).ratio()
+                        _i = next((i for i, (a, b) in enumerate(zip(_got, _want)) if a != b),
+                                  min(len(_got), len(_want)))
+                        logger.error(
+                            "[CHANNELS] DESC_MISMATCH: ratio=%.4f len(got)=%d len(want)=%d first_diff@%d "
+                            "got[%d:%d]=%r want[%d:%d]=%r",
+                            _r, len(_got), len(_want), _i,
+                            max(0, _i - 10), _i + 10, _got[max(0, _i - 10):_i + 10],
+                            max(0, _i - 10), _i + 10, _want[max(0, _i - 10):_i + 10])
+                        if _r < 0.95:
+                            await page.screenshot(path=str(shot_dir / "fail_desc_mismatch.png"),
+                                                  full_page=True)
+                            return {"success": False, "published": False,
+                                    "status": "DESC_MISMATCH", "ratio": round(_r, 4),
+                                    "expected": _want[:200], "filled": _got[:200],
+                                    "screenshot": str(shot_dir / "fail_desc_mismatch.png"),
+                                    "message": "描述回读与下发内容不一致（被平台改写/截断），拒绝发布"}
 
                 # 4. 原创声明：label 含「原创」的 checkbox（fail-closed）
                 self._publish_stage = "declare_original"
